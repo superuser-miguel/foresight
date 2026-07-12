@@ -59,3 +59,10 @@ dependencies = [
  "once_cell",
  "regex",
 ]
+
+[[package]]
+name = "rsyncgui"
+version = "0.1.0"
+dependencies = [
+ "rsync-events",
+]

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Rsync GUI
+GenericName=File Sync
+Comment=Preview and run rsync transfers with a dry-run change list
+Type=Application
+Exec=rsyncgui
+Icon=@app_id@
+Terminal=false
+Categories=Utility;GTK;FileTools;Archiving;
+Keywords=rsync;sync;backup;mirror;copy;
+StartupNotify=true

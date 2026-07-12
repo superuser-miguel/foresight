@@ -1,0 +1,7 @@
+option(
+  'profile',
+  type: 'combo',
+  choices: ['release', 'debug'],
+  value: 'release',
+  description: 'Cargo build profile for the app binary',
+)

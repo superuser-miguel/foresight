@@ -54,7 +54,10 @@ fn dry_run_delta_classification() {
 
     let attrs = by_path("docs/"); // .d...p.....
     assert_eq!(attrs.kind(), ChangeKind::Attrs);
-    assert_eq!(attrs.changed_attrs().into_iter().collect::<Vec<_>>(), vec!["perms"]);
+    assert_eq!(
+        attrs.changed_attrs().into_iter().collect::<Vec<_>>(),
+        vec!["perms"]
+    );
     assert_eq!(attrs.file_kind(), FileKind::Directory);
 
     let created = by_path("docs/new_chapter.odt"); // >f+++++++++
@@ -68,7 +71,10 @@ fn fresh_sync_symlink_target() {
     let evs = events_of(&text, 11);
     let ch = changes(&evs);
 
-    let link = ch.iter().find(|c| c.file_kind() == FileKind::Symlink).unwrap();
+    let link = ch
+        .iter()
+        .find(|c| c.file_kind() == FileKind::Symlink)
+        .unwrap();
     assert_eq!(link.path, "latest-thesis");
     assert_eq!(link.link_target.as_deref(), Some("docs/thesis.pdf"));
     assert_eq!(link.kind(), ChangeKind::Created);
@@ -79,7 +85,10 @@ fn fresh_sync_symlink_target() {
 fn itemize_line_roundtrip() {
     let c = parse_itemize_line(">f..t...... media/video_part1.bin").unwrap();
     assert_eq!(c.kind(), ChangeKind::Attrs);
-    assert_eq!(c.changed_attrs().into_iter().collect::<Vec<_>>(), vec!["mtime"]);
+    assert_eq!(
+        c.changed_attrs().into_iter().collect::<Vec<_>>(),
+        vec!["mtime"]
+    );
 }
 
 // ---------------------------------------------------------------- progress2

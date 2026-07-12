@@ -10,6 +10,7 @@ name = "rsyncgui"
 path = "src/main.rs"
 
 [dependencies]
+# Imported as `gtk` / `adw` (idiomatic gtk-rs). gtk re-exports gio & glib.
+gtk = { package = "gtk4", version = "0.11", features = ["v4_10"] }
+adw = { package = "libadwaita", version = "0.9", features = ["v1_5"] }  # SwitchRow 1.4, AboutDialog 1.5
 rsync-events = { path = "../rsync-events" }
-# GTK stack joins in Milestone 1 (gtk4, libadwaita, gio, glib). Kept out for
-# now so the argv-contract unit tests build in seconds, not minutes.

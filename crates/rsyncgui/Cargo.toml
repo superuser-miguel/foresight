@@ -1,0 +1,15 @@
+[package]
+name = "rsyncgui"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "GTK4/libadwaita frontend for rsync (bundled engine)"
+
+[[bin]]
+name = "rsyncgui"
+path = "src/main.rs"
+
+[dependencies]
+rsync-events = { path = "../rsync-events" }
+# GTK stack joins in Milestone 1 (gtk4, libadwaita, gio, glib). Kept out for
+# now so the argv-contract unit tests build in seconds, not minutes.

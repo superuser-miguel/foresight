@@ -1,4 +1,3 @@
 [workspace]
 resolver = "2"
-members = ["crates/rsync-events"]
-# The GTK app crate will join as crates/rsyncgui in Milestone 1.
+members = ["crates/rsync-events", "crates/rsyncgui"]

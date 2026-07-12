@@ -51,6 +51,10 @@ pub struct Job {
 
     // -- Advanced options (all optional; none change rsync's *reporting*
     //    format, so the rsync-events contract is unaffected) ---------------
+    /// `-v`: verbose. Adds informational lines (file list, per-file names,
+    /// stats trailer) that the parser surfaces as `Message` events — shown
+    /// verbatim in the transfer log. Does not alter the `%i %n%L` format.
+    pub verbose: bool,
     /// `--remove-source-files`: delete each source file after it transfers
     /// (turns a copy into a move). No effect during the `-n` dry run.
     pub remove_source_files: bool,
@@ -102,6 +106,9 @@ impl Job {
 
         // Optional user flags go first so they can never override the reporting
         // flags below (rsync takes the last value for --info/--out-format).
+        if self.verbose {
+            argv.push(OsString::from("-v"));
+        }
         if self.remove_source_files {
             argv.push(OsString::from("--remove-source-files"));
         }
@@ -456,6 +463,7 @@ mod tests {
         let job = Job {
             sources: vec![dir_source("/s")],
             dest: PathBuf::from("/d"),
+            verbose: true,
             remove_source_files: true,
             bwlimit: Some("85M".into()),
             excludes: vec!["*.tmp".into(), ".git".into()],
@@ -464,6 +472,7 @@ mod tests {
         };
         let argv = job.build_argv(Mode::Sync);
         let has = |s: &str| argv.iter().any(|a| a.as_bytes() == s.as_bytes());
+        assert!(has("-v"));
         assert!(has("--remove-source-files"));
         assert!(has("--bwlimit=85M"));
         assert!(has("--exclude=*.tmp"));

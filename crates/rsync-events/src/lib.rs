@@ -10,12 +10,14 @@
 //! rsync -a -n -i --delete SRC/ DST/                            # dry-run preview
 //! ```
 //!
-//! The app may prepend optional user flags (`--bwlimit`, `--exclude`,
+//! The app may prepend optional user flags (`-v`, `--bwlimit`, `--exclude`,
 //! `--remove-source-files`, free-form extra args) *before* these reporting
-//! flags. Those change which files move or how fast — never the `%i %n%L` /
-//! `--info=progress2` output format — so this parser is unaffected by them, and
-//! the reporting flags are always emitted last so user input can't override the
-//! contract. See `foresight::job::Job::build_argv`.
+//! flags. Those change which files move, how fast, or how chatty rsync is —
+//! never the `%i %n%L` / `--info=progress2` output *format*. `-v` only adds
+//! extra informational lines (file list, names, stats trailer); those don't
+//! match the itemize or progress patterns, so they fall through to
+//! [`Message`] events. The reporting flags are always emitted last so user
+//! input can't override the contract. See `foresight::job::Job::build_argv`.
 //!
 //! Pinning the bundled rsync version pins these formats; this crate is tested
 //! against transcripts captured from rsync 3.4.4 (see `tests/fixtures/` at

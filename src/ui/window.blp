@@ -150,6 +150,11 @@ template $ForesightWindow: Adw.ApplicationWindow {
                     title: _("Advanced");
                     subtitle: _("Extra rsync options");
 
+                    Adw.SwitchRow verbose_row {
+                      title: _("Verbose output");
+                      subtitle: _("Log every file and rsync's messages during the transfer (-v)");
+                    }
+
                     Adw.SwitchRow remove_source_row {
                       title: _("Move files");
                       subtitle: _("Remove each source file after it transfers (--remove-source-files)");

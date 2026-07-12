@@ -62,6 +62,8 @@ mod imp {
         #[template_child]
         pub delete_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
+        pub verbose_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
         pub remove_source_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
         pub bwlimit_row: TemplateChild<adw::SpinRow>,
@@ -358,6 +360,7 @@ impl ForesightWindow {
         imp.delete_row.set_active(false);
 
         // Advanced options.
+        imp.verbose_row.set_active(false);
         imp.remove_source_row.set_active(false);
         imp.bwlimit_row.set_value(0.0);
         imp.bwlimit_unit_row.set_selected(1); // MB/s
@@ -554,6 +557,7 @@ impl ForesightWindow {
             sources,
             dest,
             delete: adv.delete,
+            verbose: adv.verbose,
             remove_source_files: adv.remove_source_files,
             bwlimit: adv.bwlimit,
             excludes: adv.excludes,
@@ -580,6 +584,7 @@ impl ForesightWindow {
         Profile {
             name: String::new(),
             delete: imp.delete_row.is_active(),
+            verbose: imp.verbose_row.is_active(),
             remove_source_files: imp.remove_source_row.is_active(),
             bwlimit,
             excludes: tokenize(&imp.exclude_row.text()),
@@ -591,6 +596,7 @@ impl ForesightWindow {
     /// set when its switch is currently allowed (the single-folder mirror case).
     fn apply_advanced(&self, p: &Profile) {
         let imp = self.imp();
+        imp.verbose_row.set_active(p.verbose);
         imp.remove_source_row.set_active(p.remove_source_files);
         let (value, unit) = parse_bwlimit(p.bwlimit.as_deref().unwrap_or(""));
         imp.bwlimit_row.set_value(value);

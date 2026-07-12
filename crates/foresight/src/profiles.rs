@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 pub struct Profile {
     pub name: String,
     pub delete: bool,
+    pub verbose: bool,
     pub remove_source_files: bool,
     /// rsync rate token like `"85M"`; empty/`None` means unlimited.
     pub bwlimit: Option<String>,
@@ -55,6 +56,7 @@ fn load_from(path: &Path) -> Vec<Profile> {
         let bw = get("bwlimit");
         out.push(Profile {
             delete: key_file.boolean(&name, "delete").unwrap_or(false),
+            verbose: key_file.boolean(&name, "verbose").unwrap_or(false),
             remove_source_files: key_file.boolean(&name, "move").unwrap_or(false),
             bwlimit: (!bw.is_empty()).then_some(bw),
             excludes: split(&get("excludes")),
@@ -74,6 +76,7 @@ fn save_all_to(profiles: &[Profile], path: &Path) {
     let key_file = KeyFile::new();
     for p in profiles {
         key_file.set_boolean(&p.name, "delete", p.delete);
+        key_file.set_boolean(&p.name, "verbose", p.verbose);
         key_file.set_boolean(&p.name, "move", p.remove_source_files);
         key_file.set_string(&p.name, "bwlimit", p.bwlimit.as_deref().unwrap_or(""));
         key_file.set_string(&p.name, "excludes", &p.excludes.join(" "));
@@ -96,6 +99,7 @@ mod tests {
             Profile {
                 name: "HDD move".into(),
                 delete: false,
+                verbose: true,
                 remove_source_files: true,
                 bwlimit: Some("85M".into()),
                 excludes: vec!["*.tmp".into(), ".git".into()],
@@ -104,6 +108,7 @@ mod tests {
             Profile {
                 name: "Mirror strict".into(),
                 delete: true,
+                verbose: false,
                 remove_source_files: false,
                 bwlimit: None,
                 excludes: vec![],

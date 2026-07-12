@@ -95,20 +95,20 @@ Goal: the app launches inside the Flatpak with the three-page ViewStack from
 `src/ui/window.blp` (Configure → Preview → Transfer) and non-functional
 controls.
 
-- [ ] Scaffold `crates/rsyncgui` from the GNOME Builder Rust template
+- [x] Scaffold `crates/rsyncgui` from the GNOME Builder Rust template
       pattern: `meson.build` compiles `.blp` → `.ui` via blueprint-compiler,
       bundles them into a GResource, invokes cargo, installs the binary,
       desktop file, and icons.
-- [ ] `window.rs`: `#[derive(CompositeTemplate)]` +
+- [x] `window.rs`: `#[derive(CompositeTemplate)]` +
       `#[template(resource = "…/window.ui")]` bound to `$RsyncGuiWindow`;
       `#[template_child]` for every named widget in the Blueprint.
-- [ ] `flatpak-builder --user --install --force-clean build-dir <manifest>`
+- [x] `flatpak-builder --user --install --force-clean build-dir <manifest>`
       succeeds; `flatpak run` shows the window under Wayland. (Dev builds may
       use the manifest's `--share=network` build-arg for crates.io; Flathub
       submission requires vendored `cargo-sources.json` instead — see the
       manifest comments.)
-- [ ] Sanity check the bundled engine:
-      `flatpak run --command=rsync <app-id> --version` prints 3.4.4.
+- [x] Sanity check the bundled engine:
+      `flatpak run --command=rsync <app-id> --version` prints 3.4.4. ✓ 3.4.4
 
 Acceptance: a clean checkout builds and launches with only `flatpak-builder`
 installed on the host. **All GTK layout happens in `.blp` files** — Blueprint

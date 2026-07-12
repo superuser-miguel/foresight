@@ -7,6 +7,8 @@ Cargo.lock.orig
 /build-dir
 /.flatpak-builder
 /repo
+/builddir-flatpak.log
+/.flatpak-builder-*
 
 # Meson
 /_build

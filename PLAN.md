@@ -79,13 +79,15 @@ All 7 integration tests pass (`cargo test`). `reference/rsync_events.py` is
 a line-for-line Python spec of the same semantics — update both or neither.
 
 Remaining tasks:
-- [ ] Add `job.rs::build_argv(&Job) -> Vec<OsString>` in the app crate that
+- [x] Add `job.rs::build_argv(&Job) -> Vec<OsString>` in the app crate that
       produces exactly the two contract command lines in the crate docs, plus
       the `--delete` toggle. Unit-test it: no user string is ever
       shell-interpreted (always spawn with an argv vector, never a shell
       string; paths go through `OsString`, never lossy UTF-8).
-- [ ] Wire `cargo test` + `cargo clippy -- -D warnings` + `cargo fmt --check`
+      → `crates/rsyncgui/src/job.rs`, 8 unit tests.
+- [x] Wire `cargo test` + `cargo clippy -- -D warnings` + `cargo fmt --check`
       into CI (GitHub Actions or GitLab CI) on every push.
+      → `.github/workflows/ci.yml`.
 
 ### Milestone 1 — GTK4 scaffold + Blueprint
 

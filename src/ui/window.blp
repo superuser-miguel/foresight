@@ -67,7 +67,16 @@ template $RsyncGuiWindow: Adw.ApplicationWindow {
                 Adw.ActionRow source_row {
                   title: _("Source");
                   subtitle: _("Not selected");
-                  activatable: true;   // -> Gtk.FileDialog.select_folder()
+                  activatable: true;   // row body -> select a folder
+
+                  [suffix]
+                  Button source_file_button {
+                    icon-name: "document-open-symbolic";
+                    tooltip-text: _("Select a single file instead of a folder");
+                    valign: center;
+                    styles ["flat"]
+                  }
+
                   [suffix]
                   Image { icon-name: "folder-open-symbolic"; }
                 }

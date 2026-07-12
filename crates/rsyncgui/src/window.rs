@@ -59,10 +59,14 @@ mod imp {
         pub current_file_label: TemplateChild<gtk::Label>,
         #[template_child]
         pub log_view: TemplateChild<gtk::TextView>,
+        #[template_child]
+        pub source_file_button: TemplateChild<gtk::Button>,
 
         /// The real paths handed to rsync argv (never lossy-converted).
         pub source: RefCell<Option<PathBuf>>,
         pub dest: RefCell<Option<PathBuf>>,
+        /// Whether the chosen source is a directory (vs a single file).
+        pub source_is_dir: std::cell::Cell<bool>,
 
         /// Backing model for the preview list (holds `ChangeObject`s).
         pub preview_store: OnceCell<gio::ListStore>,
@@ -124,17 +128,20 @@ impl RsyncGuiWindow {
         let imp = self.imp();
         imp.preview_button.set_sensitive(false);
         imp.start_button.set_sensitive(false);
+        imp.source_is_dir.set(true);
 
         for (row, endpoint) in [
             (imp.source_row.get(), Endpoint::Source),
             (imp.dest_row.get(), Endpoint::Dest),
         ] {
+            // Row body opens the folder picker (both endpoints).
             row.connect_activated(glib::clone!(
                 #[weak(rename_to = win)]
                 self,
                 move |_| win.choose_folder(endpoint)
             ));
 
+            // Drop: source accepts a file or a folder; dest only a folder.
             let drop = gtk::DropTarget::new(gio::File::static_type(), gdk::DragAction::COPY);
             drop.connect_drop(glib::clone!(
                 #[weak(rename_to = win)]
@@ -143,10 +150,15 @@ impl RsyncGuiWindow {
                 false,
                 move |_, value, _, _| {
                     if let Ok(file) = value.get::<gio::File>() {
-                        if file
-                            .query_file_type(gio::FileQueryInfoFlags::NONE, gio::Cancellable::NONE)
-                            == gio::FileType::Directory
-                        {
+                        let ftype = file
+                            .query_file_type(gio::FileQueryInfoFlags::NONE, gio::Cancellable::NONE);
+                        let accept = match endpoint {
+                            Endpoint::Source => {
+                                ftype == gio::FileType::Directory || ftype == gio::FileType::Regular
+                            }
+                            Endpoint::Dest => ftype == gio::FileType::Directory,
+                        };
+                        if accept {
                             win.set_endpoint(endpoint, &file);
                             return true;
                         }
@@ -156,6 +168,13 @@ impl RsyncGuiWindow {
             ));
             row.add_controller(drop);
         }
+
+        // The source's file-picker button (folder is the row-body default).
+        imp.source_file_button.connect_clicked(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_| win.choose_source_file()
+        ));
     }
 
     /// Build the sectioned preview `ListView`: rows show the change path;
@@ -258,7 +277,7 @@ impl RsyncGuiWindow {
         ));
     }
 
-    // -- folder selection (M2) ---------------------------------------------
+    // -- folder / file selection (M2, extended in M3) ----------------------
 
     fn choose_folder(&self, endpoint: Endpoint) {
         let title = match endpoint {
@@ -273,6 +292,24 @@ impl RsyncGuiWindow {
             async move {
                 if let Ok(file) = dialog.select_folder_future(Some(&win)).await {
                     win.set_endpoint(endpoint, &file);
+                }
+            }
+        ));
+    }
+
+    /// Pick a single file as the source (destination is always a folder).
+    fn choose_source_file(&self) {
+        let dialog = gtk::FileDialog::builder()
+            .title("Select source file")
+            .modal(true)
+            .build();
+
+        glib::spawn_future_local(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            async move {
+                if let Ok(file) = dialog.open_future(Some(&win)).await {
+                    win.set_endpoint(Endpoint::Source, &file);
                 }
             }
         ));
@@ -293,7 +330,19 @@ impl RsyncGuiWindow {
         row.set_tooltip_text(Some(&tooltip));
 
         match endpoint {
-            Endpoint::Source => *imp.source.borrow_mut() = Some(path),
+            Endpoint::Source => {
+                let is_dir = file
+                    .query_file_type(gio::FileQueryInfoFlags::NONE, gio::Cancellable::NONE)
+                    == gio::FileType::Directory;
+                imp.source_is_dir.set(is_dir);
+                *imp.source.borrow_mut() = Some(path);
+                // --delete only affects directory syncs; for a single file it
+                // is meaningless and could surprise, so disable and clear it.
+                imp.delete_row.set_sensitive(is_dir);
+                if !is_dir {
+                    imp.delete_row.set_active(false);
+                }
+            }
             Endpoint::Dest => *imp.dest.borrow_mut() = Some(path),
         }
         self.refresh_action_sensitivity();
@@ -306,6 +355,7 @@ impl RsyncGuiWindow {
         Some(Job {
             source,
             dest,
+            source_is_dir: imp.source_is_dir.get(),
             delete: imp.delete_row.is_active(),
         })
     }

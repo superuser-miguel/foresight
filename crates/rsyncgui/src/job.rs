@@ -34,18 +34,23 @@ pub enum Mode {
 pub struct Job {
     pub source: PathBuf,
     pub dest: PathBuf,
+    /// Whether `source` is a directory. A directory source is passed with a
+    /// trailing `/` (mirror its *contents* into dest); a single file is passed
+    /// verbatim (rsync places it inside the dest directory).
+    pub source_is_dir: bool,
     /// Mirror deletions (`--delete`). Off by default; a safety rail in the UI.
     pub delete: bool,
 }
 
 impl Job {
-    /// Convenience constructor (`delete` defaults off). The app builds `Job`
-    /// from window state directly; this is used by the argv unit tests.
+    /// Convenience constructor: a directory source, `delete` off. The app
+    /// builds `Job` from window state directly; this is used by the unit tests.
     #[allow(dead_code)]
     pub fn new(source: impl Into<PathBuf>, dest: impl Into<PathBuf>) -> Self {
         Self {
             source: source.into(),
             dest: dest.into(),
+            source_is_dir: true,
             delete: false,
         }
     }
@@ -53,9 +58,11 @@ impl Job {
     /// Build the exact argv for `mode`. The program name (`rsync`) is **not**
     /// included — the caller supplies the bundled binary path to the spawner.
     ///
-    /// The source always gets a trailing `/` so rsync copies its *contents*
+    /// A directory source gets a trailing `/` so rsync copies its *contents*
     /// into the destination (mirror semantics) rather than nesting the source
-    /// directory inside the destination.
+    /// directory inside it. A single-file source is passed verbatim — with a
+    /// trailing slash rsync would reject it as "not a directory" — so it lands
+    /// as `dest/<filename>`.
     pub fn build_argv(&self, mode: Mode) -> Vec<OsString> {
         let mut argv: Vec<OsString> = Vec::new();
         argv.push(OsString::from("-a"));
@@ -75,7 +82,12 @@ impl Job {
             argv.push(OsString::from("--delete"));
         }
 
-        argv.push(with_trailing_slash(&self.source));
+        let src = if self.source_is_dir {
+            with_trailing_slash(&self.source)
+        } else {
+            self.source.as_os_str().to_os_string()
+        };
+        argv.push(src);
         argv.push(self.dest.as_os_str().to_os_string());
         argv
     }
@@ -296,6 +308,43 @@ mod tests {
     }
 
     #[test]
+    fn file_source_has_no_trailing_slash() {
+        // A single-file source must be passed verbatim — a trailing slash makes
+        // rsync reject it as "not a directory".
+        let job = Job {
+            source: PathBuf::from("/a/b/notes.txt"),
+            dest: PathBuf::from("/x"),
+            source_is_dir: false,
+            delete: false,
+        };
+        let argv = job.build_argv(Mode::Sync);
+        assert!(argv.iter().any(|s| s.as_bytes() == b"/a/b/notes.txt"));
+        assert!(!argv.iter().any(|s| s.as_bytes() == b"/a/b/notes.txt/"));
+    }
+
+    #[test]
+    fn dir_vs_file_source_differ_only_by_trailing_slash() {
+        let dir = Job {
+            source: PathBuf::from("/data/x"),
+            dest: PathBuf::from("/d"),
+            source_is_dir: true,
+            delete: false,
+        };
+        let file = Job {
+            source_is_dir: false,
+            ..dir.clone()
+        };
+        assert!(dir
+            .build_argv(Mode::Sync)
+            .iter()
+            .any(|s| s.as_bytes() == b"/data/x/"));
+        assert!(file
+            .build_argv(Mode::Sync)
+            .iter()
+            .any(|s| s.as_bytes() == b"/data/x"));
+    }
+
+    #[test]
     fn out_format_is_one_argv_element_not_shell_split() {
         // The space inside --out-format=%i %n%L must live in a SINGLE argv
         // element; a shell string would have split it into two args.
@@ -346,6 +395,7 @@ mod tests {
         let job = Job {
             source: src.clone(),
             dest: dst.clone(),
+            source_is_dir: true,
             delete: false,
         };
 
@@ -390,6 +440,62 @@ mod tests {
         // The bytes really moved.
         assert_eq!(std::fs::read(dst.join("a.txt")).unwrap(), b"hello world");
         assert!(dst.join("sub/b.txt").exists());
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// A single-file source (`source_is_dir: false`) lands as `dest/<file>`.
+    #[test]
+    fn spawn_rsync_copies_a_single_file() {
+        if !rsync_available() {
+            eprintln!("skipping: rsync not on PATH");
+            return;
+        }
+
+        let tmp = std::env::temp_dir().join(format!("rsyncgui-file-{}", std::process::id()));
+        let src_dir = tmp.join("src");
+        let dst = tmp.join("dst");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::create_dir_all(&dst).unwrap();
+        // Two files exist in the source dir, but we transfer only ONE of them.
+        std::fs::write(src_dir.join("wanted.txt"), b"just me").unwrap();
+        std::fs::write(src_dir.join("other.txt"), b"not me").unwrap();
+
+        let completion: Rc<RefCell<Option<Completion>>> = Rc::new(RefCell::new(None));
+        let job = Job {
+            source: src_dir.join("wanted.txt"),
+            dest: dst.clone(),
+            source_is_dir: false,
+            delete: false,
+        };
+
+        let ctx = glib::MainContext::new();
+        ctx.with_thread_default(|| {
+            let main_loop = glib::MainLoop::new(Some(&ctx), false);
+            let ml = main_loop.clone();
+            let comp = completion.clone();
+            spawn_rsync(
+                job.build_argv(Mode::Sync),
+                |_ev| {},
+                move |c: Completion| {
+                    *comp.borrow_mut() = Some(c);
+                    ml.quit();
+                },
+            )
+            .expect("spawn rsync");
+            main_loop.run();
+        })
+        .expect("run with thread-default context");
+
+        let completion = completion.borrow().clone().expect("on_done fired");
+        assert_eq!(completion.severity, Severity::Success, "{completion:?}");
+
+        // The one file landed at dest/wanted.txt; the sibling did NOT come along.
+        assert_eq!(std::fs::read(dst.join("wanted.txt")).unwrap(), b"just me");
+        assert!(
+            !dst.join("other.txt").exists(),
+            "single-file transfer must not pull in siblings"
+        );
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

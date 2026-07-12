@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Foresight — preview-first rsync for Linux</title>
+<meta name="description" content="A GNOME-native GTK4 front-end for rsync: preview every sync as a grouped change list before a byte moves, with multi-source transfers, live progress, and a sandboxed bundled engine.">
+<style>
+  :root {
+    --bg: #f5f7fb; --surface: #ffffff; --text: #171a1f; --muted: #596273;
+    --border: #e2e7f0; --accent: #3584e4; --accent-2: #1a5fb4;
+    --ok: #2e9e5b; --no: #c4ccd8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171d; --surface: #1d222b; --text: #e9edf3; --muted: #a3adbe;
+      --border: #2a303b; --accent: #62a0ea; --accent-2: #3584e4;
+      --ok: #57d98a; --no: #414a58;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  a { color: var(--accent); }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 0 20px; }
+  section { padding: 56px 0; }
+
+  /* Hero */
+  .hero { text-align: center; padding: 72px 0 48px; }
+  .icon {
+    width: 88px; height: 88px; border-radius: 22px; display: block; margin: 0 auto 20px;
+    box-shadow: 0 10px 30px rgba(26,95,180,.35);
+  }
+  h1 { font-size: 2.6rem; margin: 0 0 6px; letter-spacing: -.02em; }
+  .tagline { font-size: 1.25rem; color: var(--text); font-weight: 600; margin: 0 auto 14px; max-width: 34ch; }
+  .lede { color: var(--muted); max-width: 58ch; margin: 0 auto 26px; }
+  .btns { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+  .btn {
+    display: inline-block; padding: 11px 20px; border-radius: 11px; text-decoration: none;
+    font-weight: 600; border: 1px solid var(--border);
+  }
+  .btn.primary { background: var(--accent); color: #fff; border-color: transparent; }
+  .badge {
+    display: inline-block; margin-bottom: 18px; padding: 4px 12px; border-radius: 999px;
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    color: var(--accent); font-size: .82rem; font-weight: 600;
+  }
+
+  h2 { font-size: 1.6rem; letter-spacing: -.01em; margin: 0 0 8px; }
+  .sub { color: var(--muted); margin: 0 0 26px; }
+
+  /* Comparison table */
+  .tablewrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 14px; }
+  table { width: 100%; border-collapse: collapse; min-width: 560px; background: var(--surface); }
+  th, td { padding: 13px 14px; text-align: center; border-bottom: 1px solid var(--border); }
+  th:first-child, td:first-child { text-align: left; font-weight: 600; }
+  thead th { font-size: .8rem; color: var(--muted); font-weight: 600; }
+  tbody tr:last-child td { border-bottom: 0; }
+  tr.me { background: color-mix(in srgb, var(--accent) 9%, transparent); }
+  tr.me td:first-child { color: var(--accent); }
+  .y { color: var(--ok); font-weight: 700; }
+  .n { color: var(--no); }
+
+  /* Features */
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 20px; }
+  .card h3 { margin: 0 0 6px; font-size: 1.05rem; }
+  .card p { margin: 0; color: var(--muted); font-size: .95rem; }
+
+  /* Roadmap */
+  .road { list-style: none; padding: 0; margin: 0; color: var(--muted); }
+  .road li { padding: 8px 0; border-bottom: 1px solid var(--border); }
+  .road li:last-child { border: 0; }
+  .road b { color: var(--text); }
+  .road .done b::before { content: "✓ "; color: var(--ok); }
+
+  footer { border-top: 1px solid var(--border); color: var(--muted); font-size: .9rem; }
+  footer p { margin: 6px 0; }
+  code { background: color-mix(in srgb, var(--accent) 12%, transparent); padding: 1px 6px; border-radius: 6px; }
+</style>
+</head>
+<body>
+
+<header class="hero wrap">
+  <svg class="icon" viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" aria-label="Foresight icon">
+    <defs>
+      <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="#3584e4"/>
+        <stop offset="1" stop-color="#1a5fb4"/>
+      </linearGradient>
+    </defs>
+    <rect x="8" y="8" width="112" height="112" rx="26" fill="url(#bg)"/>
+    <g fill="none" stroke="#ffffff" stroke-width="9" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M34 48 H86"/>
+      <path d="M74 36 L88 48 L74 60"/>
+      <path d="M94 80 H42"/>
+      <path d="M54 68 L40 80 L54 92"/>
+    </g>
+  </svg>
+  <span class="badge">Working — building toward first release</span>
+  <h1>Foresight</h1>
+  <p class="tagline">See exactly what rsync will change — before a byte moves.</p>
+  <p class="lede">
+    A GNOME-native front-end for <strong>rsync</strong>. Every sync is first a
+    <strong>grouped preview</strong> — created, updated, deleted, attributes-only —
+    so a mistake is obvious before it runs. Multi-source, sandboxed, engine bundled.
+  </p>
+  <div class="btns">
+    <a class="btn primary" href="https://github.com/superuser-miguel/foresight">View on GitHub</a>
+    <a class="btn" href="https://github.com/superuser-miguel/foresight#build-from-source">Build from source</a>
+  </div>
+</header>
+
+<section class="wrap">
+  <h2>Why Foresight?</h2>
+  <p class="sub">Seeing changes before they happen, in a native GNOME app that never touches your whole home directory.</p>
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr>
+          <th></th>
+          <th>Change preview before sync</th>
+          <th>GNOME-native (GTK4)</th>
+          <th>Sandboxed (portals only)</th>
+          <th>Bundled, pinned engine</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>Grsync</td><td class="n">~</td><td class="n">✗</td><td class="n">✗</td><td class="n">✗</td></tr>
+        <tr><td>Back In Time</td><td class="n">✗</td><td class="n">✗</td><td class="n">✗</td><td class="n">✗</td></tr>
+        <tr><td>rsync CLI (<code>rsync -n</code>)</td><td class="n">~</td><td class="n">✗</td><td class="n">✗</td><td class="n">n/a</td></tr>
+        <tr class="me"><td>Foresight</td><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="wrap">
+  <h2>Features</h2>
+  <p class="sub">Everything driven by the bundled <code>rsync</code> — portals only, no host filesystem access.</p>
+  <div class="grid">
+    <div class="card">
+      <h3>Preview before you sync</h3>
+      <p>A real <code>rsync -n -i</code> dry run, rendered as a grouped change list — created / updated / deleted / attributes — with deletions shown destructively.</p>
+    </div>
+    <div class="card">
+      <h3>Sources from anywhere</h3>
+      <p>Add files <em>and</em> folders from different locations, each with a remove button, or drop them in from the file manager.</p>
+    </div>
+    <div class="card">
+      <h3>The right semantics, automatically</h3>
+      <p>A single folder mirrors its <em>contents</em> into the destination; a file or several items are collected <em>into</em> it.</p>
+    </div>
+    <div class="card">
+      <h3>Live transfer</h3>
+      <p>A real progress bar, current-file label, a log that opens with the exact <code>rsync …</code> command — and cancel at any time.</p>
+    </div>
+    <div class="card">
+      <h3>Deletions never surprise you</h3>
+      <p><code>--delete</code> runs a fresh dry run first and makes you confirm the exact list of files it will remove.</p>
+    </div>
+    <div class="card">
+      <h3>Sandboxed by design</h3>
+      <p>A Flatpak that ships rsync 3.4.4 and touches your files only through XDG portals — never <code>--filesystem=home</code>.</p>
+    </div>
+  </div>
+</section>
+
+<section class="wrap">
+  <h2>…with the flags you actually reach for</h2>
+  <p class="sub">The Advanced section covers the common knobs; Extra arguments passes anything else straight through.</p>
+  <div class="grid">
+    <div class="card">
+      <h3>Move, not copy</h3>
+      <p><code>--remove-source-files</code> as a single "Move files" switch — remove each source once it has transferred.</p>
+    </div>
+    <div class="card">
+      <h3>Bandwidth limit, sanely</h3>
+      <p><code>--bwlimit</code> with a unit picker: cap a big transfer to a disk's speed as <strong>85 · MB/s</strong>, not <code>85000</code> KB/s.</p>
+    </div>
+    <div class="card">
+      <h3>Excludes &amp; an escape hatch</h3>
+      <p>Exclude patterns become <code>--exclude=</code>; the Extra arguments field forwards any other rsync switch, tokenised — never through a shell.</p>
+    </div>
+  </div>
+</section>
+
+<section class="wrap">
+  <h2>Roadmap</h2>
+  <p class="sub">Honest about what works today and what's next.</p>
+  <ul class="road">
+    <li class="done"><b>Dry-run preview, multi-source, live progress, cancel</b> — all working today.</li>
+    <li class="done"><b>Advanced options</b> — move, unit-aware bandwidth limit, excludes, extra arguments.</li>
+    <li><b>Help / capability disclosure</b> — an in-app, honest inventory of exactly which rsync flags Foresight exposes, checked against the bundled <code>rsync --help</code>.</li>
+    <li><b>Saved profiles</b> — store a source / destination / flag set and reuse it in one click.</li>
+    <li><b>Remote sync over SSH</b> — to and from a remote host, with credentials via the keyring.</li>
+    <li><b>Flathub &amp; auto-updates</b> — AppStream metainfo, a Flathub submission, and a self-hosted repo so <code>flatpak update</code> pulls new releases.</li>
+  </ul>
+</section>
+
+<footer class="wrap">
+  <section>
+    <p><strong>Foresight</strong> is free software, <strong>GPL-3.0-or-later</strong>.</p>
+    <p>Bundles <a href="https://rsync.samba.org/">rsync</a> by Andrew Tridgell, Wayne Davison and contributors — bundled, not forked. Built with gtk4-rs, libadwaita, Blueprint and Meson.</p>
+    <p><a href="https://github.com/superuser-miguel/foresight">github.com/superuser-miguel/foresight</a></p>
+  </section>
+</footer>
+
+</body>
+</html>

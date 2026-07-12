@@ -148,7 +148,7 @@ profiles land, not before.
 Goal: Preview button runs a real dry run; a Start button runs a real sync
 with live progress.
 
-- [ ] `job.rs`: spawn bundled rsync with `gio::Subprocess`
+- [x] `job.rs`: spawn bundled rsync with `gio::Subprocess`
       (`STDOUT_PIPE | STDERR_PIPE`), read stdout with async
       `read_bytes_future` in a loop on the main context
       (`glib::spawn_future_local`), decode lossily
@@ -156,21 +156,29 @@ with live progress.
       `rsync_events::StreamParser::feed()`, and dispatch the returned
       `Event`s to the widgets. Never block the main loop; never collect all
       output before parsing.
-- [ ] Preview page: `gio::ListStore` of a small `glib::Object` wrapper
+      → `spawn_rsync()` (STDERR_MERGE so errors share the stream). Covered by
+        an end-to-end test driving real rsync through a glib main loop.
+- [x] Preview page: `gio::ListStore` of a small `glib::Object` wrapper
       around `ItemizedChange`, `gtk::ListView` with section headers per
       `ChangeKind`. Deletions render in destructive style.
-- [ ] Transfer page: overall `ProgressBar` from `Progress::bytes_done` /
+      → `change_object.rs` + sectioned `SortListModel`/header factory.
+- [x] Transfer page: overall `ProgressBar` from `Progress::bytes_done` /
       `percent`; current-file label from `ItemizedChange` events; log
       expander appends `Message` events verbatim.
-- [ ] Completion = **process exit**, mapped through `classify_exit()`:
+      → fraction from `percent`, `Scanning…` during `ir-chk`.
+- [x] Completion = **process exit**, mapped through `classify_exit()`:
       `Success` → toast; `Partial` (23/24) → warning banner with the
       collected error Messages; `Error` → `adw::AlertDialog` with details.
       Never treat exit 23/24 as a failure wall.
-- [ ] `--delete` runs require the switch ON **and** an `adw::AlertDialog`
+      → `show_completion()`; collected `rsync:` lines attached to the dialog.
+- [x] `--delete` runs require the switch ON **and** an `adw::AlertDialog`
       listing the exact deletions taken from the dry run. No dry run yet →
       run one implicitly first.
-- [ ] Cancellation: `gio::Cancellable` + `send_signal(SIGTERM)`; surface
+      → Start-with-delete always runs a fresh dry run, then confirms.
+- [x] Cancellation: `gio::Cancellable` + `send_signal(SIGTERM)`; surface
       exit 20 as "cancelled", not an error.
+      → `Runner::cancel()` (SIGTERM + cancelled flag → `Severity::Cancelled`);
+        covered by the `cancel_maps_to_cancelled` test.
 
 ### Milestone 4 — polish gate (defer until 0–3 are done)
 

@@ -1,0 +1,5 @@
+>f.s....... readme.txt
+*deleting   media/video_part2.bin
+.d...p..... docs/
+>f+++++++++ docs/new_chapter.odt
+exit=0

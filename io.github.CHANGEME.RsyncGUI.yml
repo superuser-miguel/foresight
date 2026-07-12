@@ -1,0 +1,103 @@
+# Flatpak manifest — GTK4/libadwaita rsync frontend (Rust / gtk4-rs)
+#
+# Rename the id (and this file) once the project is named. Flathub convention
+# for GitHub-hosted apps: io.github.<username>.<AppName>.
+#
+# Build & run:
+#   flatpak-builder --user --install --force-clean build-dir io.github.CHANGEME.RsyncGUI.yml
+#   flatpak run io.github.CHANGEME.RsyncGUI
+#
+# Verify the sandboxed rsync before the UI exists:
+#   flatpak run --command=rsync io.github.CHANGEME.RsyncGUI --version
+
+id: io.github.CHANGEME.RsyncGUI
+runtime: org.gnome.Platform
+runtime-version: '49'        # bump to current stable GNOME runtime
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: rsyncgui
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/rsyncgui/cargo
+  # For quick LOCAL dev iteration only (lets cargo hit crates.io during the
+  # build). Flathub forbids build-time network — before submission, generate
+  # vendored sources instead (see the app module below) and delete this:
+  build-args:
+    - --share=network
+
+finish-args:
+  # -- display / input ------------------------------------------------------
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc                       # required by X11 fallback
+  - --device=dri                      # GPU rendering for GTK4/GSK
+
+  # -- capabilities the app actually needs ----------------------------------
+  - --share=network                   # ssh remotes + rsyncd targets (Phase 3)
+
+  # NOTE deliberately ABSENT (portals-first — see PLAN.md §5):
+  #   --filesystem=home / host        -> file access flows through the
+  #                                      FileChooser portal instead
+  # Added only when the saved-profiles feature demands persistent dir access:
+  #   --filesystem=/run/media         -> removable drives for recurring jobs
+  #   --talk-name=org.freedesktop.secrets  -> remote credentials via keyring
+
+modules:
+  # ---------------------------------------------------------------- rsync
+  # The engine. Pinned by commit: the version pin IS the output-format
+  # contract that crates/rsync-events is tested against. Bump the pin ->
+  # rerun scripts/capture_fixtures.sh -> cargo test.
+  #
+  # The GNOME SDK ships autoconf/automake, which a git checkout needs to
+  # regenerate ./configure (the official samba.org release tarball ships it
+  # pre-built; the GitHub tag tarball does NOT — learned the hard way).
+  - name: rsync
+    buildsystem: autotools
+    config-opts:
+      - --disable-md2man          # avoids a python-commonmark build dep
+      - --disable-xxhash          # not in the GNOME runtime
+      - --disable-zstd            # enable later by adding lib modules
+      - --disable-lz4
+      - --with-included-popt
+    sources:
+      - type: git
+        url: https://github.com/RsyncProject/rsync.git
+        tag: v3.4.4
+        commit: f26f747b8017b321d3776becc69f330dd889fa21
+
+  # ---------------------------------------------------------------- openssh
+  # Uncomment for Phase 3 (remote sync). The sandbox has no host ssh binary.
+  # - name: openssh
+  #   buildsystem: autotools
+  #   sources:
+  #     - type: archive
+  #       url: https://github.com/openssh/openssh-portable/archive/refs/tags/V_10_0_P1.tar.gz
+  #       sha256: CHANGEME
+
+  # ---------------------------------------------------------------- blueprint
+  # Compiles .blp UI files at build time; not needed at runtime.
+  - name: blueprint-compiler
+    buildsystem: meson
+    cleanup: ['*']
+    sources:
+      - type: git
+        url: https://gitlab.gnome.org/GNOME/blueprint-compiler.git
+        tag: v0.18.0
+
+  # ---------------------------------------------------------------- the app
+  # Meson drives the build and invokes cargo (GNOME Builder Rust-template
+  # pattern) so Blueprint compilation, GResource bundling, desktop/metainfo
+  # install, and the cargo build all live in one build system.
+  - name: rsyncgui
+    buildsystem: meson
+    sources:
+      - type: dir
+        path: .
+      # For Flathub (offline builds), vendor the crate graph and REMOVE the
+      # --share=network build-arg above. Generate with flatpak-builder-tools:
+      #   python3 flatpak-cargo-generator.py Cargo.lock -o cargo-sources.json
+      # then add:
+      # - cargo-sources.json

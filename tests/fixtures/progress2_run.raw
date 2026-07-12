@@ -1,0 +1,11 @@
+cL+++++++++ latest-thesis
+>f+++++++++ readme.txt
+             42   0%    0.00kB/s    0:00:00               42   0%    0.00kB/s    0:00:00 (xfr#1, to-chk=5/8)
+cd+++++++++ docs/
+>f+++++++++ docs/new_chapter.odt
+        400,042   8%  190.73MB/s    0:00:00 (xfr#2, to-chk=2/8)
+>f+++++++++ docs/thesis.pdf
+      1,300,042  27%  247.96MB/s    0:00:00 (xfr#3, to-chk=1/8)
+cd+++++++++ media/
+>f+++++++++ media/video_part1.bin
+      4,800,042  99%  190.73MB/s    0:00:00 (xfr#4, to-chk=0/8)      4,800,042  99%  190.73MB/s    0:00:00 (xfr#4, to-chk=0/8)      4,800,042  99%  190.73MB/s    0:00:00 (xfr#4, to-chk=0/8)      4,800,042  99%  190.73MB/s    0:00:00 (xfr#4, to-chk=0/8)

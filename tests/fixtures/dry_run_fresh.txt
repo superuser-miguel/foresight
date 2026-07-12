@@ -1,0 +1,7 @@
+cL+++++++++ latest-thesis -> docs/thesis.pdf
+>f+++++++++ readme.txt
+cd+++++++++ docs/
+>f+++++++++ docs/new_chapter.odt
+>f+++++++++ docs/thesis.pdf
+cd+++++++++ media/
+>f+++++++++ media/video_part1.bin

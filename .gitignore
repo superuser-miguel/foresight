@@ -1,0 +1,18 @@
+# Rust
+/target
+crates/*/target
+Cargo.lock.orig
+
+# Flatpak
+/build-dir
+/.flatpak-builder
+/repo
+
+# Meson
+/_build
+/builddir
+
+# Editor / OS
+*.swp
+*~
+.DS_Store

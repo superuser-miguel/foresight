@@ -34,8 +34,8 @@ mod imp {
     use std::cell::{OnceCell, RefCell};
 
     #[derive(Debug, Default, gtk::CompositeTemplate)]
-    #[template(resource = "/io/github/CHANGEME/RsyncGUI/window.ui")]
-    pub struct RsyncGuiWindow {
+    #[template(resource = "/io/github/superuser_miguel/Foresight/window.ui")]
+    pub struct ForesightWindow {
         #[template_child]
         pub toast_overlay: TemplateChild<adw::ToastOverlay>,
         #[template_child]
@@ -85,9 +85,9 @@ mod imp {
     }
 
     #[glib::object_subclass]
-    impl ObjectSubclass for RsyncGuiWindow {
-        const NAME: &'static str = "RsyncGuiWindow";
-        type Type = super::RsyncGuiWindow;
+    impl ObjectSubclass for ForesightWindow {
+        const NAME: &'static str = "ForesightWindow";
+        type Type = super::ForesightWindow;
         type ParentType = adw::ApplicationWindow;
 
         fn class_init(klass: &mut Self::Class) {
@@ -99,7 +99,7 @@ mod imp {
         }
     }
 
-    impl ObjectImpl for RsyncGuiWindow {
+    impl ObjectImpl for ForesightWindow {
         fn constructed(&self) {
             self.parent_constructed();
             let obj = self.obj();
@@ -108,21 +108,21 @@ mod imp {
             obj.setup_actions();
         }
     }
-    impl WidgetImpl for RsyncGuiWindow {}
-    impl WindowImpl for RsyncGuiWindow {}
-    impl ApplicationWindowImpl for RsyncGuiWindow {}
-    impl AdwApplicationWindowImpl for RsyncGuiWindow {}
+    impl WidgetImpl for ForesightWindow {}
+    impl WindowImpl for ForesightWindow {}
+    impl ApplicationWindowImpl for ForesightWindow {}
+    impl AdwApplicationWindowImpl for ForesightWindow {}
 }
 
 glib::wrapper! {
-    pub struct RsyncGuiWindow(ObjectSubclass<imp::RsyncGuiWindow>)
+    pub struct ForesightWindow(ObjectSubclass<imp::ForesightWindow>)
         @extends adw::ApplicationWindow, gtk::ApplicationWindow, gtk::Window, gtk::Widget,
         @implements gtk::gio::ActionGroup, gtk::gio::ActionMap, gtk::Accessible,
                     gtk::Buildable, gtk::ConstraintTarget, gtk::Native, gtk::Root,
                     gtk::ShortcutManager;
 }
 
-impl RsyncGuiWindow {
+impl ForesightWindow {
     pub fn new(app: &adw::Application) -> Self {
         glib::Object::builder().property("application", app).build()
     }

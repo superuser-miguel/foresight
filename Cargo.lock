@@ -73,6 +73,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "foresight"
+version = "0.1.0"
+dependencies = [
+ "gtk4",
+ "libadwaita",
+ "rsync-events",
+]
+
+[[package]]
 name = "futures-channel"
 version = "0.3.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -555,15 +564,6 @@ version = "0.1.0"
 dependencies = [
  "once_cell",
  "regex",
-]
-
-[[package]]
-name = "rsyncgui"
-version = "0.1.0"
-dependencies = [
- "gtk4",
- "libadwaita",
- "rsync-events",
 ]
 
 [[package]]

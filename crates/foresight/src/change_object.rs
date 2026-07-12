@@ -23,7 +23,7 @@ mod imp {
 
     #[glib::object_subclass]
     impl ObjectSubclass for ChangeObject {
-        const NAME: &'static str = "RsyncGuiChangeObject";
+        const NAME: &'static str = "ForesightChangeObject";
         type Type = super::ChangeObject;
     }
 

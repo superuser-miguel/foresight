@@ -1,6 +1,6 @@
 #!/bin/sh
 # Meson -> cargo bridge. Meson passes the build parameters positionally; we
-# export the RSYNCGUI_* env the app's build.rs reads, build, then copy the
+# export the FORESIGHT_* env the app's build.rs reads, build, then copy the
 # binary to the Meson-declared output path.
 set -eu
 
@@ -14,10 +14,10 @@ APP_ID="$7"
 PKGDATADIR="$8"
 VERSION="$9"
 
-export RSYNCGUI_APP_ID="$APP_ID"
-export RSYNCGUI_PKGDATADIR="$PKGDATADIR"
-export RSYNCGUI_VERSION="$VERSION"
-export RSYNCGUI_PROFILE="$PROFILE"
+export FORESIGHT_APP_ID="$APP_ID"
+export FORESIGHT_PKGDATADIR="$PKGDATADIR"
+export FORESIGHT_VERSION="$VERSION"
+export FORESIGHT_PROFILE="$PROFILE"
 
 if [ "$PROFILE" = "release" ]; then
     "$CARGO" build --manifest-path "$MANIFEST" --target-dir "$TARGET_DIR" -p "$BIN" --release

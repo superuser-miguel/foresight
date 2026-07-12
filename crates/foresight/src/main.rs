@@ -1,4 +1,4 @@
-//! rsyncgui — GTK4/libadwaita frontend for the bundled rsync engine.
+//! foresight — GTK4/libadwaita frontend for the bundled rsync engine.
 //!
 //! Entry point: register the compiled GResource, start an `adw::Application`,
 //! and present the composite-template window. Milestone 3 wires the bundled
@@ -16,7 +16,7 @@ use adw::prelude::*;
 use gtk::gio;
 use gtk::glib;
 use std::path::PathBuf;
-use window::RsyncGuiWindow;
+use window::ForesightWindow;
 
 fn main() -> glib::ExitCode {
     register_resources();
@@ -27,7 +27,7 @@ fn main() -> glib::ExitCode {
 
     app.connect_startup(setup_actions);
     app.connect_activate(|app| {
-        let window = RsyncGuiWindow::new(app);
+        let window = ForesightWindow::new(app);
         if config::PROFILE == "development" {
             // libadwaita renders the striped "devel" header for unreleased builds.
             window.add_css_class("devel");
@@ -38,12 +38,12 @@ fn main() -> glib::ExitCode {
     app.run()
 }
 
-/// Load `rsyncgui.gresource`. In an installed build it lives in `PKGDATADIR`;
-/// for host dev runs, point `RSYNCGUI_GRESOURCE` at the file Meson built.
+/// Load `foresight.gresource`. In an installed build it lives in `PKGDATADIR`;
+/// for host dev runs, point `FORESIGHT_GRESOURCE` at the file Meson built.
 fn register_resources() {
-    let path = std::env::var_os("RSYNCGUI_GRESOURCE")
+    let path = std::env::var_os("FORESIGHT_GRESOURCE")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(config::PKGDATADIR).join("rsyncgui.gresource"));
+        .unwrap_or_else(|| PathBuf::from(config::PKGDATADIR).join("foresight.gresource"));
 
     let resource = gio::Resource::load(&path)
         .unwrap_or_else(|e| panic!("failed to load GResource at {}: {e}", path.display()));
@@ -58,10 +58,10 @@ fn setup_actions(app: &adw::Application) {
         move |_, _| {
             let window = app.active_window();
             adw::AboutDialog::builder()
-                .application_name("Rsync GUI")
+                .application_name("Foresight")
                 .application_icon(config::APP_ID)
                 .version(config::VERSION)
-                .developer_name("The Rsync GUI contributors")
+                .developer_name("The Foresight contributors")
                 .license_type(gtk::License::Gpl30)
                 .build()
                 .present(window.as_ref());

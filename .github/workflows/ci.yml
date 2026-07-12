@@ -15,7 +15,7 @@ jobs:
       - uses: actions/checkout@v4
 
       # System deps for the GTK app crate (the parser crate needs none, but the
-      # workspace build touches crates/rsyncgui from Milestone 1 onward).
+      # workspace build touches crates/foresight from Milestone 1 onward).
       - name: Install GTK4 / libadwaita / blueprint
         run: |
           sudo apt-get update

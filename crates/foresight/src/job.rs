@@ -443,7 +443,7 @@ mod tests {
             return;
         }
 
-        let tmp = std::env::temp_dir().join(format!("rsyncgui-test-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("foresight-test-{}", std::process::id()));
         let src = tmp.join("src");
         let dst = tmp.join("dst");
         std::fs::create_dir_all(src.join("sub")).unwrap();
@@ -517,7 +517,7 @@ mod tests {
             return;
         }
 
-        let tmp = std::env::temp_dir().join(format!("rsyncgui-file-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("foresight-file-{}", std::process::id()));
         let src_dir = tmp.join("src");
         let dst = tmp.join("dst");
         std::fs::create_dir_all(&src_dir).unwrap();
@@ -575,7 +575,7 @@ mod tests {
             return;
         }
 
-        let tmp = std::env::temp_dir().join(format!("rsyncgui-multi-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("foresight-multi-{}", std::process::id()));
         let loc_a = tmp.join("downloads");
         let loc_b = tmp.join("documents");
         let dst = tmp.join("dst");
@@ -636,7 +636,7 @@ mod tests {
             return;
         }
 
-        let tmp = std::env::temp_dir().join(format!("rsyncgui-cancel-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("foresight-cancel-{}", std::process::id()));
         let src = tmp.join("src");
         let dst = tmp.join("dst");
         std::fs::create_dir_all(&src).unwrap();

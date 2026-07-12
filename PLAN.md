@@ -32,26 +32,26 @@ algorithm, Qt/other-desktop theming.
 | License | GPL-3.0-or-later | Matches rsync; project convention |
 | Parser | `crates/rsync-events` — lib crate, deps: `regex` + `once_cell` only, **no GTK** | Testable anywhere; the app crate depends on it, never the reverse |
 
-Working id is `io.github.CHANGEME.RsyncGUI` — rename everywhere in one commit
-once the project is named.
+App id is `io.github.superuser_miguel.Foresight` (named 2026-07-12; the
+`io.github.CHANGEME.RsyncGUI` working id was renamed everywhere in one commit).
 
 ## 3. Repository layout (target)
 
 ```
 .
 ├── PLAN.md
-├── io.github.CHANGEME.RsyncGUI.yml     # Flatpak manifest (in repo root)
+├── io.github.superuser_miguel.Foresight.yml     # Flatpak manifest (in repo root)
 ├── Cargo.toml                          # workspace root
 ├── meson.build                         # drives blueprint + cargo + install
 ├── data/
-│   ├── io.github.CHANGEME.RsyncGUI.desktop.in
-│   ├── io.github.CHANGEME.RsyncGUI.metainfo.xml.in   # appstream (Phase 4)
+│   ├── io.github.superuser_miguel.Foresight.desktop.in
+│   ├── io.github.superuser_miguel.Foresight.metainfo.xml.in   # appstream (Phase 4)
 │   └── icons/
 ├── crates/
 │   ├── rsync-events/           # ← pure parser crate, ALREADY WRITTEN
 │   │   ├── src/lib.rs          #    7/7 tests passing (cargo test)
 │   │   └── tests/fixtures_test.rs
-│   └── rsyncgui/               # the GTK app crate (Milestone 1)
+│   └── foresight/               # the GTK app crate (Milestone 1)
 │       └── src/
 │           ├── main.rs         # adw::Application entry point
 │           ├── window.rs       # #[template] composite for window.blp
@@ -84,7 +84,7 @@ Remaining tasks:
       the `--delete` toggle. Unit-test it: no user string is ever
       shell-interpreted (always spawn with an argv vector, never a shell
       string; paths go through `OsString`, never lossy UTF-8).
-      → `crates/rsyncgui/src/job.rs`, 8 unit tests.
+      → `crates/foresight/src/job.rs`, 8 unit tests.
 - [x] Wire `cargo test` + `cargo clippy -- -D warnings` + `cargo fmt --check`
       into CI (GitHub Actions or GitLab CI) on every push.
       → `.github/workflows/ci.yml`.
@@ -95,12 +95,12 @@ Goal: the app launches inside the Flatpak with the three-page ViewStack from
 `src/ui/window.blp` (Configure → Preview → Transfer) and non-functional
 controls.
 
-- [x] Scaffold `crates/rsyncgui` from the GNOME Builder Rust template
+- [x] Scaffold `crates/foresight` from the GNOME Builder Rust template
       pattern: `meson.build` compiles `.blp` → `.ui` via blueprint-compiler,
       bundles them into a GResource, invokes cargo, installs the binary,
       desktop file, and icons.
 - [x] `window.rs`: `#[derive(CompositeTemplate)]` +
-      `#[template(resource = "…/window.ui")]` bound to `$RsyncGuiWindow`;
+      `#[template(resource = "…/window.ui")]` bound to `$ForesightWindow`;
       `#[template_child]` for every named widget in the Blueprint.
 - [x] `flatpak-builder --user --install --force-clean build-dir <manifest>`
       succeeds; `flatpak run` shows the window under Wayland. (Dev builds may
@@ -231,8 +231,8 @@ Build, run, test:
 
 ```bash
 # full build + install (from repo root)
-flatpak-builder --user --install --force-clean build-dir io.github.CHANGEME.RsyncGUI.yml
-flatpak run io.github.CHANGEME.RsyncGUI
+flatpak-builder --user --install --force-clean build-dir io.github.superuser_miguel.Foresight.yml
+flatpak run io.github.superuser_miguel.Foresight
 
 # parser tests + lint (host, no flatpak needed — the crate is pure)
 cargo test

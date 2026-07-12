@@ -4,24 +4,24 @@
 # for GitHub-hosted apps: io.github.<username>.<AppName>.
 #
 # Build & run:
-#   flatpak-builder --user --install --force-clean build-dir io.github.CHANGEME.RsyncGUI.yml
-#   flatpak run io.github.CHANGEME.RsyncGUI
+#   flatpak-builder --user --install --force-clean build-dir io.github.superuser_miguel.Foresight.yml
+#   flatpak run io.github.superuser_miguel.Foresight
 #
 # Verify the sandboxed rsync before the UI exists:
-#   flatpak run --command=rsync io.github.CHANGEME.RsyncGUI --version
+#   flatpak run --command=rsync io.github.superuser_miguel.Foresight --version
 
-id: io.github.CHANGEME.RsyncGUI
+id: io.github.superuser_miguel.Foresight
 runtime: org.gnome.Platform
 runtime-version: '49'        # bump to current stable GNOME runtime
 sdk: org.gnome.Sdk
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
-command: rsyncgui
+command: foresight
 
 build-options:
   append-path: /usr/lib/sdk/rust-stable/bin
   env:
-    CARGO_HOME: /run/build/rsyncgui/cargo
+    CARGO_HOME: /run/build/foresight/cargo
   # For quick LOCAL dev iteration only (lets cargo hit crates.io during the
   # build). Flathub forbids build-time network — before submission, generate
   # vendored sources instead (see the app module below) and delete this:
@@ -91,7 +91,7 @@ modules:
   # Meson drives the build and invokes cargo (GNOME Builder Rust-template
   # pattern) so Blueprint compilation, GResource bundling, desktop/metainfo
   # install, and the cargo build all live in one build system.
-  - name: rsyncgui
+  - name: foresight
     buildsystem: meson
     sources:
       - type: dir

@@ -1,5 +1,5 @@
 project(
-  'rsyncgui',
+  'foresight',
   version: '0.1.0',
   license: 'GPL-3.0-or-later',
   meson_version: '>= 0.59.0',
@@ -11,7 +11,7 @@ dependency('libadwaita-1', version: '>= 1.4')
 
 gnome = import('gnome')
 
-application_id = 'io.github.CHANGEME.RsyncGUI'
+application_id = 'io.github.superuser_miguel.Foresight'
 prefix = get_option('prefix')
 bindir = prefix / get_option('bindir')
 datadir = prefix / get_option('datadir')
@@ -36,8 +36,8 @@ blueprints = custom_target(
 
 # ---------------------------------------------------------------- GResource
 gnome.compile_resources(
-  'rsyncgui',
-  'data/rsyncgui.gresource.xml',
+  'foresight',
+  'data/foresight.gresource.xml',
   gresource_bundle: true,
   dependencies: blueprints,
   source_dir: meson.current_build_dir(),
@@ -49,7 +49,7 @@ gnome.compile_resources(
 desktop_conf = configuration_data()
 desktop_conf.set('app_id', application_id)
 configure_file(
-  input: 'data/io.github.CHANGEME.RsyncGUI.desktop.in',
+  input: 'data/io.github.superuser_miguel.Foresight.desktop.in',
   output: application_id + '.desktop',
   configuration: desktop_conf,
   install: true,
@@ -58,7 +58,7 @@ configure_file(
 
 # ---------------------------------------------------------------- Icon
 install_data(
-  'data/icons/hicolor/scalable/apps/io.github.CHANGEME.RsyncGUI.svg',
+  'data/icons/hicolor/scalable/apps/io.github.superuser_miguel.Foresight.svg',
   install_dir: datadir / 'icons' / 'hicolor' / 'scalable' / 'apps',
 )
 

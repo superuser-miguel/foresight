@@ -193,8 +193,7 @@ static ITEMIZE_RE: Lazy<Regex> = Lazy::new(|| {
     .unwrap()
 });
 
-static DELETING_RE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"^\*deleting\s+(?P<path>.*)$").unwrap());
+static DELETING_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\*deleting\s+(?P<path>.*)$").unwrap());
 
 static PROGRESS_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
@@ -242,14 +241,38 @@ pub fn parse_progress_line(line: &str) -> Option<Progress> {
 pub fn parse_stats_block(text: &str) -> Stats {
     static PATS: Lazy<Vec<(&str, Regex)>> = Lazy::new(|| {
         vec![
-            ("files_total", Regex::new(r"^Number of files: ([\d,]+)").unwrap()),
-            ("files_created", Regex::new(r"^Number of created files: ([\d,]+)").unwrap()),
-            ("files_deleted", Regex::new(r"^Number of deleted files: ([\d,]+)").unwrap()),
-            ("files_transferred", Regex::new(r"^Number of regular files transferred: ([\d,]+)").unwrap()),
-            ("total_size", Regex::new(r"^Total file size: ([\d,]+) bytes").unwrap()),
-            ("transferred_size", Regex::new(r"^Total transferred file size: ([\d,]+) bytes").unwrap()),
-            ("bytes_sent", Regex::new(r"^(?:Total bytes sent|sent) ([\d,]+) bytes").unwrap()),
-            ("bytes_received", Regex::new(r"received ([\d,]+) bytes").unwrap()),
+            (
+                "files_total",
+                Regex::new(r"^Number of files: ([\d,]+)").unwrap(),
+            ),
+            (
+                "files_created",
+                Regex::new(r"^Number of created files: ([\d,]+)").unwrap(),
+            ),
+            (
+                "files_deleted",
+                Regex::new(r"^Number of deleted files: ([\d,]+)").unwrap(),
+            ),
+            (
+                "files_transferred",
+                Regex::new(r"^Number of regular files transferred: ([\d,]+)").unwrap(),
+            ),
+            (
+                "total_size",
+                Regex::new(r"^Total file size: ([\d,]+) bytes").unwrap(),
+            ),
+            (
+                "transferred_size",
+                Regex::new(r"^Total transferred file size: ([\d,]+) bytes").unwrap(),
+            ),
+            (
+                "bytes_sent",
+                Regex::new(r"^(?:Total bytes sent|sent) ([\d,]+) bytes").unwrap(),
+            ),
+            (
+                "bytes_received",
+                Regex::new(r"received ([\d,]+) bytes").unwrap(),
+            ),
         ]
     });
     static SPEEDUP_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"speedup is ([\d.]+)").unwrap());
@@ -258,12 +281,9 @@ pub fn parse_stats_block(text: &str) -> Stats {
     for raw in text.lines() {
         let line = raw.trim();
         for (key, rx) in PATS.iter() {
-            let cap = if *key == "bytes_received" {
-                rx.captures(line) // searched, not anchored to line start
-            } else {
-                rx.captures(line)
-            };
-            if let Some(c) = cap {
+            // Each pattern is matched (searched, not anchored) against the
+            // trimmed line; the sent/received trailer lines are not at column 0.
+            if let Some(c) = rx.captures(line) {
                 let v = parse_u64(&c[1]);
                 let slot = match *key {
                     "files_total" => &mut st.files_total,
@@ -365,22 +385,40 @@ pub fn classify_exit(code: i32) -> (Severity, String) {
     use Severity::*;
     let (sev, msg) = match code {
         0 => (Success, "Sync completed."),
-        1 => (Error, "Syntax or usage error — the app built a bad command line."),
+        1 => (
+            Error,
+            "Syntax or usage error — the app built a bad command line.",
+        ),
         2 => (Error, "Protocol incompatibility between rsync versions."),
-        3 => (Error, "File selection error — a source or destination is invalid."),
+        3 => (
+            Error,
+            "File selection error — a source or destination is invalid.",
+        ),
         5 => (Error, "Error starting the client-server protocol."),
-        10 => (Error, "Socket I/O error — check the network or remote host."),
+        10 => (
+            Error,
+            "Socket I/O error — check the network or remote host.",
+        ),
         11 => (Error, "File I/O error — check disk space and permissions."),
         12 => (Error, "Protocol data stream error."),
         13 => (Error, "Diagnostics error."),
         14 => (Error, "IPC error."),
         20 => (Cancelled, "Sync was interrupted."),
-        23 => (Partial, "Completed, but some files could not be transferred."),
-        24 => (Partial, "Completed, but some source files vanished mid-sync."),
+        23 => (
+            Partial,
+            "Completed, but some files could not be transferred.",
+        ),
+        24 => (
+            Partial,
+            "Completed, but some source files vanished mid-sync.",
+        ),
         25 => (Partial, "Stopped early: --max-delete limit reached."),
         30 => (Error, "Timeout waiting for data."),
         35 => (Error, "Timeout waiting for the remote to connect."),
-        255 => (Error, "The remote shell (ssh) failed — check host and keys."),
+        255 => (
+            Error,
+            "The remote shell (ssh) failed — check host and keys.",
+        ),
         other => return (Error, format!("rsync exited with code {other}.")),
     };
     (sev, msg.to_string())

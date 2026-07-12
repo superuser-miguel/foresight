@@ -28,7 +28,7 @@ pub enum Mode {
 }
 
 /// One selected source: a path and whether it is a directory.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Source {
     pub path: PathBuf,
     pub is_dir: bool,
@@ -37,7 +37,7 @@ pub struct Source {
 /// A configured sync. The preview and the real run are built from the *same*
 /// `Job`, so the dry run faithfully predicts what the transfer will do —
 /// including deletions when [`delete`](Self::delete) is on.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Job {
     /// One or more sources — files and/or folders, possibly from different
     /// locations. rsync accepts them as `src1 src2 … dst`.
@@ -48,11 +48,23 @@ pub struct Job {
     ///
     /// [`is_mirror`]: Self::is_mirror
     pub delete: bool,
+
+    // -- Advanced options (all optional; none change rsync's *reporting*
+    //    format, so the rsync-events contract is unaffected) ---------------
+    /// `--remove-source-files`: delete each source file after it transfers
+    /// (turns a copy into a move). No effect during the `-n` dry run.
+    pub remove_source_files: bool,
+    /// `--bwlimit=<KB/s>`. `None`/`Some(0)` means unlimited (flag omitted).
+    pub bwlimit: Option<u32>,
+    /// One `--exclude=<pattern>` per entry (filters files; format unchanged).
+    pub excludes: Vec<String>,
+    /// Extra rsync arguments, already tokenised (never shell-interpreted).
+    pub extra_args: Vec<String>,
 }
 
 impl Job {
-    /// Convenience constructor: a single directory source, `delete` off. The
-    /// app builds `Job` from window state directly; used by the unit tests.
+    /// Convenience constructor: a single directory source, everything else
+    /// default. The app builds `Job` from window state directly; used by tests.
     #[allow(dead_code)]
     pub fn new(source: impl Into<PathBuf>, dest: impl Into<PathBuf>) -> Self {
         Self {
@@ -61,7 +73,7 @@ impl Job {
                 is_dir: true,
             }],
             dest: dest.into(),
-            delete: false,
+            ..Self::default()
         }
     }
 
@@ -86,6 +98,24 @@ impl Job {
         let mut argv: Vec<OsString> = Vec::new();
         argv.push(OsString::from("-a"));
 
+        // Optional user flags go first so they can never override the reporting
+        // flags below (rsync takes the last value for --info/--out-format).
+        if self.remove_source_files {
+            argv.push(OsString::from("--remove-source-files"));
+        }
+        if let Some(kb) = self.bwlimit {
+            if kb > 0 {
+                argv.push(OsString::from(format!("--bwlimit={kb}")));
+            }
+        }
+        for pattern in &self.excludes {
+            argv.push(OsString::from(format!("--exclude={pattern}")));
+        }
+        for token in &self.extra_args {
+            argv.push(OsString::from(token));
+        }
+
+        // Reporting flags — the rsync-events contract. Always last among flags.
         match mode {
             Mode::Preview => {
                 argv.push(OsString::from("-n"));
@@ -348,6 +378,7 @@ mod tests {
             sources: vec![file_source("/a/b/notes.txt")],
             dest: PathBuf::from("/x"),
             delete: false,
+            ..Default::default()
         };
         let argv = job.build_argv(Mode::Sync);
         assert!(argv.iter().any(|s| s.as_bytes() == b"/a/b/notes.txt"));
@@ -360,6 +391,7 @@ mod tests {
             sources: vec![dir_source("/data/x")],
             dest: PathBuf::from("/d"),
             delete: false,
+            ..Default::default()
         };
         let file = Job {
             sources: vec![file_source("/data/x")],
@@ -386,6 +418,7 @@ mod tests {
             ],
             dest: PathBuf::from("/backup"),
             delete: false,
+            ..Default::default()
         };
         let argv = job.build_argv(Mode::Sync);
         // reversed tail: [dest, source2, source1]
@@ -403,6 +436,7 @@ mod tests {
             sources: vec![dir_source("/one"), dir_source("/two")],
             dest: PathBuf::from("/d"),
             delete: false,
+            ..Default::default()
         };
         assert!(!two.is_mirror());
     }
@@ -413,6 +447,75 @@ mod tests {
         // element; a shell string would have split it into two args.
         let argv = Job::new("/s", "/d").build_argv(Mode::Sync);
         assert!(argv.iter().any(|a| a.as_bytes() == b"--out-format=%i %n%L"));
+    }
+
+    #[test]
+    fn advanced_flags_are_emitted() {
+        let job = Job {
+            sources: vec![dir_source("/s")],
+            dest: PathBuf::from("/d"),
+            remove_source_files: true,
+            bwlimit: Some(500),
+            excludes: vec!["*.tmp".into(), ".git".into()],
+            extra_args: vec!["--checksum".into(), "--partial".into()],
+            ..Default::default()
+        };
+        let argv = job.build_argv(Mode::Sync);
+        let has = |s: &str| argv.iter().any(|a| a.as_bytes() == s.as_bytes());
+        assert!(has("--remove-source-files"));
+        assert!(has("--bwlimit=500"));
+        assert!(has("--exclude=*.tmp"));
+        assert!(has("--exclude=.git"));
+        assert!(has("--checksum"));
+        assert!(has("--partial"));
+    }
+
+    #[test]
+    fn bwlimit_zero_and_none_omit_the_flag() {
+        for bw in [None, Some(0)] {
+            let job = Job {
+                sources: vec![dir_source("/s")],
+                dest: PathBuf::from("/d"),
+                bwlimit: bw,
+                ..Default::default()
+            };
+            assert!(!job
+                .build_argv(Mode::Sync)
+                .iter()
+                .any(|a| a.as_bytes().starts_with(b"--bwlimit")));
+        }
+    }
+
+    #[test]
+    fn reporting_flags_come_after_user_flags_so_they_win() {
+        // A user who types --info=... in extra args must not defeat our
+        // --info=progress2: ours is emitted later, and rsync takes the last.
+        let job = Job {
+            sources: vec![dir_source("/s")],
+            dest: PathBuf::from("/d"),
+            extra_args: vec!["--info=flist2".into()],
+            ..Default::default()
+        };
+        let argv = job.build_argv(Mode::Sync);
+        let user = argv.iter().position(|a| a.as_bytes() == b"--info=flist2");
+        let ours = argv
+            .iter()
+            .position(|a| a.as_bytes() == b"--info=progress2");
+        assert!(user.unwrap() < ours.unwrap(), "ours must be last: {argv:?}");
+    }
+
+    #[test]
+    fn advanced_flags_precede_the_paths() {
+        let job = Job {
+            sources: vec![file_source("/s/a.txt")],
+            dest: PathBuf::from("/d"),
+            excludes: vec!["*.bak".into()],
+            ..Default::default()
+        };
+        let argv = job.build_argv(Mode::Sync);
+        let exclude = argv.iter().position(|a| a.as_bytes() == b"--exclude=*.bak");
+        let src = argv.iter().position(|a| a.as_bytes() == b"/s/a.txt");
+        assert!(exclude.unwrap() < src.unwrap());
     }
 
     #[test]
@@ -462,6 +565,7 @@ mod tests {
             }],
             dest: dst.clone(),
             delete: false,
+            ..Default::default()
         };
 
         let ctx = glib::MainContext::new();
@@ -534,6 +638,7 @@ mod tests {
             }],
             dest: dst.clone(),
             delete: false,
+            ..Default::default()
         };
 
         let ctx = glib::MainContext::new();
@@ -599,6 +704,7 @@ mod tests {
             ],
             dest: dst.clone(),
             delete: false,
+            ..Default::default()
         };
 
         let ctx = glib::MainContext::new();

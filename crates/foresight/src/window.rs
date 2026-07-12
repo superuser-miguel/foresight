@@ -61,6 +61,14 @@ mod imp {
         #[template_child]
         pub delete_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
+        pub remove_source_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
+        pub bwlimit_row: TemplateChild<adw::SpinRow>,
+        #[template_child]
+        pub exclude_row: TemplateChild<adw::EntryRow>,
+        #[template_child]
+        pub extra_args_row: TemplateChild<adw::EntryRow>,
+        #[template_child]
         pub preview_list: TemplateChild<gtk::ListView>,
         #[template_child]
         pub overall_progress: TemplateChild<gtk::ProgressBar>,
@@ -334,6 +342,12 @@ impl ForesightWindow {
         imp.dest_row.set_tooltip_text(None);
         imp.delete_row.set_active(false);
 
+        // Advanced options.
+        imp.remove_source_row.set_active(false);
+        imp.bwlimit_row.set_value(0.0);
+        imp.exclude_row.set_text("");
+        imp.extra_args_row.set_text("");
+
         // Results from any previous run.
         if let Some(store) = imp.preview_store.get() {
             store.remove_all();
@@ -515,10 +529,24 @@ impl ForesightWindow {
             return None;
         }
         let dest = imp.dest.borrow().clone()?;
+
+        // Advanced options. Text fields are tokenised on whitespace (never
+        // shell-interpreted); an empty bandwidth limit means unlimited.
+        let excludes = tokenize(&imp.exclude_row.text());
+        let extra_args = tokenize(&imp.extra_args_row.text());
+        let bwlimit = match imp.bwlimit_row.value() as u32 {
+            0 => None,
+            kb => Some(kb),
+        };
+
         Some(Job {
             sources,
             dest,
             delete: imp.delete_row.is_active(),
+            remove_source_files: imp.remove_source_row.is_active(),
+            bwlimit,
+            excludes,
+            extra_args,
         })
     }
 
@@ -840,4 +868,11 @@ fn describe_path(path: &std::path::Path) -> (String, String) {
         full.clone()
     };
     (subtitle, full)
+}
+
+/// Split a text field into argv tokens on whitespace — same rule as Septima's
+/// "Advanced" switches. No shell interpretation, so brace expansion like
+/// `{a,b}` does not apply: type patterns/flags separately (`*.tmp *.log`).
+fn tokenize(text: &str) -> Vec<String> {
+    text.split_whitespace().map(str::to_string).collect()
 }

@@ -25,7 +25,10 @@ fn main() -> glib::ExitCode {
         .application_id(config::APP_ID)
         .build();
 
-    app.connect_startup(setup_actions);
+    app.connect_startup(|app| {
+        setup_actions(app);
+        load_css();
+    });
     app.connect_activate(|app| {
         let window = ForesightWindow::new(app);
         if config::PROFILE == "development" {
@@ -48,6 +51,23 @@ fn register_resources() {
     let resource = gio::Resource::load(&path)
         .unwrap_or_else(|e| panic!("failed to load GResource at {}: {e}", path.display()));
     gio::resources_register(&resource);
+}
+
+/// App-wide styling. Currently just a chunkier transfer progress bar.
+fn load_css() {
+    let provider = gtk::CssProvider::new();
+    provider.load_from_string(
+        "progressbar.foresight-progress > trough,
+         progressbar.foresight-progress > trough > progress { min-height: 22px; }
+         progressbar.foresight-progress > trough > progress { border-radius: 8px; }",
+    );
+    if let Some(display) = gtk::gdk::Display::default() {
+        gtk::style_context_add_provider_for_display(
+            &display,
+            &provider,
+            gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+    }
 }
 
 fn setup_actions(app: &adw::Application) {

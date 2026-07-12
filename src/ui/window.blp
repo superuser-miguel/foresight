@@ -118,6 +118,37 @@ template $ForesightWindow: Adw.ApplicationWindow {
                     active: false;       // OFF by default — safety rail
                   }
                 }
+
+                Adw.PreferencesGroup {
+                  Adw.ExpanderRow {
+                    title: _("Advanced");
+                    subtitle: _("Extra rsync options");
+
+                    Adw.SwitchRow remove_source_row {
+                      title: _("Move files");
+                      subtitle: _("Remove each source file after it transfers (--remove-source-files)");
+                    }
+
+                    Adw.SpinRow bwlimit_row {
+                      title: _("Bandwidth limit");
+                      subtitle: _("KB/s — 0 is unlimited (--bwlimit)");
+                      adjustment: Gtk.Adjustment {
+                        lower: 0;
+                        upper: 1048576;
+                        step-increment: 100;
+                        page-increment: 1000;
+                      };
+                    }
+
+                    Adw.EntryRow exclude_row {
+                      title: _("Exclude patterns — space-separated, e.g. *.tmp .git");
+                    }
+
+                    Adw.EntryRow extra_args_row {
+                      title: _("Extra arguments — e.g. --checksum --partial");
+                    }
+                  }
+                }
               };
             };
           };
@@ -150,6 +181,7 @@ template $ForesightWindow: Adw.ApplicationWindow {
 
             ProgressBar overall_progress {
               show-text: true;
+              styles ["foresight-progress"]
               // fraction driven by Progress.bytes_done — completion is
               // process exit, NEVER percent==100 (rsync can end at 99%)
             }

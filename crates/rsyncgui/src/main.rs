@@ -1,12 +1,10 @@
 //! rsyncgui — GTK4/libadwaita frontend for the bundled rsync engine.
 //!
 //! Entry point: register the compiled GResource, start an `adw::Application`,
-//! and present the composite-template window. Controls are non-functional in
-//! Milestone 1 — the engine gets wired in Milestone 3.
+//! and present the composite-template window. Milestone 3 wires the bundled
+//! rsync engine to the Preview and Transfer pages.
 
-// `job` is the argv builder (Milestone 0). It is exercised by its own unit
-// tests and gets wired to the UI in Milestone 3; silence dead-code until then.
-#[allow(dead_code)]
+mod change_object;
 mod job;
 mod window;
 

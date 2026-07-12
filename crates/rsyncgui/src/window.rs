@@ -4,16 +4,19 @@
 //! `#[template_child]` bindings below and drives them with signal handlers;
 //! this file adds no widget tree of its own.
 //!
-//! Milestone 2: the Source and Destination rows open the portal folder picker
-//! (`gtk::FileDialog::select_folder`, which GTK routes through the FileChooser
-//! portal automatically inside the Flatpak) and accept dropped folders. The
-//! path returned by the portal — often `/run/user/$UID/doc/…` for locations
-//! outside the sandbox — is stored verbatim for argv and only *cosmetically*
-//! shortened for display.
+//! Milestone 2 wired the portal folder pickers. Milestone 3 wires the engine:
+//! the Preview button runs a dry run and fills the grouped change list; the
+//! Start button runs the real sync with live progress; `--delete` requires an
+//! explicit confirmation listing the deletions taken from the dry run; and the
+//! run can be cancelled.
 
 use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gdk, gio, glib};
+
+use crate::change_object::ChangeObject;
+use crate::job::{argv_display, spawn_rsync, Completion, Job, Mode, Runner};
+use rsync_events::{Event, Severity};
 
 /// Which row a selection targets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,14 +27,22 @@ pub enum Endpoint {
 
 mod imp {
     use super::*;
-    use std::cell::RefCell;
+    use std::cell::{OnceCell, RefCell};
     use std::path::PathBuf;
 
     #[derive(Debug, Default, gtk::CompositeTemplate)]
     #[template(resource = "/io/github/CHANGEME/RsyncGUI/window.ui")]
     pub struct RsyncGuiWindow {
         #[template_child]
+        pub toast_overlay: TemplateChild<adw::ToastOverlay>,
+        #[template_child]
         pub preview_button: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub start_button: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub cancel_button: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub result_banner: TemplateChild<adw::Banner>,
         #[template_child]
         pub main_stack: TemplateChild<adw::ViewStack>,
         #[template_child]
@@ -52,6 +63,15 @@ mod imp {
         /// The real paths handed to rsync argv (never lossy-converted).
         pub source: RefCell<Option<PathBuf>>,
         pub dest: RefCell<Option<PathBuf>>,
+
+        /// Backing model for the preview list (holds `ChangeObject`s).
+        pub preview_store: OnceCell<gio::ListStore>,
+        /// The live rsync process, if one is running (held so it can cancel).
+        pub runner: RefCell<Option<Runner>>,
+        /// `rsync:` error lines collected during the current run.
+        pub run_errors: RefCell<Vec<String>>,
+        /// Deletions itemized by the most recent dry run (for confirmation).
+        pub deletions: RefCell<Vec<String>>,
     }
 
     #[glib::object_subclass]
@@ -72,7 +92,10 @@ mod imp {
     impl ObjectImpl for RsyncGuiWindow {
         fn constructed(&self) {
             self.parent_constructed();
-            self.obj().setup_rows();
+            let obj = self.obj();
+            obj.setup_rows();
+            obj.setup_preview_list();
+            obj.setup_actions();
         }
     }
     impl WidgetImpl for RsyncGuiWindow {}
@@ -94,25 +117,24 @@ impl RsyncGuiWindow {
         glib::Object::builder().property("application", app).build()
     }
 
+    // -- setup --------------------------------------------------------------
+
     /// Wire row activation (portal picker), drag-and-drop, and initial state.
     fn setup_rows(&self) {
         let imp = self.imp();
-
-        // Preview is meaningless until both endpoints are chosen.
         imp.preview_button.set_sensitive(false);
+        imp.start_button.set_sensitive(false);
 
         for (row, endpoint) in [
             (imp.source_row.get(), Endpoint::Source),
             (imp.dest_row.get(), Endpoint::Dest),
         ] {
-            // Click / Enter on the row -> portal folder picker.
             row.connect_activated(glib::clone!(
                 #[weak(rename_to = win)]
                 self,
                 move |_| win.choose_folder(endpoint)
             ));
 
-            // Drop a folder onto the row -> select it.
             let drop = gtk::DropTarget::new(gio::File::static_type(), gdk::DragAction::COPY);
             drop.connect_drop(glib::clone!(
                 #[weak(rename_to = win)]
@@ -136,7 +158,108 @@ impl RsyncGuiWindow {
         }
     }
 
-    /// Open the async folder picker for `endpoint`.
+    /// Build the sectioned preview `ListView`: rows show the change path;
+    /// section headers name the `ChangeKind` group; deletions render
+    /// destructively.
+    fn setup_preview_list(&self) {
+        let imp = self.imp();
+        let store = gio::ListStore::new::<ChangeObject>();
+
+        // Sort by kind then path so groups are contiguous; the section sorter
+        // (kind only) then draws a header per kind.
+        let sorter = gtk::CustomSorter::new(|a, b| {
+            let a = a.downcast_ref::<ChangeObject>().unwrap();
+            let b = b.downcast_ref::<ChangeObject>().unwrap();
+            a.kind_order()
+                .cmp(&b.kind_order())
+                .then_with(|| a.display().cmp(&b.display()))
+                .into()
+        });
+        let section_sorter = gtk::CustomSorter::new(|a, b| {
+            let a = a.downcast_ref::<ChangeObject>().unwrap();
+            let b = b.downcast_ref::<ChangeObject>().unwrap();
+            a.kind_order().cmp(&b.kind_order()).into()
+        });
+
+        let sort_model = gtk::SortListModel::new(Some(store.clone()), Some(sorter));
+        sort_model.set_section_sorter(Some(&section_sorter));
+        let selection = gtk::NoSelection::new(Some(sort_model));
+
+        let factory = gtk::SignalListItemFactory::new();
+        factory.connect_setup(|_, item| {
+            let label = gtk::Label::builder()
+                .xalign(0.0)
+                .ellipsize(gtk::pango::EllipsizeMode::Middle)
+                .build();
+            item.downcast_ref::<gtk::ListItem>()
+                .unwrap()
+                .set_child(Some(&label));
+        });
+        factory.connect_bind(|_, item| {
+            let item = item.downcast_ref::<gtk::ListItem>().unwrap();
+            let change = item.item().and_downcast::<ChangeObject>().unwrap();
+            let label = item.child().and_downcast::<gtk::Label>().unwrap();
+            label.set_label(&change.display());
+            if change.destructive() {
+                label.add_css_class("error");
+            } else {
+                label.remove_css_class("error");
+            }
+        });
+
+        let header_factory = gtk::SignalListItemFactory::new();
+        header_factory.connect_setup(|_, item| {
+            let label = gtk::Label::builder()
+                .xalign(0.0)
+                .css_classes(["heading"])
+                .build();
+            item.downcast_ref::<gtk::ListHeader>()
+                .unwrap()
+                .set_child(Some(&label));
+        });
+        header_factory.connect_bind(|_, item| {
+            let header = item.downcast_ref::<gtk::ListHeader>().unwrap();
+            if let Some(change) = header.item().and_downcast::<ChangeObject>() {
+                let label = header.child().and_downcast::<gtk::Label>().unwrap();
+                label.set_label(&change.kind_name());
+            }
+        });
+
+        imp.preview_list.set_model(Some(&selection));
+        imp.preview_list.set_factory(Some(&factory));
+        imp.preview_list.set_header_factory(Some(&header_factory));
+        imp.preview_store
+            .set(store)
+            .expect("preview_store set once");
+    }
+
+    /// Wire the Preview / Start / Cancel buttons.
+    fn setup_actions(&self) {
+        let imp = self.imp();
+
+        imp.preview_button.connect_clicked(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_| win.run_preview(false)
+        ));
+        imp.start_button.connect_clicked(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_| win.on_start_clicked()
+        ));
+        imp.cancel_button.connect_clicked(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_| {
+                if let Some(runner) = win.imp().runner.borrow().as_ref() {
+                    runner.cancel();
+                }
+            }
+        ));
+    }
+
+    // -- folder selection (M2) ---------------------------------------------
+
     fn choose_folder(&self, endpoint: Endpoint) {
         let title = match endpoint {
             Endpoint::Source => "Select source folder",
@@ -148,7 +271,6 @@ impl RsyncGuiWindow {
             #[weak(rename_to = win)]
             self,
             async move {
-                // Err = user dismissed the dialog; nothing to do.
                 if let Ok(file) = dialog.select_folder_future(Some(&win)).await {
                     win.set_endpoint(endpoint, &file);
                 }
@@ -156,7 +278,6 @@ impl RsyncGuiWindow {
         ));
     }
 
-    /// Store the chosen folder and reflect it in the row.
     fn set_endpoint(&self, endpoint: Endpoint, file: &gio::File) {
         let Some(path) = file.path() else {
             return;
@@ -175,23 +296,306 @@ impl RsyncGuiWindow {
             Endpoint::Source => *imp.source.borrow_mut() = Some(path),
             Endpoint::Dest => *imp.dest.borrow_mut() = Some(path),
         }
-
-        let ready = imp.source.borrow().is_some() && imp.dest.borrow().is_some();
-        imp.preview_button.set_sensitive(ready);
+        self.refresh_action_sensitivity();
     }
 
-    /// Build a [`Job`](crate::job::Job) from the current selection, if both
-    /// endpoints are set. Consumed by the engine wiring in Milestone 3.
-    #[allow(dead_code)] // wired in Milestone 3
-    pub fn current_job(&self) -> Option<crate::job::Job> {
+    fn current_job(&self) -> Option<Job> {
         let imp = self.imp();
         let source = imp.source.borrow().clone()?;
         let dest = imp.dest.borrow().clone()?;
-        Some(crate::job::Job {
+        Some(Job {
             source,
             dest,
             delete: imp.delete_row.is_active(),
         })
+    }
+
+    // -- run lifecycle (M3) -------------------------------------------------
+
+    fn both_selected(&self) -> bool {
+        let imp = self.imp();
+        imp.source.borrow().is_some() && imp.dest.borrow().is_some()
+    }
+
+    fn is_running(&self) -> bool {
+        self.imp().runner.borrow().is_some()
+    }
+
+    /// Preview and Start follow selection; both are disabled while a run is
+    /// live. Cancel is the inverse.
+    fn refresh_action_sensitivity(&self) {
+        let imp = self.imp();
+        let idle_ready = self.both_selected() && !self.is_running();
+        imp.preview_button.set_sensitive(idle_ready);
+        imp.start_button.set_sensitive(idle_ready);
+        imp.cancel_button.set_sensitive(self.is_running());
+    }
+
+    fn on_start_clicked(&self) {
+        let Some(job) = self.current_job() else {
+            return;
+        };
+        if job.delete {
+            // Always run a fresh dry run so the confirmation lists exactly the
+            // deletions this sync will perform.
+            self.run_preview(true);
+        } else {
+            self.run_sync();
+        }
+    }
+
+    /// Run `rsync -a -n -i [--delete]` and fill the preview list. When
+    /// `then_confirm_start` is set, the deletion-confirmation dialog opens once
+    /// the dry run finishes (the Start-with-delete path).
+    fn run_preview(&self, then_confirm_start: bool) {
+        let Some(job) = self.current_job() else {
+            return;
+        };
+        let imp = self.imp();
+
+        imp.result_banner.set_revealed(false);
+        imp.run_errors.borrow_mut().clear();
+        imp.deletions.borrow_mut().clear();
+        if let Some(store) = imp.preview_store.get() {
+            store.remove_all();
+        }
+        imp.main_stack.set_visible_child_name("preview");
+
+        let argv = job.build_argv(Mode::Preview);
+        let on_event = glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |ev: Event| win.on_preview_event(ev)
+        );
+        let on_done = glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |c: Completion| win.on_preview_done(c, then_confirm_start)
+        );
+
+        match spawn_rsync(argv, on_event, on_done) {
+            Ok(runner) => {
+                *imp.runner.borrow_mut() = Some(runner);
+                self.refresh_action_sensitivity();
+            }
+            Err(e) => self.report_spawn_error(&e),
+        }
+    }
+
+    fn on_preview_event(&self, ev: Event) {
+        let imp = self.imp();
+        match ev {
+            Event::Change(change) => {
+                if change.deleted {
+                    imp.deletions.borrow_mut().push(change.path.clone());
+                }
+                if let Some(store) = imp.preview_store.get() {
+                    store.append(&ChangeObject::new(&change));
+                }
+            }
+            Event::Message(m) if m.is_error => imp.run_errors.borrow_mut().push(m.text),
+            Event::Message(_) | Event::Progress(_) => {}
+        }
+    }
+
+    fn on_preview_done(&self, completion: Completion, then_confirm_start: bool) {
+        let imp = self.imp();
+        *imp.runner.borrow_mut() = None;
+        self.refresh_action_sensitivity();
+
+        // A dry run that itself failed (e.g. bad path) shouldn't proceed to a
+        // real sync; surface it and stop.
+        if completion.severity == Severity::Error {
+            self.show_completion(completion);
+            return;
+        }
+        if matches!(completion.severity, Severity::Partial) {
+            self.show_banner(&completion.message);
+        }
+
+        if then_confirm_start {
+            self.confirm_deletions_then_sync();
+        } else {
+            let n = imp.preview_store.get().map(|s| s.n_items()).unwrap_or(0);
+            self.toast(&format!("Preview: {n} change(s)"));
+        }
+    }
+
+    fn run_sync(&self) {
+        let Some(job) = self.current_job() else {
+            return;
+        };
+        let imp = self.imp();
+
+        imp.result_banner.set_revealed(false);
+        imp.run_errors.borrow_mut().clear();
+        imp.overall_progress.set_fraction(0.0);
+        imp.overall_progress.set_text(Some("Starting…"));
+        imp.current_file_label.set_label("");
+        imp.main_stack.set_visible_child_name("transfer");
+
+        let argv = job.build_argv(Mode::Sync);
+        // Show the exact command for transparency (display only — never re-parsed).
+        let buffer = imp.log_view.buffer();
+        buffer.set_text(&format!("$ rsync {}\n\n", argv_display(&argv)));
+        let on_event = glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |ev: Event| win.on_sync_event(ev)
+        );
+        let on_done = glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |c: Completion| win.on_sync_done(c)
+        );
+
+        match spawn_rsync(argv, on_event, on_done) {
+            Ok(runner) => {
+                *imp.runner.borrow_mut() = Some(runner);
+                self.refresh_action_sensitivity();
+            }
+            Err(e) => self.report_spawn_error(&e),
+        }
+    }
+
+    fn on_sync_event(&self, ev: Event) {
+        let imp = self.imp();
+        match ev {
+            Event::Change(change) => {
+                imp.current_file_label.set_label(&change.path);
+            }
+            Event::Progress(p) => {
+                imp.overall_progress
+                    .set_fraction(f64::from(p.percent) / 100.0);
+                let text = if p.scanning() {
+                    "Scanning…".to_string()
+                } else {
+                    format!("{}%  ·  {}  ·  {}", p.percent, p.rate_human, p.elapsed)
+                };
+                imp.overall_progress.set_text(Some(&text));
+            }
+            Event::Message(m) => {
+                if m.is_error {
+                    imp.run_errors.borrow_mut().push(m.text.clone());
+                }
+                let buffer = imp.log_view.buffer();
+                let mut end = buffer.end_iter();
+                buffer.insert(&mut end, &m.text);
+                buffer.insert(&mut end, "\n");
+            }
+        }
+    }
+
+    fn on_sync_done(&self, completion: Completion) {
+        let imp = self.imp();
+        *imp.runner.borrow_mut() = None;
+        self.refresh_action_sensitivity();
+        // Completion is process exit, never percent==100 (rsync can end at 99%).
+        if completion.severity == Severity::Success {
+            imp.overall_progress.set_fraction(1.0);
+            imp.overall_progress.set_text(Some("Done"));
+        }
+        self.show_completion(completion);
+    }
+
+    // -- completion / confirmation UI --------------------------------------
+
+    /// Map a [`Completion`] to the right surface: toast (success), banner
+    /// (partial 23/24/25 — never a failure wall), toast (cancelled), or a
+    /// details dialog (error).
+    fn show_completion(&self, completion: Completion) {
+        match completion.severity {
+            Severity::Success => self.toast(&completion.message),
+            Severity::Cancelled => self.toast("Sync cancelled."),
+            Severity::Partial => self.show_banner(&completion.message),
+            Severity::Error => {
+                self.show_error_dialog_with_code(&completion.message, completion.code)
+            }
+        }
+    }
+
+    fn confirm_deletions_then_sync(&self) {
+        let deletions = self.imp().deletions.borrow().clone();
+        if deletions.is_empty() {
+            // --delete on, but the dry run found nothing to remove.
+            self.run_sync();
+            return;
+        }
+
+        let body = {
+            const MAX: usize = 20;
+            let mut lines: Vec<String> = deletions.iter().take(MAX).cloned().collect();
+            if deletions.len() > MAX {
+                lines.push(format!("…and {} more", deletions.len() - MAX));
+            }
+            lines.join("\n")
+        };
+
+        let dialog = adw::AlertDialog::builder()
+            .heading(format!(
+                "Delete {} file(s) in the destination?",
+                deletions.len()
+            ))
+            .body(body)
+            .build();
+        dialog.add_response("cancel", "Cancel");
+        dialog.add_response("sync", "Delete and Sync");
+        dialog.set_response_appearance("sync", adw::ResponseAppearance::Destructive);
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_close_response("cancel");
+
+        dialog.connect_response(
+            None,
+            glib::clone!(
+                #[weak(rename_to = win)]
+                self,
+                move |_, response| {
+                    if response == "sync" {
+                        win.run_sync();
+                    }
+                }
+            ),
+        );
+        dialog.present(Some(self));
+    }
+
+    fn show_error_dialog(&self, message: &str) {
+        self.show_error_dialog_with_code(message, None);
+    }
+
+    fn show_error_dialog_with_code(&self, message: &str, code: Option<i32>) {
+        let errors = self.imp().run_errors.borrow();
+        let mut body = message.to_string();
+        if let Some(code) = code {
+            body.push_str(&format!("\n\nrsync exit code {code}."));
+        }
+        if !errors.is_empty() {
+            body.push_str("\n\n");
+            body.push_str(&errors.join("\n"));
+        }
+        let dialog = adw::AlertDialog::builder()
+            .heading("Sync failed")
+            .body(body)
+            .build();
+        dialog.add_response("ok", "Close");
+        dialog.set_default_response(Some("ok"));
+        dialog.present(Some(self));
+    }
+
+    fn report_spawn_error(&self, error: &glib::Error) {
+        *self.imp().runner.borrow_mut() = None;
+        self.refresh_action_sensitivity();
+        self.show_error_dialog(&format!("Could not start rsync: {error}"));
+    }
+
+    fn show_banner(&self, text: &str) {
+        let banner = self.imp().result_banner.get();
+        banner.set_title(text);
+        banner.set_revealed(true);
+    }
+
+    fn toast(&self, text: &str) {
+        self.imp().toast_overlay.add_toast(adw::Toast::new(text));
     }
 }
 

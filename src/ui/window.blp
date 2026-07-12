@@ -1,8 +1,9 @@
-// window.blp — main window skeleton (Milestone 1)
+// window.blp — main window skeleton
 // Compile check: blueprint-compiler compile src/ui/window.blp
 //
-// Structure: AdwToolbarView -> AdwViewStack with three pages that mirror the
-// job lifecycle: configure -> preview (dry run) -> transfer (live progress).
+// Structure: AdwToastOverlay -> AdwToolbarView -> AdwViewStack with three pages
+// that mirror the job lifecycle: configure -> preview (dry run) -> transfer
+// (live progress).
 
 using Gtk 4.0;
 using Adw 1;
@@ -12,116 +13,141 @@ template $RsyncGuiWindow: Adw.ApplicationWindow {
   default-width: 860;
   default-height: 640;
 
-  content: Adw.ToolbarView {
-    [top]
-    Adw.HeaderBar {
-      [start]
-      Button preview_button {
-        label: _("Preview");
-        styles ["suggested-action"]
-        // dry run: -n -i --delete? -> populates the preview page
+  content: Adw.ToastOverlay toast_overlay {
+    child: Adw.ToolbarView {
+      [top]
+      Adw.HeaderBar {
+        [start]
+        Button preview_button {
+          label: _("Preview");
+          // dry run: -a -n -i [--delete] -> populates the preview page
+        }
+
+        [start]
+        Button start_button {
+          label: _("Start Sync");
+          sensitive: false;
+          styles ["suggested-action"]
+          // real run: -a --info=progress2 --out-format='%i %n%L' [--delete]
+        }
+
+        title-widget: Adw.ViewSwitcher {
+          stack: main_stack;
+          policy: wide;
+        };
+
+        [end]
+        MenuButton {
+          icon-name: "open-menu-symbolic";
+          menu-model: primary_menu;
+          primary: true;
+        }
       }
 
-      title-widget: Adw.ViewSwitcher {
-        stack: main_stack;
-        policy: wide;
-      };
-
-      [end]
-      MenuButton {
-        icon-name: "open-menu-symbolic";
-        menu-model: primary_menu;
-        primary: true;
+      [top]
+      Adw.Banner result_banner {
+        revealed: false;
       }
-    }
 
-    content: Adw.ViewStack main_stack {
+      content: Adw.ViewStack main_stack {
 
-      Adw.ViewStackPage {
-        name: "configure";
-        title: _("Configure");
-        icon-name: "folder-symbolic";
-        child: Adw.StatusPage {
-          title: _("Choose what to sync");
-          description: _("Source and destination are selected through the file portal — no filesystem permissions required.");
+        Adw.ViewStackPage {
+          name: "configure";
+          title: _("Configure");
+          icon-name: "folder-symbolic";
+          child: Adw.StatusPage {
+            title: _("Choose what to sync");
+            description: _("Source and destination are selected through the file portal — no filesystem permissions required.");
+            child: Box {
+              orientation: vertical;
+              spacing: 12;
+              halign: center;
+
+              Adw.PreferencesGroup {
+                Adw.ActionRow source_row {
+                  title: _("Source");
+                  subtitle: _("Not selected");
+                  activatable: true;   // -> Gtk.FileDialog.select_folder()
+                  [suffix]
+                  Image { icon-name: "folder-open-symbolic"; }
+                }
+
+                Adw.ActionRow dest_row {
+                  title: _("Destination");
+                  subtitle: _("Not selected");
+                  activatable: true;
+                  [suffix]
+                  Image { icon-name: "folder-open-symbolic"; }
+                }
+
+                Adw.SwitchRow delete_row {
+                  title: _("Mirror deletions");
+                  subtitle: _("Remove destination files that no longer exist in the source (--delete)");
+                  active: false;       // OFF by default — safety rail
+                }
+              }
+            };
+          };
+        }
+
+        Adw.ViewStackPage {
+          name: "preview";
+          title: _("Preview");
+          icon-name: "view-list-symbolic";
+          child: ScrolledWindow {
+            // ListView bound to a GListStore of ItemizedChange events,
+            // grouped by ChangeKind: created / updated / deleted / attrs
+            child: ListView preview_list {
+              styles ["rich-list"]
+            };
+          };
+        }
+
+        Adw.ViewStackPage {
+          name: "transfer";
+          title: _("Transfer");
+          icon-name: "emblem-synchronizing-symbolic";
           child: Box {
             orientation: vertical;
             spacing: 12;
-            halign: center;
+            margin-top: 24;
+            margin-start: 24;
+            margin-end: 24;
+            margin-bottom: 24;
 
-            Adw.PreferencesGroup {
-              Adw.ActionRow source_row {
-                title: _("Source");
-                subtitle: _("Not selected");
-                activatable: true;   // -> Gtk.FileDialog.select_folder()
-                [suffix]
-                Image { icon-name: "folder-open-symbolic"; }
-              }
+            ProgressBar overall_progress {
+              show-text: true;
+              // fraction driven by Progress.bytes_done — completion is
+              // process exit, NEVER percent==100 (rsync can end at 99%)
+            }
 
-              Adw.ActionRow dest_row {
-                title: _("Destination");
-                subtitle: _("Not selected");
-                activatable: true;
-                [suffix]
-                Image { icon-name: "folder-open-symbolic"; }
-              }
+            Label current_file_label {
+              ellipsize: middle;
+              xalign: 0;
+              styles ["dim-label"]
+            }
 
-              Adw.SwitchRow delete_row {
-                title: _("Mirror deletions");
-                subtitle: _("Remove destination files that no longer exist in the source (--delete)");
-                active: false;       // OFF by default — safety rail
-              }
+            Expander {
+              label: _("Log");
+              vexpand: true;
+              child: ScrolledWindow {
+                min-content-height: 200;
+                child: TextView log_view {
+                  editable: false;
+                  monospace: true;
+                };
+              };
+            }
+
+            Button cancel_button {
+              label: _("Cancel");
+              halign: end;
+              sensitive: false;
+              styles ["destructive-action"]
             }
           };
-        };
-      }
-
-      Adw.ViewStackPage {
-        name: "preview";
-        title: _("Preview");
-        icon-name: "view-list-symbolic";
-        child: ScrolledWindow {
-          // ListView bound to a GListStore of ItemizedChange events,
-          // grouped by ChangeKind: created / updated / deleted / attrs
-          child: ListView preview_list {};
-        };
-      }
-
-      Adw.ViewStackPage {
-        name: "transfer";
-        title: _("Transfer");
-        icon-name: "emblem-synchronizing-symbolic";
-        child: Box {
-          orientation: vertical;
-          spacing: 12;
-          margin-top: 24;
-          margin-start: 24;
-          margin-end: 24;
-
-          ProgressBar overall_progress {
-            show-text: true;
-            // fraction driven by Progress.bytes_done — completion is
-            // process exit, NEVER percent==100 (rsync can end at 99%)
-          }
-
-          Label current_file_label {
-            ellipsize: middle;
-            xalign: 0;
-            styles ["dim-label"]
-          }
-
-          Expander {
-            label: _("Log");
-            child: ScrolledWindow {
-              min-content-height: 200;
-              child: TextView log_view {
-                editable: false;
-                monospace: true;
-              };
-            };
-          }
-        };
-      }
+        }
+      };
     };
   };
 }

@@ -297,6 +297,57 @@ impl RsyncGuiWindow {
                 }
             }
         ));
+
+        // "New Job" (win.new-job): clear the whole form to start fresh.
+        let new_job = gio::SimpleAction::new("new-job", None);
+        new_job.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| win.clear_job()
+        ));
+        self.add_action(&new_job);
+
+        // The partial-result banner offers a one-tap reset.
+        imp.result_banner.set_button_label(Some("New Job"));
+        imp.result_banner.connect_button_clicked(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_| win.clear_job()
+        ));
+    }
+
+    /// Reset the window to an empty Configure page for a new transfer. Ignored
+    /// while a run is live.
+    fn clear_job(&self) {
+        if self.is_running() {
+            return;
+        }
+        let imp = self.imp();
+
+        // Sources: drop every row and the backing list.
+        for entry in imp.sources.borrow_mut().drain(..) {
+            imp.sources_group.remove(&entry.row);
+        }
+        // Destination.
+        *imp.dest.borrow_mut() = None;
+        imp.dest_row.set_subtitle("Not selected");
+        imp.dest_row.set_tooltip_text(None);
+        imp.delete_row.set_active(false);
+
+        // Results from any previous run.
+        if let Some(store) = imp.preview_store.get() {
+            store.remove_all();
+        }
+        imp.run_errors.borrow_mut().clear();
+        imp.deletions.borrow_mut().clear();
+        imp.log_view.buffer().set_text("");
+        imp.overall_progress.set_fraction(0.0);
+        imp.overall_progress.set_text(None);
+        imp.current_file_label.set_label("");
+        imp.result_banner.set_revealed(false);
+
+        imp.main_stack.set_visible_child_name("configure");
+        self.refresh_sources_state();
     }
 
     // -- source list & destination selection -------------------------------
@@ -670,7 +721,15 @@ impl RsyncGuiWindow {
     /// details dialog (error).
     fn show_completion(&self, completion: Completion) {
         match completion.severity {
-            Severity::Success => self.toast(&completion.message),
+            // A finished transfer offers a one-tap reset for the next job.
+            Severity::Success => {
+                let toast = adw::Toast::builder()
+                    .title(&completion.message)
+                    .button_label("New Job")
+                    .action_name("win.new-job")
+                    .build();
+                self.imp().toast_overlay.add_toast(toast);
+            }
             Severity::Cancelled => self.toast("Sync cancelled."),
             Severity::Partial => self.show_banner(&completion.message),
             Severity::Error => {

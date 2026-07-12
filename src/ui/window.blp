@@ -188,6 +188,12 @@ template $RsyncGuiWindow: Adw.ApplicationWindow {
 menu primary_menu {
   section {
     item {
+      label: _("_New Job");
+      action: "win.new-job";
+    }
+  }
+  section {
+    item {
       label: _("_Keyboard Shortcuts");
       action: "win.show-help-overlay";
     }

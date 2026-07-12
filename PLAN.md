@@ -120,17 +120,20 @@ widget trees in Rust when a Blueprint template can express them.
 Goal: Source and Destination rows open the portal folder picker and remember
 the choice for the session.
 
-- [ ] Use `gtk::FileDialog::select_folder()` (async — pair with
+- [x] Use `gtk::FileDialog::select_folder()` (async — pair with
       `glib::spawn_future_local`). Inside a Flatpak, GTK routes this through
       the FileChooser portal automatically — there is no separate "portal
       API" to call. Do not use deprecated `FileChooserDialog`.
-- [ ] Display the selection in the row subtitle. Expect `gio::File` paths
+- [x] Display the selection in the row subtitle. Expect `gio::File` paths
       under `/run/user/$UID/doc/…` for locations outside the sandbox —
       cosmetically map them for display (`file.basename()` + tooltip with
       full path) but always pass the **real returned path** to rsync argv.
-- [ ] Verify the bundled rsync can read/write the portal-granted paths with a
+      → `describe_path()`; real path stored in `imp.source`/`imp.dest`.
+- [x] Verify the bundled rsync can read/write the portal-granted paths with a
       real small sync (this validates the whole sandbox model — do it early).
-- [ ] Drag-and-drop of a folder onto either row sets it (GTK4
+      → validated via `flatpak document-export` doc paths: dry-run + real
+        sync succeed with **no `--filesystem`**, output matches the parser.
+- [x] Drag-and-drop of a folder onto either row sets it (GTK4
       `gtk::DropTarget` with the `gio::File` GType).
 
 Known limitation to design around, not against: **portal folder grants do not

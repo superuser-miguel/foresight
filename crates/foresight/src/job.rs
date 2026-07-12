@@ -54,8 +54,10 @@ pub struct Job {
     /// `--remove-source-files`: delete each source file after it transfers
     /// (turns a copy into a move). No effect during the `-n` dry run.
     pub remove_source_files: bool,
-    /// `--bwlimit=<KB/s>`. `None`/`Some(0)` means unlimited (flag omitted).
-    pub bwlimit: Option<u32>,
+    /// `--bwlimit=<RATE>`, where RATE is an rsync rate token with a unit suffix
+    /// (`"85M"`, `"500K"`, `"2G"` — rsync's default unit is KiB/s). `None` or an
+    /// empty string means unlimited (the flag is omitted).
+    pub bwlimit: Option<String>,
     /// One `--exclude=<pattern>` per entry (filters files; format unchanged).
     pub excludes: Vec<String>,
     /// Extra rsync arguments, already tokenised (never shell-interpreted).
@@ -103,9 +105,9 @@ impl Job {
         if self.remove_source_files {
             argv.push(OsString::from("--remove-source-files"));
         }
-        if let Some(kb) = self.bwlimit {
-            if kb > 0 {
-                argv.push(OsString::from(format!("--bwlimit={kb}")));
+        if let Some(rate) = &self.bwlimit {
+            if !rate.is_empty() {
+                argv.push(OsString::from(format!("--bwlimit={rate}")));
             }
         }
         for pattern in &self.excludes {
@@ -455,7 +457,7 @@ mod tests {
             sources: vec![dir_source("/s")],
             dest: PathBuf::from("/d"),
             remove_source_files: true,
-            bwlimit: Some(500),
+            bwlimit: Some("85M".into()),
             excludes: vec!["*.tmp".into(), ".git".into()],
             extra_args: vec!["--checksum".into(), "--partial".into()],
             ..Default::default()
@@ -463,7 +465,7 @@ mod tests {
         let argv = job.build_argv(Mode::Sync);
         let has = |s: &str| argv.iter().any(|a| a.as_bytes() == s.as_bytes());
         assert!(has("--remove-source-files"));
-        assert!(has("--bwlimit=500"));
+        assert!(has("--bwlimit=85M"));
         assert!(has("--exclude=*.tmp"));
         assert!(has("--exclude=.git"));
         assert!(has("--checksum"));
@@ -471,8 +473,8 @@ mod tests {
     }
 
     #[test]
-    fn bwlimit_zero_and_none_omit_the_flag() {
-        for bw in [None, Some(0)] {
+    fn bwlimit_none_or_empty_omits_the_flag() {
+        for bw in [None, Some(String::new())] {
             let job = Job {
                 sources: vec![dir_source("/s")],
                 dest: PathBuf::from("/d"),
@@ -484,6 +486,21 @@ mod tests {
                 .iter()
                 .any(|a| a.as_bytes().starts_with(b"--bwlimit")));
         }
+    }
+
+    #[test]
+    fn bwlimit_carries_the_unit_suffix() {
+        // 85 MB/s must reach rsync as --bwlimit=85M, not a raw KB number.
+        let job = Job {
+            sources: vec![dir_source("/s")],
+            dest: PathBuf::from("/d"),
+            bwlimit: Some("85M".into()),
+            ..Default::default()
+        };
+        assert!(job
+            .build_argv(Mode::Sync)
+            .iter()
+            .any(|a| a.as_bytes() == b"--bwlimit=85M"));
     }
 
     #[test]

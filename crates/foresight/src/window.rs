@@ -65,6 +65,8 @@ mod imp {
         #[template_child]
         pub bwlimit_row: TemplateChild<adw::SpinRow>,
         #[template_child]
+        pub bwlimit_unit_row: TemplateChild<adw::ComboRow>,
+        #[template_child]
         pub exclude_row: TemplateChild<adw::EntryRow>,
         #[template_child]
         pub extra_args_row: TemplateChild<adw::EntryRow>,
@@ -345,6 +347,7 @@ impl ForesightWindow {
         // Advanced options.
         imp.remove_source_row.set_active(false);
         imp.bwlimit_row.set_value(0.0);
+        imp.bwlimit_unit_row.set_selected(1); // MB/s
         imp.exclude_row.set_text("");
         imp.extra_args_row.set_text("");
 
@@ -534,9 +537,17 @@ impl ForesightWindow {
         // shell-interpreted); an empty bandwidth limit means unlimited.
         let excludes = tokenize(&imp.exclude_row.text());
         let extra_args = tokenize(&imp.extra_args_row.text());
-        let bwlimit = match imp.bwlimit_row.value() as u32 {
+        // Value + unit -> an rsync rate token like "85M"; 0 means unlimited.
+        let bwlimit = match imp.bwlimit_row.value() as u64 {
             0 => None,
-            kb => Some(kb),
+            n => {
+                let suffix = match imp.bwlimit_unit_row.selected() {
+                    0 => "K",
+                    2 => "G",
+                    _ => "M", // index 1 (MB/s) is the default
+                };
+                Some(format!("{n}{suffix}"))
+            }
         };
 
         Some(Job {

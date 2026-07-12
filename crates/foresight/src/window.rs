@@ -18,6 +18,7 @@ use std::path::PathBuf;
 
 use crate::change_object::ChangeObject;
 use crate::job::{argv_display, spawn_rsync, Completion, Job, Mode, Runner, Source};
+use crate::profiles::{self, Profile};
 use rsync_events::{Event, Severity};
 
 /// One source shown in the list: its real path, whether it is a directory,
@@ -31,7 +32,7 @@ pub struct SourceEntry {
 
 mod imp {
     use super::*;
-    use std::cell::{OnceCell, RefCell};
+    use std::cell::{Cell, OnceCell, RefCell};
 
     #[derive(Debug, Default, gtk::CompositeTemplate)]
     #[template(resource = "/io/github/superuser_miguel/Foresight/window.ui")]
@@ -71,6 +72,12 @@ mod imp {
         #[template_child]
         pub extra_args_row: TemplateChild<adw::EntryRow>,
         #[template_child]
+        pub preset_combo: TemplateChild<adw::ComboRow>,
+        #[template_child]
+        pub save_preset_button: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub delete_preset_button: TemplateChild<gtk::Button>,
+        #[template_child]
         pub preview_list: TemplateChild<gtk::ListView>,
         #[template_child]
         pub overall_progress: TemplateChild<gtk::ProgressBar>,
@@ -92,6 +99,11 @@ mod imp {
         pub run_errors: RefCell<Vec<String>>,
         /// Deletions itemized by the most recent dry run (for confirmation).
         pub deletions: RefCell<Vec<String>>,
+
+        /// Saved Advanced-option presets, in combo order.
+        pub profiles: RefCell<Vec<Profile>>,
+        /// Guards the preset combo's notify handler during programmatic rebuilds.
+        pub suppress_combo: Cell<bool>,
     }
 
     #[glib::object_subclass]
@@ -116,6 +128,7 @@ mod imp {
             obj.setup_rows();
             obj.setup_preview_list();
             obj.setup_actions();
+            obj.setup_presets();
         }
     }
     impl WidgetImpl for ForesightWindow {}
@@ -350,6 +363,10 @@ impl ForesightWindow {
         imp.bwlimit_unit_row.set_selected(1); // MB/s
         imp.exclude_row.set_text("");
         imp.extra_args_row.set_text("");
+        imp.suppress_combo.set(true);
+        imp.preset_combo.set_selected(0);
+        imp.suppress_combo.set(false);
+        imp.delete_preset_button.set_sensitive(false);
 
         // Results from any previous run.
         if let Some(store) = imp.preview_store.get() {
@@ -532,12 +549,23 @@ impl ForesightWindow {
             return None;
         }
         let dest = imp.dest.borrow().clone()?;
+        let adv = self.read_advanced();
+        Some(Job {
+            sources,
+            dest,
+            delete: adv.delete,
+            remove_source_files: adv.remove_source_files,
+            bwlimit: adv.bwlimit,
+            excludes: adv.excludes,
+            extra_args: adv.extra_args,
+        })
+    }
 
-        // Advanced options. Text fields are tokenised on whitespace (never
-        // shell-interpreted); an empty bandwidth limit means unlimited.
-        let excludes = tokenize(&imp.exclude_row.text());
-        let extra_args = tokenize(&imp.extra_args_row.text());
-        // Value + unit -> an rsync rate token like "85M"; 0 means unlimited.
+    /// Snapshot the Advanced controls into a [`Profile`] (paths excluded). Text
+    /// fields are tokenised on whitespace (never shell-interpreted); an empty
+    /// bandwidth limit means unlimited.
+    fn read_advanced(&self) -> Profile {
+        let imp = self.imp();
         let bwlimit = match imp.bwlimit_row.value() as u64 {
             0 => None,
             n => {
@@ -549,16 +577,159 @@ impl ForesightWindow {
                 Some(format!("{n}{suffix}"))
             }
         };
-
-        Some(Job {
-            sources,
-            dest,
+        Profile {
+            name: String::new(),
             delete: imp.delete_row.is_active(),
             remove_source_files: imp.remove_source_row.is_active(),
             bwlimit,
-            excludes,
-            extra_args,
-        })
+            excludes: tokenize(&imp.exclude_row.text()),
+            extra_args: tokenize(&imp.extra_args_row.text()),
+        }
+    }
+
+    /// Push a preset's options into the Advanced controls. `--delete` is only
+    /// set when its switch is currently allowed (the single-folder mirror case).
+    fn apply_advanced(&self, p: &Profile) {
+        let imp = self.imp();
+        imp.remove_source_row.set_active(p.remove_source_files);
+        let (value, unit) = parse_bwlimit(p.bwlimit.as_deref().unwrap_or(""));
+        imp.bwlimit_row.set_value(value);
+        imp.bwlimit_unit_row.set_selected(unit);
+        imp.exclude_row.set_text(&p.excludes.join(" "));
+        imp.extra_args_row.set_text(&p.extra_args.join(" "));
+        imp.delete_row
+            .set_active(p.delete && imp.delete_row.is_sensitive());
+    }
+
+    // -- presets (M4) -------------------------------------------------------
+
+    fn setup_presets(&self) {
+        let imp = self.imp();
+        *imp.profiles.borrow_mut() = profiles::load();
+        self.rebuild_preset_combo(0);
+
+        imp.preset_combo.connect_selected_notify(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_| win.on_preset_selected()
+        ));
+        imp.save_preset_button.connect_clicked(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_| win.prompt_save_preset()
+        ));
+        imp.delete_preset_button.connect_clicked(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_| win.delete_selected_preset()
+        ));
+    }
+
+    /// Rebuild the combo model as `["Choose a preset…", <names…>]` and select
+    /// `select` (0 = the placeholder), without firing the apply handler.
+    fn rebuild_preset_combo(&self, select: u32) {
+        let imp = self.imp();
+        imp.suppress_combo.set(true);
+        let list = gtk::StringList::new(&["Choose a preset…"]);
+        for p in imp.profiles.borrow().iter() {
+            list.append(&p.name);
+        }
+        imp.preset_combo.set_model(Some(&list));
+        imp.preset_combo.set_selected(select);
+        imp.suppress_combo.set(false);
+        imp.delete_preset_button.set_sensitive(select > 0);
+    }
+
+    fn on_preset_selected(&self) {
+        let imp = self.imp();
+        if imp.suppress_combo.get() {
+            return;
+        }
+        let idx = imp.preset_combo.selected();
+        imp.delete_preset_button.set_sensitive(idx > 0);
+        if idx == 0 {
+            return;
+        }
+        let profile = imp.profiles.borrow().get((idx - 1) as usize).cloned();
+        if let Some(p) = profile {
+            self.apply_advanced(&p);
+        }
+    }
+
+    fn prompt_save_preset(&self) {
+        let entry = gtk::Entry::builder()
+            .placeholder_text("Preset name")
+            .activates_default(true)
+            .build();
+        let dialog = adw::AlertDialog::builder()
+            .heading("Save preset")
+            .body("Save the current Advanced options under a name.")
+            .extra_child(&entry)
+            .build();
+        dialog.add_response("cancel", "Cancel");
+        dialog.add_response("save", "Save");
+        dialog.set_response_appearance("save", adw::ResponseAppearance::Suggested);
+        dialog.set_default_response(Some("save"));
+        dialog.set_close_response("cancel");
+
+        dialog.connect_response(
+            None,
+            glib::clone!(
+                #[weak(rename_to = win)]
+                self,
+                #[weak]
+                entry,
+                move |_, response| {
+                    if response == "save" {
+                        let name = entry.text().trim().to_string();
+                        if !name.is_empty() {
+                            win.upsert_preset(name);
+                        }
+                    }
+                }
+            ),
+        );
+        dialog.present(Some(self));
+    }
+
+    fn upsert_preset(&self, name: String) {
+        let imp = self.imp();
+        let mut profile = self.read_advanced();
+        profile.name = name.clone();
+
+        let snapshot = {
+            let mut profiles = imp.profiles.borrow_mut();
+            match profiles.iter_mut().find(|p| p.name == name) {
+                Some(existing) => *existing = profile,
+                None => profiles.push(profile),
+            }
+            profiles.clone()
+        };
+        profiles::save_all(&snapshot);
+
+        let idx = snapshot.iter().position(|p| p.name == name).unwrap() as u32 + 1;
+        self.rebuild_preset_combo(idx);
+        self.toast(&format!("Saved preset “{name}”"));
+    }
+
+    fn delete_selected_preset(&self) {
+        let imp = self.imp();
+        let idx = imp.preset_combo.selected();
+        if idx == 0 {
+            return;
+        }
+        let i = (idx - 1) as usize;
+        let snapshot = {
+            let mut profiles = imp.profiles.borrow_mut();
+            if i >= profiles.len() {
+                return;
+            }
+            let removed = profiles.remove(i);
+            self.toast(&format!("Deleted preset “{}”", removed.name));
+            profiles.clone()
+        };
+        profiles::save_all(&snapshot);
+        self.rebuild_preset_combo(0);
     }
 
     // -- run lifecycle (M3) -------------------------------------------------
@@ -886,4 +1057,42 @@ fn describe_path(path: &std::path::Path) -> (String, String) {
 /// `{a,b}` does not apply: type patterns/flags separately (`*.tmp *.log`).
 fn tokenize(text: &str) -> Vec<String> {
     text.split_whitespace().map(str::to_string).collect()
+}
+
+/// Parse an rsync rate token (`"85M"`, `"500K"`, `"2G"`, or a bare number =
+/// KiB/s) back into `(spin value, unit index)` where the unit index is
+/// `0=KB/s, 1=MB/s, 2=GB/s`. Empty → `(0, MB/s)`.
+fn parse_bwlimit(token: &str) -> (f64, u32) {
+    let t = token.trim();
+    if t.is_empty() {
+        return (0.0, 1);
+    }
+    let (num, unit) = match t.as_bytes().last() {
+        Some(b'K' | b'k') => (&t[..t.len() - 1], 0),
+        Some(b'M' | b'm') => (&t[..t.len() - 1], 1),
+        Some(b'G' | b'g') => (&t[..t.len() - 1], 2),
+        _ => (t, 0), // a bare number is KiB/s in rsync
+    };
+    (num.trim().parse::<f64>().unwrap_or(0.0), unit)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_bwlimit, tokenize};
+
+    #[test]
+    fn bwlimit_token_parses_value_and_unit() {
+        assert_eq!(parse_bwlimit("85M"), (85.0, 1));
+        assert_eq!(parse_bwlimit("500K"), (500.0, 0));
+        assert_eq!(parse_bwlimit("2G"), (2.0, 2));
+        assert_eq!(parse_bwlimit("85m"), (85.0, 1)); // case-insensitive suffix
+        assert_eq!(parse_bwlimit("500"), (500.0, 0)); // bare number = KiB/s
+        assert_eq!(parse_bwlimit(""), (0.0, 1)); // unlimited, default unit MB/s
+    }
+
+    #[test]
+    fn tokenize_splits_on_whitespace() {
+        assert_eq!(tokenize("  *.tmp   .git "), vec!["*.tmp", ".git"]);
+        assert!(tokenize("").is_empty());
+    }
 }

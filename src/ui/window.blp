@@ -120,6 +120,32 @@ template $ForesightWindow: Adw.ApplicationWindow {
                 }
 
                 Adw.PreferencesGroup {
+                  title: _("Presets");
+                  description: _("Reusable Advanced-option sets (not the source or destination)");
+
+                  [header-suffix]
+                  Button save_preset_button {
+                    icon-name: "document-save-symbolic";
+                    tooltip-text: _("Save the current Advanced options as a preset");
+                    valign: center;
+                    styles ["flat"]
+                  }
+
+                  Adw.ComboRow preset_combo {
+                    title: _("Apply a preset");
+
+                    [suffix]
+                    Button delete_preset_button {
+                      icon-name: "user-trash-symbolic";
+                      tooltip-text: _("Delete the selected preset");
+                      valign: center;
+                      sensitive: false;
+                      styles ["flat"]
+                    }
+                  }
+                }
+
+                Adw.PreferencesGroup {
                   Adw.ExpanderRow {
                     title: _("Advanced");
                     subtitle: _("Extra rsync options");

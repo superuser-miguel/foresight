@@ -6,6 +6,7 @@
 
 mod change_object;
 mod job;
+mod profiles;
 mod window;
 
 mod config {

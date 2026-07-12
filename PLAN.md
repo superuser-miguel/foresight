@@ -185,6 +185,30 @@ with live progress.
 Saved profiles, excludes editor, appstream metainfo + screenshots, Flathub
 submission. Tracked in the roadmap deck; not specced here yet.
 
+- [ ] **Help / capability disclosure.** A Help surface (dialog opened from the
+      primary menu) that states *explicitly and honestly* which rsync
+      capabilities Foresight exposes **in this release** — no aspirational
+      claims. Design constraints:
+      - **Registry-driven, not hand-written.** Define one in-code table of
+        exposed capabilities next to `job.rs::build_argv` — each entry is
+        `{ rsync flag(s), the UI control it maps to, one-line description,
+        man-rsync option name }`. The Help renders from this table, and
+        `build_argv` should only ever emit flags that appear in it.
+      - **Enforce truthfulness with a test:** every flag `build_argv` can emit
+        must have a registry entry (and vice versa). This makes drift a test
+        failure, so the Help can never lie about what the app does.
+      - **Compare to the real engine, not a copy of the man page.** Don't
+        reproduce `man rsync`. Reference the exact option names, and offer a
+        "Full rsync options" action that runs the **bundled** rsync
+        (`rsync --help`, pinned 3.4.4) and shows its output — accurate to the
+        shipped version by construction.
+      - **Name the boundary.** List common flags Foresight does *not* expose as
+        dedicated controls yet (e.g. `--checksum`, `--compress`, `--backup`,
+        remote/ssh, a filter-rules file) and point users to the Advanced →
+        Extra arguments field for them.
+      - Stamp the page with the app version + bundled rsync version, since the
+        version pin **is** the behavior contract (§2).
+
 ## 5. Flatpak permissions policy
 
 The manifest's `finish-args` are a contract. Claude Code must never add a

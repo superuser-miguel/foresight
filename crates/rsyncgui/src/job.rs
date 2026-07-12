@@ -27,42 +27,61 @@ pub enum Mode {
     Sync,
 }
 
+/// One selected source: a path and whether it is a directory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Source {
+    pub path: PathBuf,
+    pub is_dir: bool,
+}
+
 /// A configured sync. The preview and the real run are built from the *same*
 /// `Job`, so the dry run faithfully predicts what the transfer will do —
 /// including deletions when [`delete`](Self::delete) is on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Job {
-    pub source: PathBuf,
+    /// One or more sources — files and/or folders, possibly from different
+    /// locations. rsync accepts them as `src1 src2 … dst`.
+    pub sources: Vec<Source>,
     pub dest: PathBuf,
-    /// Whether `source` is a directory. A directory source is passed with a
-    /// trailing `/` (mirror its *contents* into dest); a single file is passed
-    /// verbatim (rsync places it inside the dest directory).
-    pub source_is_dir: bool,
     /// Mirror deletions (`--delete`). Off by default; a safety rail in the UI.
+    /// Only offered for the single-directory "mirror" case (see [`is_mirror`]).
+    ///
+    /// [`is_mirror`]: Self::is_mirror
     pub delete: bool,
 }
 
 impl Job {
-    /// Convenience constructor: a directory source, `delete` off. The app
-    /// builds `Job` from window state directly; this is used by the unit tests.
+    /// Convenience constructor: a single directory source, `delete` off. The
+    /// app builds `Job` from window state directly; used by the unit tests.
     #[allow(dead_code)]
     pub fn new(source: impl Into<PathBuf>, dest: impl Into<PathBuf>) -> Self {
         Self {
-            source: source.into(),
+            sources: vec![Source {
+                path: source.into(),
+                is_dir: true,
+            }],
             dest: dest.into(),
-            source_is_dir: true,
             delete: false,
         }
+    }
+
+    /// The "mirror" case: exactly one source and it is a directory. Only then
+    /// do we copy the source's *contents* into dest (trailing slash) and offer
+    /// `--delete`. Any other shape (a file, or several sources) is a "collect"
+    /// that drops each item *into* dest.
+    pub fn is_mirror(&self) -> bool {
+        self.sources.len() == 1 && self.sources[0].is_dir
     }
 
     /// Build the exact argv for `mode`. The program name (`rsync`) is **not**
     /// included — the caller supplies the bundled binary path to the spawner.
     ///
-    /// A directory source gets a trailing `/` so rsync copies its *contents*
-    /// into the destination (mirror semantics) rather than nesting the source
-    /// directory inside it. A single-file source is passed verbatim — with a
-    /// trailing slash rsync would reject it as "not a directory" — so it lands
-    /// as `dest/<filename>`.
+    /// - Mirror (one directory): the source gets a trailing `/` so rsync copies
+    ///   its *contents* into dest rather than nesting the directory inside it.
+    /// - Collect (a file, or multiple sources): each source is passed verbatim
+    ///   — a trailing slash on a file would make rsync reject it as "not a
+    ///   directory" — so a file lands as `dest/<name>` and a folder as
+    ///   `dest/<dir>/…`.
     pub fn build_argv(&self, mode: Mode) -> Vec<OsString> {
         let mut argv: Vec<OsString> = Vec::new();
         argv.push(OsString::from("-a"));
@@ -82,12 +101,13 @@ impl Job {
             argv.push(OsString::from("--delete"));
         }
 
-        let src = if self.source_is_dir {
-            with_trailing_slash(&self.source)
+        if self.is_mirror() {
+            argv.push(with_trailing_slash(&self.sources[0].path));
         } else {
-            self.source.as_os_str().to_os_string()
-        };
-        argv.push(src);
+            for s in &self.sources {
+                argv.push(s.path.as_os_str().to_os_string());
+            }
+        }
         argv.push(self.dest.as_os_str().to_os_string());
         argv
     }
@@ -307,14 +327,26 @@ mod tests {
         assert_eq!(argv.last().unwrap().as_bytes(), b"/d/e");
     }
 
+    fn file_source(path: &str) -> Source {
+        Source {
+            path: PathBuf::from(path),
+            is_dir: false,
+        }
+    }
+    fn dir_source(path: &str) -> Source {
+        Source {
+            path: PathBuf::from(path),
+            is_dir: true,
+        }
+    }
+
     #[test]
     fn file_source_has_no_trailing_slash() {
         // A single-file source must be passed verbatim — a trailing slash makes
         // rsync reject it as "not a directory".
         let job = Job {
-            source: PathBuf::from("/a/b/notes.txt"),
+            sources: vec![file_source("/a/b/notes.txt")],
             dest: PathBuf::from("/x"),
-            source_is_dir: false,
             delete: false,
         };
         let argv = job.build_argv(Mode::Sync);
@@ -325,13 +357,12 @@ mod tests {
     #[test]
     fn dir_vs_file_source_differ_only_by_trailing_slash() {
         let dir = Job {
-            source: PathBuf::from("/data/x"),
+            sources: vec![dir_source("/data/x")],
             dest: PathBuf::from("/d"),
-            source_is_dir: true,
             delete: false,
         };
         let file = Job {
-            source_is_dir: false,
+            sources: vec![file_source("/data/x")],
             ..dir.clone()
         };
         assert!(dir
@@ -342,6 +373,38 @@ mod tests {
             .build_argv(Mode::Sync)
             .iter()
             .any(|s| s.as_bytes() == b"/data/x"));
+    }
+
+    #[test]
+    fn multiple_sources_are_each_verbatim_before_dest() {
+        // Two items from different locations -> collected into dest; no source
+        // gets a trailing slash (even the directory nests as dest/dl/).
+        let job = Job {
+            sources: vec![
+                file_source("/home/u/Downloads/a.txt"),
+                dir_source("/home/u/Documents/dl"),
+            ],
+            dest: PathBuf::from("/backup"),
+            delete: false,
+        };
+        let argv = job.build_argv(Mode::Sync);
+        // reversed tail: [dest, source2, source1]
+        let tail: Vec<&[u8]> = argv.iter().rev().take(3).map(|s| s.as_bytes()).collect();
+        assert_eq!(tail[0], b"/backup");
+        assert_eq!(tail[1], b"/home/u/Documents/dl");
+        assert_eq!(tail[2], b"/home/u/Downloads/a.txt");
+        assert!(!job.is_mirror());
+    }
+
+    #[test]
+    fn single_dir_is_mirror_but_two_dirs_are_not() {
+        assert!(Job::new("/one", "/d").is_mirror());
+        let two = Job {
+            sources: vec![dir_source("/one"), dir_source("/two")],
+            dest: PathBuf::from("/d"),
+            delete: false,
+        };
+        assert!(!two.is_mirror());
     }
 
     #[test]
@@ -393,9 +456,11 @@ mod tests {
         let completion: Rc<RefCell<Option<Completion>>> = Rc::new(RefCell::new(None));
 
         let job = Job {
-            source: src.clone(),
+            sources: vec![Source {
+                path: src.clone(),
+                is_dir: true,
+            }],
             dest: dst.clone(),
-            source_is_dir: true,
             delete: false,
         };
 
@@ -463,9 +528,11 @@ mod tests {
 
         let completion: Rc<RefCell<Option<Completion>>> = Rc::new(RefCell::new(None));
         let job = Job {
-            source: src_dir.join("wanted.txt"),
+            sources: vec![Source {
+                path: src_dir.join("wanted.txt"),
+                is_dir: false,
+            }],
             dest: dst.clone(),
-            source_is_dir: false,
             delete: false,
         };
 
@@ -496,6 +563,67 @@ mod tests {
             !dst.join("other.txt").exists(),
             "single-file transfer must not pull in siblings"
         );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Two files from *different* source directories both land in one dest.
+    #[test]
+    fn spawn_rsync_collects_files_from_two_locations() {
+        if !rsync_available() {
+            eprintln!("skipping: rsync not on PATH");
+            return;
+        }
+
+        let tmp = std::env::temp_dir().join(format!("rsyncgui-multi-{}", std::process::id()));
+        let loc_a = tmp.join("downloads");
+        let loc_b = tmp.join("documents");
+        let dst = tmp.join("dst");
+        std::fs::create_dir_all(&loc_a).unwrap();
+        std::fs::create_dir_all(&loc_b).unwrap();
+        std::fs::create_dir_all(&dst).unwrap();
+        std::fs::write(loc_a.join("from_downloads.txt"), b"A").unwrap();
+        std::fs::write(loc_b.join("from_documents.txt"), b"B").unwrap();
+
+        let completion: Rc<RefCell<Option<Completion>>> = Rc::new(RefCell::new(None));
+        let job = Job {
+            sources: vec![
+                Source {
+                    path: loc_a.join("from_downloads.txt"),
+                    is_dir: false,
+                },
+                Source {
+                    path: loc_b.join("from_documents.txt"),
+                    is_dir: false,
+                },
+            ],
+            dest: dst.clone(),
+            delete: false,
+        };
+
+        let ctx = glib::MainContext::new();
+        ctx.with_thread_default(|| {
+            let main_loop = glib::MainLoop::new(Some(&ctx), false);
+            let ml = main_loop.clone();
+            let comp = completion.clone();
+            spawn_rsync(
+                job.build_argv(Mode::Sync),
+                |_ev| {},
+                move |c: Completion| {
+                    *comp.borrow_mut() = Some(c);
+                    ml.quit();
+                },
+            )
+            .expect("spawn rsync");
+            main_loop.run();
+        })
+        .expect("run with thread-default context");
+
+        let completion = completion.borrow().clone().expect("on_done fired");
+        assert_eq!(completion.severity, Severity::Success, "{completion:?}");
+        // Both files, from two different locations, are now in dest.
+        assert_eq!(std::fs::read(dst.join("from_downloads.txt")).unwrap(), b"A");
+        assert_eq!(std::fs::read(dst.join("from_documents.txt")).unwrap(), b"B");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

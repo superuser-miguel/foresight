@@ -19,8 +19,9 @@ template $RsyncGuiWindow: Adw.ApplicationWindow {
       Adw.HeaderBar {
         [start]
         Button preview_button {
-          label: _("Preview");
-          // dry run: -a -n -i [--delete] -> populates the preview page
+          label: _("Dry Run");
+          tooltip-text: _("Preview the changes without transferring anything");
+          // dry run: -a -n -i [--delete] -> populates the Preview page
         }
 
         [start]
@@ -55,46 +56,69 @@ template $RsyncGuiWindow: Adw.ApplicationWindow {
           name: "configure";
           title: _("Configure");
           icon-name: "folder-symbolic";
-          child: Adw.StatusPage {
-            title: _("Choose what to sync");
-            description: _("Source and destination are selected through the file portal — no filesystem permissions required.");
-            child: Box {
-              orientation: vertical;
-              spacing: 12;
-              halign: center;
+          child: ScrolledWindow {
+            child: Adw.Clamp {
+              maximum-size: 620;
+              margin-top: 24;
+              margin-bottom: 24;
+              margin-start: 12;
+              margin-end: 12;
 
-              Adw.PreferencesGroup {
-                Adw.ActionRow source_row {
-                  title: _("Source");
-                  subtitle: _("Not selected");
-                  activatable: true;   // row body -> select a folder
+              child: Box {
+                orientation: vertical;
+                spacing: 18;
 
-                  [suffix]
-                  Button source_file_button {
-                    icon-name: "document-open-symbolic";
-                    tooltip-text: _("Select a single file instead of a folder");
-                    valign: center;
-                    styles ["flat"]
+                // Dynamic list: source rows are added in window.rs. The
+                // placeholder shows while the list is empty. Add via the header
+                // buttons, or drop files/folders onto the group.
+                Adw.PreferencesGroup sources_group {
+                  title: _("Sources");
+                  description: _("Files and folders to copy into the destination");
+
+                  [header-suffix]
+                  Box {
+                    spacing: 6;
+
+                    Button add_folder_button {
+                      icon-name: "folder-new-symbolic";
+                      tooltip-text: _("Add a folder");
+                      valign: center;
+                      styles ["flat"]
+                    }
+
+                    Button add_file_button {
+                      icon-name: "document-open-symbolic";
+                      tooltip-text: _("Add a file");
+                      valign: center;
+                      styles ["flat"]
+                    }
                   }
 
-                  [suffix]
-                  Image { icon-name: "folder-open-symbolic"; }
+                  Adw.ActionRow sources_placeholder {
+                    title: _("No sources yet");
+                    subtitle: _("Use the buttons above, or drop files and folders here");
+                    sensitive: false;
+                  }
                 }
 
-                Adw.ActionRow dest_row {
+                Adw.PreferencesGroup {
                   title: _("Destination");
-                  subtitle: _("Not selected");
-                  activatable: true;
-                  [suffix]
-                  Image { icon-name: "folder-open-symbolic"; }
-                }
 
-                Adw.SwitchRow delete_row {
-                  title: _("Mirror deletions");
-                  subtitle: _("Remove destination files that no longer exist in the source (--delete)");
-                  active: false;       // OFF by default — safety rail
+                  Adw.ActionRow dest_row {
+                    title: _("Folder");
+                    subtitle: _("Not selected");
+                    activatable: true;
+                    [suffix]
+                    Image { icon-name: "folder-open-symbolic"; }
+                  }
+
+                  Adw.SwitchRow delete_row {
+                    title: _("Mirror deletions");
+                    subtitle: _("Remove destination files not in the source (--delete). Only for a single-folder sync.");
+                    active: false;       // OFF by default — safety rail
+                  }
                 }
-              }
+              };
             };
           };
         }

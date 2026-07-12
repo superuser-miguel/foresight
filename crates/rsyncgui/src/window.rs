@@ -14,21 +14,24 @@ use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::{gdk, gio, glib};
 
+use std::path::PathBuf;
+
 use crate::change_object::ChangeObject;
-use crate::job::{argv_display, spawn_rsync, Completion, Job, Mode, Runner};
+use crate::job::{argv_display, spawn_rsync, Completion, Job, Mode, Runner, Source};
 use rsync_events::{Event, Severity};
 
-/// Which row a selection targets.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Endpoint {
-    Source,
-    Dest,
+/// One source shown in the list: its real path, whether it is a directory,
+/// and the row widget representing it (kept so it can be removed).
+#[derive(Clone, Debug)]
+pub struct SourceEntry {
+    path: PathBuf,
+    is_dir: bool,
+    row: adw::ActionRow,
 }
 
 mod imp {
     use super::*;
     use std::cell::{OnceCell, RefCell};
-    use std::path::PathBuf;
 
     #[derive(Debug, Default, gtk::CompositeTemplate)]
     #[template(resource = "/io/github/CHANGEME/RsyncGUI/window.ui")]
@@ -46,7 +49,13 @@ mod imp {
         #[template_child]
         pub main_stack: TemplateChild<adw::ViewStack>,
         #[template_child]
-        pub source_row: TemplateChild<adw::ActionRow>,
+        pub sources_group: TemplateChild<adw::PreferencesGroup>,
+        #[template_child]
+        pub sources_placeholder: TemplateChild<adw::ActionRow>,
+        #[template_child]
+        pub add_folder_button: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub add_file_button: TemplateChild<gtk::Button>,
         #[template_child]
         pub dest_row: TemplateChild<adw::ActionRow>,
         #[template_child]
@@ -59,14 +68,11 @@ mod imp {
         pub current_file_label: TemplateChild<gtk::Label>,
         #[template_child]
         pub log_view: TemplateChild<gtk::TextView>,
-        #[template_child]
-        pub source_file_button: TemplateChild<gtk::Button>,
 
-        /// The real paths handed to rsync argv (never lossy-converted).
-        pub source: RefCell<Option<PathBuf>>,
+        /// The selected sources, in the order added. Real paths for argv.
+        pub sources: RefCell<Vec<SourceEntry>>,
+        /// The destination directory (never lossy-converted).
         pub dest: RefCell<Option<PathBuf>>,
-        /// Whether the chosen source is a directory (vs a single file).
-        pub source_is_dir: std::cell::Cell<bool>,
 
         /// Backing model for the preview list (holds `ChangeObject`s).
         pub preview_store: OnceCell<gio::ListStore>,
@@ -123,58 +129,74 @@ impl RsyncGuiWindow {
 
     // -- setup --------------------------------------------------------------
 
-    /// Wire row activation (portal picker), drag-and-drop, and initial state.
+    /// Wire the add buttons, the destination row, drag-and-drop, and initial
+    /// state.
     fn setup_rows(&self) {
         let imp = self.imp();
         imp.preview_button.set_sensitive(false);
         imp.start_button.set_sensitive(false);
-        imp.source_is_dir.set(true);
 
-        for (row, endpoint) in [
-            (imp.source_row.get(), Endpoint::Source),
-            (imp.dest_row.get(), Endpoint::Dest),
-        ] {
-            // Row body opens the folder picker (both endpoints).
-            row.connect_activated(glib::clone!(
-                #[weak(rename_to = win)]
-                self,
-                move |_| win.choose_folder(endpoint)
-            ));
-
-            // Drop: source accepts a file or a folder; dest only a folder.
-            let drop = gtk::DropTarget::new(gio::File::static_type(), gdk::DragAction::COPY);
-            drop.connect_drop(glib::clone!(
-                #[weak(rename_to = win)]
-                self,
-                #[upgrade_or]
-                false,
-                move |_, value, _, _| {
-                    if let Ok(file) = value.get::<gio::File>() {
-                        let ftype = file
-                            .query_file_type(gio::FileQueryInfoFlags::NONE, gio::Cancellable::NONE);
-                        let accept = match endpoint {
-                            Endpoint::Source => {
-                                ftype == gio::FileType::Directory || ftype == gio::FileType::Regular
-                            }
-                            Endpoint::Dest => ftype == gio::FileType::Directory,
-                        };
-                        if accept {
-                            win.set_endpoint(endpoint, &file);
-                            return true;
-                        }
-                    }
-                    false
-                }
-            ));
-            row.add_controller(drop);
-        }
-
-        // The source's file-picker button (folder is the row-body default).
-        imp.source_file_button.connect_clicked(glib::clone!(
+        // Add-source buttons.
+        imp.add_folder_button.connect_clicked(glib::clone!(
             #[weak(rename_to = win)]
             self,
-            move |_| win.choose_source_file()
+            move |_| win.choose_add_folders()
         ));
+        imp.add_file_button.connect_clicked(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_| win.choose_add_files()
+        ));
+
+        // Drop files/folders onto the Sources group to add them (multi-file
+        // drops arrive as a gdk::FileList).
+        let sources_drop =
+            gtk::DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY);
+        sources_drop.connect_drop(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            #[upgrade_or]
+            false,
+            move |_, value, _, _| {
+                if let Ok(list) = value.get::<gdk::FileList>() {
+                    let mut added = false;
+                    for file in list.files() {
+                        added |= win.add_source(&file);
+                    }
+                    return added;
+                }
+                false
+            }
+        ));
+        imp.sources_group.add_controller(sources_drop);
+
+        // Destination: row body opens the folder picker; drop accepts a folder.
+        imp.dest_row.connect_activated(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_| win.choose_dest()
+        ));
+        let dest_drop = gtk::DropTarget::new(gio::File::static_type(), gdk::DragAction::COPY);
+        dest_drop.connect_drop(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            #[upgrade_or]
+            false,
+            move |_, value, _, _| {
+                if let Ok(file) = value.get::<gio::File>() {
+                    if file.query_file_type(gio::FileQueryInfoFlags::NONE, gio::Cancellable::NONE)
+                        == gio::FileType::Directory
+                    {
+                        win.set_dest(&file);
+                        return true;
+                    }
+                }
+                false
+            }
+        ));
+        imp.dest_row.add_controller(dest_drop);
+
+        self.refresh_sources_state();
     }
 
     /// Build the sectioned preview `ListView`: rows show the change path;
@@ -277,85 +299,174 @@ impl RsyncGuiWindow {
         ));
     }
 
-    // -- folder / file selection (M2, extended in M3) ----------------------
+    // -- source list & destination selection -------------------------------
 
-    fn choose_folder(&self, endpoint: Endpoint) {
-        let title = match endpoint {
-            Endpoint::Source => "Select source folder",
-            Endpoint::Dest => "Select destination folder",
+    /// Pick one or more folders (portal) and add them as sources.
+    fn choose_add_folders(&self) {
+        let dialog = gtk::FileDialog::builder()
+            .title("Add source folders")
+            .modal(true)
+            .build();
+        glib::spawn_future_local(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            async move {
+                if let Ok(model) = dialog.select_multiple_folders_future(Some(&win)).await {
+                    win.add_sources_from_model(&model);
+                }
+            }
+        ));
+    }
+
+    /// Pick one or more files (portal) and add them as sources.
+    fn choose_add_files(&self) {
+        let dialog = gtk::FileDialog::builder()
+            .title("Add source files")
+            .modal(true)
+            .build();
+        glib::spawn_future_local(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            async move {
+                if let Ok(model) = dialog.open_multiple_future(Some(&win)).await {
+                    win.add_sources_from_model(&model);
+                }
+            }
+        ));
+    }
+
+    fn add_sources_from_model(&self, model: &gio::ListModel) {
+        for i in 0..model.n_items() {
+            if let Some(file) = model.item(i).and_downcast::<gio::File>() {
+                self.add_source(&file);
+            }
+        }
+    }
+
+    /// Add one source (file or folder) to the list. Returns whether it was
+    /// added (rejects paths already present). The real path is kept for argv;
+    /// the row shows the name with the full path as subtitle/tooltip.
+    fn add_source(&self, file: &gio::File) -> bool {
+        let Some(path) = file.path() else {
+            return false;
         };
-        let dialog = gtk::FileDialog::builder().title(title).modal(true).build();
+        let imp = self.imp();
+        if imp.sources.borrow().iter().any(|e| e.path == path) {
+            return false; // already listed
+        }
 
+        let is_dir = file.query_file_type(gio::FileQueryInfoFlags::NONE, gio::Cancellable::NONE)
+            == gio::FileType::Directory;
+        let full = path.display().to_string();
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| full.clone());
+
+        let row = adw::ActionRow::builder()
+            .title(glib::markup_escape_text(&name))
+            .subtitle(glib::markup_escape_text(&full))
+            .tooltip_text(&full)
+            .build();
+        let icon = gtk::Image::from_icon_name(if is_dir {
+            "folder-symbolic"
+        } else {
+            "text-x-generic-symbolic"
+        });
+        row.add_prefix(&icon);
+
+        let remove = gtk::Button::builder()
+            .icon_name("edit-delete-symbolic")
+            .tooltip_text("Remove")
+            .valign(gtk::Align::Center)
+            .css_classes(["flat"])
+            .build();
+        remove.connect_clicked(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            #[weak]
+            row,
+            move |_| win.remove_source(&row)
+        ));
+        row.add_suffix(&remove);
+
+        imp.sources_group.add(&row);
+        imp.sources
+            .borrow_mut()
+            .push(SourceEntry { path, is_dir, row });
+        self.refresh_sources_state();
+        true
+    }
+
+    fn remove_source(&self, row: &adw::ActionRow) {
+        let imp = self.imp();
+        imp.sources_group.remove(row);
+        imp.sources.borrow_mut().retain(|e| &e.row != row);
+        self.refresh_sources_state();
+    }
+
+    fn choose_dest(&self) {
+        let dialog = gtk::FileDialog::builder()
+            .title("Select destination folder")
+            .modal(true)
+            .build();
         glib::spawn_future_local(glib::clone!(
             #[weak(rename_to = win)]
             self,
             async move {
                 if let Ok(file) = dialog.select_folder_future(Some(&win)).await {
-                    win.set_endpoint(endpoint, &file);
+                    win.set_dest(&file);
                 }
             }
         ));
     }
 
-    /// Pick a single file as the source (destination is always a folder).
-    fn choose_source_file(&self) {
-        let dialog = gtk::FileDialog::builder()
-            .title("Select source file")
-            .modal(true)
-            .build();
-
-        glib::spawn_future_local(glib::clone!(
-            #[weak(rename_to = win)]
-            self,
-            async move {
-                if let Ok(file) = dialog.open_future(Some(&win)).await {
-                    win.set_endpoint(Endpoint::Source, &file);
-                }
-            }
-        ));
-    }
-
-    fn set_endpoint(&self, endpoint: Endpoint, file: &gio::File) {
+    fn set_dest(&self, file: &gio::File) {
         let Some(path) = file.path() else {
             return;
         };
         let (subtitle, tooltip) = describe_path(&path);
-
         let imp = self.imp();
-        let row = match endpoint {
-            Endpoint::Source => imp.source_row.get(),
-            Endpoint::Dest => imp.dest_row.get(),
-        };
-        row.set_subtitle(&subtitle);
-        row.set_tooltip_text(Some(&tooltip));
+        imp.dest_row.set_subtitle(&subtitle);
+        imp.dest_row.set_tooltip_text(Some(&tooltip));
+        *imp.dest.borrow_mut() = Some(path);
+        self.refresh_action_sensitivity();
+    }
 
-        match endpoint {
-            Endpoint::Source => {
-                let is_dir = file
-                    .query_file_type(gio::FileQueryInfoFlags::NONE, gio::Cancellable::NONE)
-                    == gio::FileType::Directory;
-                imp.source_is_dir.set(is_dir);
-                *imp.source.borrow_mut() = Some(path);
-                // --delete only affects directory syncs; for a single file it
-                // is meaningless and could surprise, so disable and clear it.
-                imp.delete_row.set_sensitive(is_dir);
-                if !is_dir {
-                    imp.delete_row.set_active(false);
-                }
-            }
-            Endpoint::Dest => *imp.dest.borrow_mut() = Some(path),
+    /// Recompute the placeholder, the `--delete` availability (only the
+    /// single-directory "mirror" case), and the action-button sensitivity.
+    fn refresh_sources_state(&self) {
+        let imp = self.imp();
+        let sources = imp.sources.borrow();
+        imp.sources_placeholder.set_visible(sources.is_empty());
+
+        let is_mirror = sources.len() == 1 && sources[0].is_dir;
+        imp.delete_row.set_sensitive(is_mirror);
+        if !is_mirror {
+            imp.delete_row.set_active(false);
         }
+        drop(sources);
         self.refresh_action_sensitivity();
     }
 
     fn current_job(&self) -> Option<Job> {
         let imp = self.imp();
-        let source = imp.source.borrow().clone()?;
+        let sources: Vec<Source> = imp
+            .sources
+            .borrow()
+            .iter()
+            .map(|e| Source {
+                path: e.path.clone(),
+                is_dir: e.is_dir,
+            })
+            .collect();
+        if sources.is_empty() {
+            return None;
+        }
         let dest = imp.dest.borrow().clone()?;
         Some(Job {
-            source,
+            sources,
             dest,
-            source_is_dir: imp.source_is_dir.get(),
             delete: imp.delete_row.is_active(),
         })
     }
@@ -364,7 +475,7 @@ impl RsyncGuiWindow {
 
     fn both_selected(&self) -> bool {
         let imp = self.imp();
-        imp.source.borrow().is_some() && imp.dest.borrow().is_some()
+        !imp.sources.borrow().is_empty() && imp.dest.borrow().is_some()
     }
 
     fn is_running(&self) -> bool {
@@ -372,13 +483,17 @@ impl RsyncGuiWindow {
     }
 
     /// Preview and Start follow selection; both are disabled while a run is
-    /// live. Cancel is the inverse.
+    /// live. Cancel is the inverse. The add/remove controls also lock during a
+    /// run so the source list can't change mid-transfer.
     fn refresh_action_sensitivity(&self) {
         let imp = self.imp();
-        let idle_ready = self.both_selected() && !self.is_running();
+        let running = self.is_running();
+        let idle_ready = self.both_selected() && !running;
         imp.preview_button.set_sensitive(idle_ready);
         imp.start_button.set_sensitive(idle_ready);
-        imp.cancel_button.set_sensitive(self.is_running());
+        imp.cancel_button.set_sensitive(running);
+        imp.add_folder_button.set_sensitive(!running);
+        imp.add_file_button.set_sensitive(!running);
     }
 
     fn on_start_clicked(&self) {

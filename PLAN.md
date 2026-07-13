@@ -28,7 +28,7 @@ algorithm, Qt/other-desktop theming.
 | Build | Meson driving cargo (GNOME Builder Rust-template pattern) + blueprint-compiler | Standard GNOME app pipeline |
 | Distribution | Flatpak only; dev happens inside the Flatpak | Environment = ship environment |
 | Engine | rsync pinned in the manifest (currently `v3.4.4`, commit `f26f747b…`) | The version pin **is** the output-format contract |
-| File access | Portals first (see §5); no blanket `--filesystem` holes | Flathub review + user trust |
+| File access | Portals first (see §5); no blanket `--filesystem` holes | Sandbox integrity + user trust |
 | License | GPL-3.0-or-later | Matches rsync; project convention |
 | Parser | `crates/rsync-events` — lib crate, deps: `regex` + `once_cell` only, **no GTK** | Testable anywhere; the app crate depends on it, never the reverse |
 
@@ -104,9 +104,9 @@ controls.
       `#[template_child]` for every named widget in the Blueprint.
 - [x] `flatpak-builder --user --install --force-clean build-dir <manifest>`
       succeeds; `flatpak run` shows the window under Wayland. (Dev builds may
-      use the manifest's `--share=network` build-arg for crates.io; Flathub
-      submission requires vendored `cargo-sources.json` instead — see the
-      manifest comments.)
+      use the manifest's `--share=network` build-arg for crates.io; a
+      reproducible release build requires vendored `cargo-sources.json` instead
+      — see the manifest comments.)
 - [x] Sanity check the bundled engine:
       `flatpak run --command=rsync <app-id> --version` prints 3.4.4. ✓ 3.4.4
 
@@ -182,8 +182,10 @@ with live progress.
 
 ### Milestone 4 — polish gate (defer until 0–3 are done)
 
-Saved profiles, excludes editor, appstream metainfo + screenshots, Flathub
-submission. Tracked in the roadmap deck; not specced here yet.
+Saved presets (done), excludes editor, appstream metainfo + screenshots, and a
+`.flatpak` bundle published on **GitHub Releases** (distribution is GitHub
+Releases + a GitHub Pages landing page — **not** Flathub). Tracked in the
+roadmap deck; not specced here yet.
 
 - [ ] **Help / capability disclosure.** A Help surface (dialog opened from the
       primary menu) that states *explicitly and honestly* which rsync
@@ -268,7 +270,7 @@ blueprint-compiler compile src/ui/window.blp > /dev/null
 # regenerate parser fixtures after bumping the rsync pin
 ./scripts/capture_fixtures.sh /path/to/new/rsync && cargo test
 
-# regenerate vendored crates for offline/Flathub builds after Cargo.lock changes
+# regenerate vendored crates for offline/reproducible release builds after Cargo.lock changes
 python3 flatpak-cargo-generator.py Cargo.lock -o cargo-sources.json
 ```
 
@@ -290,6 +292,6 @@ Conventions and guardrails:
    cover the new output, re-capture, and add a test.
 5. Permissions changes follow §5's table-first rule. The `--share=network`
    **build-arg** is a dev convenience only and must be replaced by
-   `cargo-sources.json` vendoring before any Flathub submission.
+   `cargo-sources.json` vendoring before any public release build.
 6. Commit style: conventional-ish, imperative, one concern per commit;
    the manifest, PLAN.md table, and code change together atomically.

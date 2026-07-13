@@ -125,12 +125,14 @@ meson setup builddir -Dprofile=debug && meson compile -C builddir
 - [ ] **Help / capability disclosure** — an in-app, honest inventory of exactly
       which rsync flags Foresight exposes this release, cross-referenced to the
       bundled `rsync --help` (registry-driven, test-enforced so it can't drift).
-- [ ] **Saved profiles** — store a source/destination/flag set (e.g. a
-      throttled `--remove-source-files` move) and reuse it in one click.
+- [x] **Saved presets** — store an Advanced-option set (e.g. a throttled
+      `--remove-source-files` move) and reapply it in one click.
 - [ ] **Excludes editor** — manage exclude/include rules as a list, not a field.
 - [ ] **Remote sync over SSH** — rsync to/from a remote host, with credentials
       via the keyring.
-- [ ] **AppStream metainfo + screenshots**, and a **Flathub** submission.
+- [ ] **AppStream metainfo + screenshots**, and a **`.flatpak` bundle on
+      [GitHub Releases](https://github.com/superuser-miguel/foresight/releases)**
+      (the landing page is published on GitHub Pages).
 - [ ] **Self-hosted Flatpak repo** with automatic updates (a signed OSTree repo
       + `.flatpakref`), so `flatpak update` pulls new releases directly.
 

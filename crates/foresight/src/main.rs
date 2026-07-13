@@ -4,7 +4,9 @@
 //! and present the composite-template window. Milestone 3 wires the bundled
 //! rsync engine to the Preview and Transfer pages.
 
+mod capabilities;
 mod change_object;
+mod help;
 mod job;
 mod log_object;
 mod profiles;

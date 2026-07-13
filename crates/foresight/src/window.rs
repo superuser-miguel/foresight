@@ -417,6 +417,15 @@ impl ForesightWindow {
         ));
         self.add_action(&new_job);
 
+        // "What Foresight Can Do" (win.capabilities): the Help/capability dialog.
+        let capabilities = gio::SimpleAction::new("capabilities", None);
+        capabilities.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| crate::help::present(&win)
+        ));
+        self.add_action(&capabilities);
+
         // The partial-result banner offers a one-tap reset.
         imp.result_banner.set_button_label(Some("New Job"));
         imp.result_banner.connect_button_clicked(glib::clone!(

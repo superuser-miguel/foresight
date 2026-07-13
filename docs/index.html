@@ -193,10 +193,11 @@
   <ul class="road">
     <li class="done"><b>Dry-run preview, multi-source, live progress, cancel</b> — all working today.</li>
     <li class="done"><b>Advanced options</b> — move, unit-aware bandwidth limit, excludes, extra arguments.</li>
-    <li><b>Help / capability disclosure</b> — an in-app, honest inventory of exactly which rsync flags Foresight exposes, checked against the bundled <code>rsync --help</code>.</li>
-    <li><b>Saved profiles</b> — store a source / destination / flag set and reuse it in one click.</li>
-    <li><b>Remote sync over SSH</b> — to and from a remote host, with credentials via the keyring.</li>
+    <li class="done"><b>Help / capability disclosure</b> — an in-app, honest inventory of exactly which rsync flags Foresight exposes, checked against the bundled <code>rsync --help</code>.</li>
+    <li class="done"><b>Saved presets</b> — store an Advanced-option set and reapply it in one click.</li>
+    <li><b>Remote sync over SSH</b> — to and from a <code>user@host:/path</code> endpoint. Key-based auth first (your existing SSH key, no extra permissions); the engine and sandbox are already verified to carry it.</li>
     <li><b>Releases &amp; auto-updates</b> — AppStream metainfo, a downloadable <code>.flatpak</code> on GitHub Releases, and a self-hosted repo so <code>flatpak update</code> pulls new releases.</li>
+    <li><b>Distant future / speculative</b> — optionally remember a password-based SSH or rsync-daemon credential in the system keyring (<code>org.freedesktop.secrets</code>) instead of a config file. A deliberate opt-in permission; key-based auth would never need it.</li>
   </ul>
 </section>
 

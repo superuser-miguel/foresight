@@ -128,13 +128,23 @@ meson setup builddir -Dprofile=debug && meson compile -C builddir
 - [x] **Saved presets** — store an Advanced-option set (e.g. a throttled
       `--remove-source-files` move) and reapply it in one click.
 - [ ] **Excludes editor** — manage exclude/include rules as a list, not a field.
-- [ ] **Remote sync over SSH** — rsync to/from a remote host, with credentials
-      via the keyring.
+- [ ] **Remote sync over SSH** — rsync to/from a `user@host:/path` endpoint.
+      Key-based auth first (uses your existing SSH key + agent, no extra
+      permissions). The engine and sandbox are already verified to carry this;
+      only the endpoint UI is missing.
 - [ ] **AppStream metainfo + screenshots**, and a **`.flatpak` bundle on
       [GitHub Releases](https://github.com/superuser-miguel/foresight/releases)**
       (the landing page is published on GitHub Pages).
 - [ ] **Self-hosted Flatpak repo** with automatic updates (a signed OSTree repo
       + `.flatpakref`), so `flatpak update` pulls new releases directly.
+
+### Distant future / speculative
+
+- **Saved remote credentials via the system keyring.** For password-based SSH
+  or an rsync-daemon password, optionally remember it in the login keyring
+  (Secret Service / `org.freedesktop.secrets`) instead of a config file — a
+  deliberate, opt-in sandbox permission we'd only add for this convenience.
+  Key-based auth would never need it.
 
 ## Acknowledgements
 

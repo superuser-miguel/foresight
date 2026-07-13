@@ -36,7 +36,9 @@ finish-args:
   - --device=dri                      # GPU rendering for GTK4/GSK
 
   # -- capabilities the app actually needs ----------------------------------
-  - --share=network                   # ssh remotes + rsyncd targets (Phase 3)
+  - --share=network                   # ssh remotes + rsyncd targets (Phase 3;
+                                       # runtime ssh + this transfer verified
+                                       # working 2026-07-13, see openssh note)
 
   # NOTE deliberately ABSENT (portals-first — see PLAN.md §5):
   #   --filesystem=home / host        -> file access flows through the
@@ -69,13 +71,15 @@ modules:
         commit: f26f747b8017b321d3776becc69f330dd889fa21
 
   # ---------------------------------------------------------------- openssh
-  # Uncomment for Phase 3 (remote sync). The sandbox has no host ssh binary.
-  # - name: openssh
-  #   buildsystem: autotools
-  #   sources:
-  #     - type: archive
-  #       url: https://github.com/openssh/openssh-portable/archive/refs/tags/V_10_0_P1.tar.gz
-  #       sha256: CHANGEME
+  # NOT bundled — and it turns out we don't need to. Verified 2026-07-13: the
+  # org.gnome.Platform//49 runtime already ships an ssh client at /usr/bin/ssh,
+  # and a real rsync-over-ssh transfer from inside this sandbox succeeds
+  # end-to-end (auth + data + the %i %n%L / --info=progress2 reporting contract),
+  # given --share=network below. So Phase 3 (remote sync) needs only the UI to
+  # accept a `user@host:/path` endpoint, not an openssh module.
+  #
+  # Only re-add a bundled openssh if a future runtime drops its ssh client, or
+  # we need a client feature the runtime's build lacks.
 
   # ---------------------------------------------------------------- blueprint
   # Compiles .blp UI files at build time; not needed at runtime.

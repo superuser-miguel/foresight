@@ -18,6 +18,7 @@ use std::path::PathBuf;
 
 use crate::change_object::ChangeObject;
 use crate::job::{argv_display, spawn_rsync, Completion, Job, Mode, Runner, Source};
+use crate::log_object::LogObject;
 use crate::profiles::{self, Profile};
 use rsync_events::{Event, Severity};
 
@@ -86,7 +87,9 @@ mod imp {
         #[template_child]
         pub current_file_label: TemplateChild<gtk::Label>,
         #[template_child]
-        pub log_view: TemplateChild<gtk::TextView>,
+        pub log_list: TemplateChild<gtk::ListView>,
+        #[template_child]
+        pub log_scroll: TemplateChild<gtk::ScrolledWindow>,
 
         /// The selected sources, in the order added. Real paths for argv.
         pub sources: RefCell<Vec<SourceEntry>>,
@@ -95,6 +98,8 @@ mod imp {
 
         /// Backing model for the preview list (holds `ChangeObject`s).
         pub preview_store: OnceCell<gio::ListStore>,
+        /// Backing model for the streaming transfer log (holds `LogObject`s).
+        pub log_store: OnceCell<gio::ListStore>,
         /// The live rsync process, if one is running (held so it can cancel).
         pub runner: RefCell<Option<Runner>>,
         /// `rsync:` error lines collected during the current run.
@@ -129,6 +134,7 @@ mod imp {
             let obj = self.obj();
             obj.setup_rows();
             obj.setup_preview_list();
+            obj.setup_log_list();
             obj.setup_actions();
             obj.setup_presets();
         }
@@ -299,6 +305,85 @@ impl ForesightWindow {
             .expect("preview_store set once");
     }
 
+    /// Build the streaming transfer log as a `ListView`: one typed row per
+    /// file/message in arrival order — a leading icon, the path or text, and a
+    /// right-aligned tag ("New"/"Updated"/"Deleted"). Deletions and errors
+    /// render in red; the command header and informational lines are dimmed.
+    /// No sorter: the log is chronological, a live tail of the transfer.
+    fn setup_log_list(&self) {
+        let imp = self.imp();
+        let store = gio::ListStore::new::<LogObject>();
+        let selection = gtk::NoSelection::new(Some(store.clone()));
+
+        let factory = gtk::SignalListItemFactory::new();
+        factory.connect_setup(|_, item| {
+            let icon = gtk::Image::new();
+            let primary = gtk::Label::builder()
+                .xalign(0.0)
+                .hexpand(true)
+                .ellipsize(gtk::pango::EllipsizeMode::Middle)
+                .build();
+            let detail = gtk::Label::builder()
+                .xalign(1.0)
+                .css_classes(["dim-label", "caption"])
+                .build();
+            let row = gtk::Box::builder()
+                .orientation(gtk::Orientation::Horizontal)
+                .spacing(8)
+                .build();
+            row.append(&icon);
+            row.append(&primary);
+            row.append(&detail);
+            item.downcast_ref::<gtk::ListItem>()
+                .unwrap()
+                .set_child(Some(&row));
+        });
+        factory.connect_bind(|_, item| {
+            let item = item.downcast_ref::<gtk::ListItem>().unwrap();
+            let obj = item.item().and_downcast::<LogObject>().unwrap();
+            let row = item.child().and_downcast::<gtk::Box>().unwrap();
+            let icon = row.first_child().and_downcast::<gtk::Image>().unwrap();
+            let primary = icon.next_sibling().and_downcast::<gtk::Label>().unwrap();
+            let detail = primary.next_sibling().and_downcast::<gtk::Label>().unwrap();
+
+            icon.set_icon_name(Some(&obj.icon()));
+            let text = obj.primary();
+            primary.set_label(&text);
+            primary.set_tooltip_text(Some(&text));
+
+            // Recompute css wholesale each bind (ListView recycles rows).
+            let mut classes: Vec<&str> = Vec::new();
+            if obj.danger() {
+                classes.push("error");
+            }
+            if obj.dim() {
+                classes.push("dim-label");
+            }
+            if obj.mono() {
+                classes.push("monospace");
+            }
+            primary.set_css_classes(&classes);
+
+            detail.set_label(&obj.detail());
+            detail.set_visible(!obj.detail().is_empty());
+        });
+
+        imp.log_list.set_model(Some(&selection));
+        imp.log_list.set_factory(Some(&factory));
+        imp.log_store.set(store).expect("log_store set once");
+    }
+
+    /// Append one row to the log and follow to the bottom, like a live tail.
+    fn log_push(&self, obj: LogObject) {
+        let imp = self.imp();
+        if let Some(store) = imp.log_store.get() {
+            store.append(&obj);
+        }
+        // Scroll after layout settles so `upper` reflects the new row.
+        let vadj = imp.log_scroll.vadjustment();
+        glib::idle_add_local_once(move || vadj.set_value(vadj.upper()));
+    }
+
     /// Wire the Preview / Start / Cancel buttons.
     fn setup_actions(&self) {
         let imp = self.imp();
@@ -377,7 +462,9 @@ impl ForesightWindow {
         }
         imp.run_errors.borrow_mut().clear();
         imp.deletions.borrow_mut().clear();
-        imp.log_view.buffer().set_text("");
+        if let Some(store) = imp.log_store.get() {
+            store.remove_all();
+        }
         imp.overall_progress.set_fraction(0.0);
         imp.overall_progress.set_text(None);
         imp.current_file_label.set_label("");
@@ -868,8 +955,10 @@ impl ForesightWindow {
 
         let argv = job.build_argv(Mode::Sync);
         // Show the exact command for transparency (display only — never re-parsed).
-        let buffer = imp.log_view.buffer();
-        buffer.set_text(&format!("$ rsync {}\n\n", argv_display(&argv)));
+        if let Some(store) = imp.log_store.get() {
+            store.remove_all();
+        }
+        self.log_push(LogObject::command(format!("rsync {}", argv_display(&argv))));
         let on_event = glib::clone!(
             #[weak(rename_to = win)]
             self,
@@ -895,6 +984,7 @@ impl ForesightWindow {
         match ev {
             Event::Change(change) => {
                 imp.current_file_label.set_label(&change.path);
+                self.log_push(LogObject::change(&change));
             }
             Event::Progress(p) => {
                 imp.overall_progress
@@ -910,10 +1000,7 @@ impl ForesightWindow {
                 if m.is_error {
                     imp.run_errors.borrow_mut().push(m.text.clone());
                 }
-                let buffer = imp.log_view.buffer();
-                let mut end = buffer.end_iter();
-                buffer.insert(&mut end, &m.text);
-                buffer.insert(&mut end, "\n");
+                self.log_push(LogObject::message(&m));
             }
         }
     }

@@ -6,6 +6,7 @@
 
 mod change_object;
 mod job;
+mod log_object;
 mod profiles;
 mod window;
 
@@ -54,13 +55,19 @@ fn register_resources() {
     gio::resources_register(&resource);
 }
 
-/// App-wide styling. Currently just a chunkier transfer progress bar.
+/// App-wide styling: a chunkier transfer progress bar with a larger, bolder
+/// percentage/time readout above it.
 fn load_css() {
     let provider = gtk::CssProvider::new();
     provider.load_from_string(
         "progressbar.foresight-progress > trough,
-         progressbar.foresight-progress > trough > progress { min-height: 22px; }
-         progressbar.foresight-progress > trough > progress { border-radius: 8px; }",
+         progressbar.foresight-progress > trough > progress { min-height: 30px; }
+         progressbar.foresight-progress > trough > progress { border-radius: 8px; }
+         progressbar.foresight-progress > text {
+             font-size: 1.2em;
+             font-weight: bold;
+             margin-bottom: 4px;
+         }",
     );
     if let Some(display) = gtk::gdk::Display::default() {
         gtk::style_context_add_provider_for_display(

@@ -111,12 +111,6 @@ template $ForesightWindow: Adw.ApplicationWindow {
                     [suffix]
                     Image { icon-name: "folder-open-symbolic"; }
                   }
-
-                  Adw.SwitchRow delete_row {
-                    title: _("Mirror deletions");
-                    subtitle: _("Remove destination files not in the source (--delete). Only for a single-folder sync.");
-                    active: false;       // OFF by default — safety rail
-                  }
                 }
 
                 Adw.PreferencesGroup {
@@ -149,6 +143,12 @@ template $ForesightWindow: Adw.ApplicationWindow {
                   Adw.ExpanderRow {
                     title: _("Advanced");
                     subtitle: _("Extra rsync options");
+
+                    Adw.SwitchRow delete_row {
+                      title: _("Mirror deletions");
+                      subtitle: _("Remove destination files not in the source (--delete). Only for a single-folder sync.");
+                      active: false;       // OFF by default — safety rail
+                    }
 
                     Adw.SwitchRow verbose_row {
                       title: _("Verbose output");
@@ -234,11 +234,10 @@ template $ForesightWindow: Adw.ApplicationWindow {
             Expander {
               label: _("Log");
               vexpand: true;
-              child: ScrolledWindow {
+              child: ScrolledWindow log_scroll {
                 min-content-height: 200;
-                child: TextView log_view {
-                  editable: false;
-                  monospace: true;
+                child: ListView log_list {
+                  styles ["rich-list", "foresight-log"]
                 };
               };
             }

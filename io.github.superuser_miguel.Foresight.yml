@@ -22,11 +22,13 @@ build-options:
   append-path: /usr/lib/sdk/rust-stable/bin
   env:
     CARGO_HOME: /run/build/foresight/cargo
-  # For quick LOCAL dev iteration only (lets cargo hit crates.io during the
-  # build). Flathub forbids build-time network — before submission, generate
-  # vendored sources instead (see the app module below) and delete this:
-  build-args:
-    - --share=network
+  # PRODUCTION: no build-time network. cargo builds offline from the vendored
+  # crate graph (cargo-sources.json in the app module), which drops a source-
+  # replacement config into CARGO_HOME. For quick LOCAL dev iteration after a
+  # Cargo.lock change, regenerate that file (see the app module) — or
+  # temporarily uncomment the network build-arg below to let cargo hit crates.io:
+  # build-args:
+  #   - --share=network
 
 finish-args:
   # -- display / input ------------------------------------------------------
@@ -100,8 +102,14 @@ modules:
     sources:
       - type: dir
         path: .
-      # For Flathub (offline builds), vendor the crate graph and REMOVE the
-      # --share=network build-arg above. Generate with flatpak-builder-tools:
+        skip:
+          - .git
+          - .flatpak-builder
+          - target
+          - builddir
+          - build-dir
+          - build-flatpak
+      # Vendored crate graph for an offline (network-free) release build.
+      # Regenerate after ANY Cargo.lock change:
       #   python3 flatpak-cargo-generator.py Cargo.lock -o cargo-sources.json
-      # then add:
-      # - cargo-sources.json
+      - cargo-sources.json

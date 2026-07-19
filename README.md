@@ -16,9 +16,18 @@ Foresight never reimplements rsync. It composes an argv vector, spawns the
 No shell strings are ever constructed, and the engine version is pinned — the
 version pin *is* the behaviour contract.
 
-> Status: working, and building toward a first release. Multi-source transfers,
-> the dry-run preview, live progress, cancel, and the advanced flag set all
-> function today in a sandboxed Flatpak. See the [roadmap](#roadmap).
+Rust · GTK4 · gtk4-rs · libadwaita · Blueprint · Meson · Flatpak, with rsync
+**3.4.4** bundled and version-pinned. See [`PLAN.md`](PLAN.md) for the phased
+build plan and the guardrails it holds to.
+
+> **Status: feature-rich, gating the first release.** Multi-source transfers,
+> the grouped dry-run preview, live progress with a structured streaming log,
+> cancel, `--delete` with confirmation, the advanced flag set with saved presets,
+> and an in-app capability inventory all work today in a sandboxed Flatpak. The
+> `rsync-events` engine ships 33 tests and stays UI-free. Distributed as a Flatpak
+> **bundle via [GitHub Releases](https://github.com/superuser-miguel/foresight/releases)**,
+> with the project page on
+> [GitHub Pages](https://superuser-miguel.github.io/foresight/) — **not** Flathub.
 
 ---
 
@@ -52,9 +61,15 @@ Where Foresight aims to *win*, not just match:
   button, or drop them in from the file manager.
 - **Right transfer semantics, automatically** — a single folder mirrors its
   *contents* into the destination; a file or several items are *collected* into it.
-- **Live transfer** — a real progress bar, current-file label, a log that opens
-  with the exact `rsync …` command, and **cancel** at any time.
+- **Live transfer** — a real progress bar, current-file label, and a **structured
+  streaming log** (one typed row per file and rsync message, not a wall of text)
+  that opens with the exact `rsync …` command — with **cancel** at any time.
 - **`--delete` with a confirmation** that lists the exact deletions from the dry run.
+- **Saved presets** — store an Advanced-option set (e.g. a throttled
+  `--remove-source-files` move) and reapply it in one click. Paths are never saved.
+- **Know exactly what it can do** — a *What Foresight Can Do* dialog: an honest,
+  in-app inventory of every rsync flag this build exposes, driven by a registry
+  that a test keeps in lockstep with the code, plus the bundled `rsync --help`.
 - **Advanced options** for the flags you actually reach for:
   - **Move files** — `--remove-source-files` (remove each source after it transfers).
   - **Bandwidth limit** — `--bwlimit` with a unit picker (**KB/s · MB/s · GB/s**),
@@ -88,12 +103,28 @@ dedicated control. A few useful ones:
 
 ## Install
 
-> No binary release yet — build from source below. A `.flatpak` bundle and a
-> self-hosted repo with automatic updates are on the [roadmap](#roadmap).
+**Not on Flathub** — Foresight is distributed as a Flatpak **bundle via
+[GitHub Releases](https://github.com/superuser-miguel/foresight/releases)**, with
+the project page on [GitHub Pages](https://superuser-miguel.github.io/foresight/).
+The first bundle is being cut now; until it lands, build from source below.
 
-## Build from source
+## Layout
 
-Foresight builds and runs entirely inside the GNOME Flatpak sandbox:
+```
+crates/rsync-events/   UI-free parser: itemize / progress / stats + exit classifier
+crates/foresight/      GTK4/libadwaita app (binary: `foresight`)
+data/                  Blueprint UI, gresource, desktop + AppStream metainfo, icon
+build-aux/             Meson → cargo bridge
+reference/             rsync_events.py — the parser's executable spec
+```
+
+`rsync-events` has **zero** GTK/GLib dependencies (regex + `once_cell` only), so
+the output-parsing contract is testable on its own — and
+`reference/rsync_events.py` is kept in lockstep with it.
+
+## Build & run
+
+### Flatpak (how it ships)
 
 ```sh
 flatpak install flathub org.gnome.Platform//49 org.gnome.Sdk//49 \
@@ -103,40 +134,54 @@ flatpak-builder --user --install --force-clean build-dir \
 flatpak run io.github.superuser_miguel.Foresight
 ```
 
-For host development (needs `gtk4-devel`, `libadwaita-devel`,
-`blueprint-compiler`, Meson, and `rsync` on `PATH`):
+### Host (fast dev iteration)
+
+Needs `gtk4-devel`, `libadwaita-devel`, `blueprint-compiler`, Meson, and `rsync`
+on `PATH` (the engine tests drive real rsync).
 
 ```sh
 cargo test                                   # parser + argv + engine tests
 cargo clippy --all-targets -- -D warnings
 meson setup builddir -Dprofile=debug && meson compile -C builddir
+meson test -C builddir                       # includes AppStream metainfo validation
 ```
 
+### Release bundle
+
+For a reproducible `flatpak build-bundle` to publish on GitHub Releases, vendor
+the crate graph
+(`python3 flatpak-cargo-generator.py Cargo.lock -o cargo-sources.json`), add it to
+the app module, and remove the `--share=network` **build-arg** — see the comments
+in `io.github.superuser_miguel.Foresight.yml`.
+
 ## Roadmap
+
+### Shipped
 
 - [x] **Dry-run preview** — grouped change list from a real `-n -i` run.
 - [x] **Multi-source transfers** — files and folders from different locations,
       with per-item remove and drag-and-drop.
 - [x] **Single-file and single-folder-mirror** semantics, chosen automatically.
-- [x] **Live progress, cancel, and a verbatim log** of the exact command.
+- [x] **Live progress, cancel, and a structured streaming log** of the run.
 - [x] **`--delete` with a confirmation** listing the deletions from the dry run.
-- [x] **Advanced options** — move (`--remove-source-files`), bandwidth limit
-      with units (`--bwlimit`), excludes, and a free-form extra-arguments field.
-- [ ] **Help / capability disclosure** — an in-app, honest inventory of exactly
-      which rsync flags Foresight exposes this release, cross-referenced to the
-      bundled `rsync --help` (registry-driven, test-enforced so it can't drift).
-- [x] **Saved presets** — store an Advanced-option set (e.g. a throttled
-      `--remove-source-files` move) and reapply it in one click.
+- [x] **Advanced options** — move (`--remove-source-files`), unit-aware bandwidth
+      limit (`--bwlimit`), excludes, and a free-form extra-arguments field.
+- [x] **Saved presets** for Advanced-option sets.
+- [x] **Help / capability disclosure** — a registry-driven, test-enforced in-app
+      inventory of the flags Foresight exposes, cross-referenced to the bundled
+      `rsync --help`.
+- [x] **AppStream metainfo, screenshots, and a landing page.**
+
+### Next
+
+- [ ] **First `.flatpak` release** — a downloadable bundle on GitHub Releases,
+      then a self-hosted repo (signed OSTree + `.flatpakref`) so `flatpak update`
+      pulls new versions.
 - [ ] **Excludes editor** — manage exclude/include rules as a list, not a field.
 - [ ] **Remote sync over SSH** — rsync to/from a `user@host:/path` endpoint.
       Key-based auth first (uses your existing SSH key + agent, no extra
       permissions). The engine and sandbox are already verified to carry this;
       only the endpoint UI is missing.
-- [ ] **AppStream metainfo + screenshots**, and a **`.flatpak` bundle on
-      [GitHub Releases](https://github.com/superuser-miguel/foresight/releases)**
-      (the landing page is published on GitHub Pages).
-- [ ] **Self-hosted Flatpak repo** with automatic updates (a signed OSTree repo
-      + `.flatpakref`), so `flatpak update` pulls new releases directly.
 
 ### Distant future / speculative
 

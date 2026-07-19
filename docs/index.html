@@ -79,6 +79,22 @@
   footer { border-top: 1px solid var(--border); color: var(--muted); font-size: .9rem; }
   footer p { margin: 6px 0; }
   code { background: color-mix(in srgb, var(--accent) 12%, transparent); padding: 1px 6px; border-radius: 6px; }
+
+  /* screenshot gallery + pure-CSS lightbox */
+  .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 16px; }
+  .shot { display: block; border: 1px solid var(--border); border-radius: 14px; overflow: hidden;
+    background: var(--surface); color: var(--muted); text-decoration: none;
+    transition: transform .15s ease, border-color .15s ease, box-shadow .15s ease; }
+  .shot:hover { transform: translateY(-3px); border-color: var(--accent);
+    box-shadow: 0 10px 28px color-mix(in srgb, var(--accent) 18%, transparent); }
+  .shot img { display: block; width: 100%; height: 200px; object-fit: cover; object-position: top center;
+    background: #14171d; border-bottom: 1px solid var(--border); }
+  .shot .cap { display: block; padding: 11px 13px; font-size: .86rem; line-height: 1.4; }
+  .lb { display: none; position: fixed; inset: 0; z-index: 50; background: rgba(0,0,0,.82); }
+  .lb:target { display: block; }
+  .lb-inner { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%;
+    padding: 4vh 4vw; box-sizing: border-box; cursor: zoom-out; }
+  .lb img { max-width: 100%; max-height: 92vh; border-radius: 10px; box-shadow: 0 12px 44px rgba(0,0,0,.55); }
 </style>
 </head>
 <body>
@@ -112,6 +128,26 @@
     <a class="btn" href="https://github.com/superuser-miguel/foresight#build-from-source">Build from source</a>
   </div>
 </header>
+
+<section class="wrap" id="screens">
+  <h2>See it</h2>
+  <p class="sub">A GNOME-native window, driven entirely by the bundled rsync. Click any shot to enlarge.</p>
+  <div class="gallery">
+    <a class="shot" href="#s1"><img src="screenshots/01-configure.png" alt="Foresight Configure page" loading="lazy"><span class="cap">Configure — add sources and a destination.</span></a>
+    <a class="shot" href="#s2"><img src="screenshots/02-advanced.png" alt="Advanced options expanded" loading="lazy"><span class="cap">Advanced — move, unit-aware bandwidth limit, excludes, extra flags.</span></a>
+    <a class="shot" href="#s3"><img src="screenshots/03-preview.png" alt="Grouped change preview" loading="lazy"><span class="cap">Preview — every change, grouped, before it runs.</span></a>
+    <a class="shot" href="#s4"><img src="screenshots/04-help.png" alt="What Foresight Can Do dialog" loading="lazy"><span class="cap">“What Foresight Can Do” — an honest, in-app capability list.</span></a>
+    <a class="shot" href="#s5"><img src="screenshots/05-transparency.png" alt="Capability boundary and versions" loading="lazy"><span class="cap">Nothing hidden — the boundary of what's exposed, and exact versions.</span></a>
+    <a class="shot" href="#s6"><img src="screenshots/06-rsync-help.png" alt="Bundled rsync help output" loading="lazy"><span class="cap">The bundled rsync's own <code>--help</code>, one click away.</span></a>
+  </div>
+
+  <div class="lb" id="s1"><a class="lb-inner" href="#screens"><img src="screenshots/01-configure.png" alt="Foresight Configure page, enlarged"></a></div>
+  <div class="lb" id="s2"><a class="lb-inner" href="#screens"><img src="screenshots/02-advanced.png" alt="Advanced options, enlarged"></a></div>
+  <div class="lb" id="s3"><a class="lb-inner" href="#screens"><img src="screenshots/03-preview.png" alt="Grouped change preview, enlarged"></a></div>
+  <div class="lb" id="s4"><a class="lb-inner" href="#screens"><img src="screenshots/04-help.png" alt="What Foresight Can Do dialog, enlarged"></a></div>
+  <div class="lb" id="s5"><a class="lb-inner" href="#screens"><img src="screenshots/05-transparency.png" alt="Capability boundary and versions, enlarged"></a></div>
+  <div class="lb" id="s6"><a class="lb-inner" href="#screens"><img src="screenshots/06-rsync-help.png" alt="Bundled rsync help output, enlarged"></a></div>
+</section>
 
 <section class="wrap">
   <h2>Why Foresight?</h2>

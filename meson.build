@@ -62,6 +62,24 @@ install_data(
   install_dir: datadir / 'icons' / 'hicolor' / 'scalable' / 'apps',
 )
 
+# ---------------------------------------------------------------- AppStream
+metainfo_file = 'data/' + application_id + '.metainfo.xml'
+install_data(
+  metainfo_file,
+  install_dir: datadir / 'metainfo',
+)
+
+# Validate the metainfo at test time when a validator is available (offline so
+# CI/Flatpak builds don't reach the network for the screenshot URLs).
+appstreamcli = find_program('appstreamcli', required: false)
+if appstreamcli.found()
+  test(
+    'metainfo-validate',
+    appstreamcli,
+    args: ['validate', '--no-net', '--explain', files(metainfo_file)],
+  )
+endif
+
 # ---------------------------------------------------------------- Cargo build
 cargo = find_program('cargo')
 cargo_build = find_program('build-aux/cargo-build.sh')

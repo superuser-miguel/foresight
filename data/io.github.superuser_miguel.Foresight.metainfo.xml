@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Copyright 2026 The Foresight contributors -->
+<component type="desktop-application">
+  <id>io.github.superuser_miguel.Foresight</id>
+
+  <name>Foresight</name>
+  <summary>Preview and run rsync transfers with a dry-run change list</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+
+  <developer id="io.github.superuser_miguel">
+    <name>The Foresight contributors</name>
+  </developer>
+
+  <description>
+    <p>
+      Foresight is a GNOME-native front-end for rsync. Every sync starts as a
+      preview: a real dry run, rendered as a grouped list of changes — created,
+      updated, deleted, and attributes-only — so a mistake is obvious before a
+      single byte moves.
+    </p>
+    <p>Features:</p>
+    <ul>
+      <li>Grouped change preview from a real rsync dry run before every transfer</li>
+      <li>Add files and folders from different locations as sources, or drop them in</li>
+      <li>Live transfer view with a progress bar and a structured activity log</li>
+      <li>Mirror deletions (--delete) gated behind a confirmation of exactly what would be removed</li>
+      <li>Advanced options: move, unit-aware bandwidth limit, excludes, and free-form extra arguments</li>
+      <li>Reusable presets for your Advanced-option sets</li>
+      <li>An honest, in-app inventory of exactly which rsync flags this build exposes</li>
+    </ul>
+    <p>
+      The rsync engine is bundled and version-pinned, and all file access flows
+      through desktop portals — Foresight never asks for your whole home
+      directory.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">io.github.superuser_miguel.Foresight.desktop</launchable>
+
+  <branding>
+    <color type="primary" scheme_preference="light">#3584e4</color>
+    <color type="primary" scheme_preference="dark">#1a5fb4</color>
+  </branding>
+
+  <screenshots>
+    <screenshot type="default">
+      <image>https://superuser-miguel.github.io/foresight/screenshots/01-configure.png</image>
+      <caption>Configure a job: add sources and a destination</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://superuser-miguel.github.io/foresight/screenshots/03-preview.png</image>
+      <caption>Preview every change, grouped, before it runs</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://superuser-miguel.github.io/foresight/screenshots/02-advanced.png</image>
+      <caption>Advanced options: move, bandwidth limit, excludes, and extra flags</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://superuser-miguel.github.io/foresight/screenshots/04-help.png</image>
+      <caption>An honest, in-app list of what Foresight can do</caption>
+    </screenshot>
+  </screenshots>
+
+  <url type="homepage">https://superuser-miguel.github.io/foresight/</url>
+  <url type="bugtracker">https://github.com/superuser-miguel/foresight/issues</url>
+  <url type="vcs-browser">https://github.com/superuser-miguel/foresight</url>
+
+  <categories>
+    <category>Utility</category>
+    <category>Archiving</category>
+  </categories>
+
+  <keywords>
+    <keyword>rsync</keyword>
+    <keyword>sync</keyword>
+    <keyword>backup</keyword>
+    <keyword>mirror</keyword>
+    <keyword>copy</keyword>
+  </keywords>
+
+  <recommends>
+    <control>keyboard</control>
+    <control>pointing</control>
+    <control>touch</control>
+  </recommends>
+
+  <content_rating type="oars-1.1" />
+
+  <releases>
+    <release version="0.1.0" date="2026-07-18">
+      <description>
+        <p>First release. Multi-source jobs, grouped dry-run preview, live
+        transfer with a structured log, mirror-deletion confirmation, advanced
+        options with presets, and an in-app capability inventory.</p>
+      </description>
+    </release>
+  </releases>
+</component>

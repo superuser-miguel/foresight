@@ -90,5 +90,5 @@ modules:
       - type: git
         url: https://github.com/superuser-miguel/foresight.git
         tag: v0.1.0
-        commit: PLACEHOLDER_PINNED_AFTER_TAGGING
+        commit: d356ec6d8a3d3ce1e6748676b0cf8c6509d67f10
       - cargo-sources.json

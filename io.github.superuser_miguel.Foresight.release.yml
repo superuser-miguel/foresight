@@ -1,0 +1,94 @@
+# Flatpak RELEASE manifest — Foresight. Builds fully OFFLINE from the pinned
+# release tag + the vendored crate graph (cargo-sources.json), for the
+# `.flatpak` bundle published on GitHub Releases:
+#
+#   flatpak-builder --user --force-clean --repo=repo-release build-dir-release \
+#     io.github.superuser_miguel.Foresight.release.yml
+#   flatpak build-bundle repo-release Foresight.flatpak \
+#     io.github.superuser_miguel.Foresight \
+#     --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo
+#
+# Regenerate cargo-sources.json whenever Cargo.lock changes:
+#   python3 flatpak-cargo-generator.py Cargo.lock -o cargo-sources.json
+# (flatpak-builder-tools; needs a venv with tomlkit + aiohttp — it's tomlkit
+# now, NOT toml.)
+#
+# Local dev iteration uses io.github.superuser_miguel.Foresight.yml instead
+# (dir source, build-time network, no vendoring).
+
+id: io.github.superuser_miguel.Foresight
+runtime: org.gnome.Platform
+runtime-version: '49'
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: foresight
+
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/foresight/cargo
+  # No build-args: the build runs with NO network. cargo resolves entirely from
+  # the vendored crate graph via the source-replacement config that
+  # cargo-sources.json drops into CARGO_HOME.
+
+finish-args:
+  # -- display / input ------------------------------------------------------
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --share=ipc                       # required by X11 fallback
+  - --device=dri                      # GPU rendering for GTK4/GSK
+
+  # -- capabilities the app actually needs ----------------------------------
+  - --share=network                   # ssh remotes + rsyncd targets (the
+                                       # runtime's ssh client + a real transfer
+                                       # verified working 2026-07-13)
+
+  # NOTE deliberately ABSENT (portals-first — see PLAN.md §5):
+  #   --filesystem=home / host        -> file access flows through the
+  #                                      FileChooser portal instead
+
+cleanup:
+  - /include
+  - /lib/pkgconfig
+  - /share/man
+
+modules:
+  # ---------------------------------------------------------------- rsync
+  # The engine. Pinned by commit: the version pin IS the output-format
+  # contract that crates/rsync-events is tested against.
+  - name: rsync
+    buildsystem: autotools
+    config-opts:
+      - --disable-md2man          # avoids a python-commonmark build dep
+      - --disable-xxhash          # not in the GNOME runtime
+      - --disable-zstd            # enable later by adding lib modules
+      - --disable-lz4
+      - --with-included-popt
+    sources:
+      - type: git
+        url: https://github.com/RsyncProject/rsync.git
+        tag: v3.4.4
+        commit: f26f747b8017b321d3776becc69f330dd889fa21
+
+  # ---------------------------------------------------------------- blueprint
+  # Compiles .blp UI files at build time; not needed at runtime.
+  - name: blueprint-compiler
+    buildsystem: meson
+    cleanup: ['*']
+    sources:
+      - type: git
+        url: https://gitlab.gnome.org/GNOME/blueprint-compiler.git
+        tag: v0.18.0
+
+  # ---------------------------------------------------------------- the app
+  - name: foresight
+    buildsystem: meson
+    sources:
+      # Release source: the tagged release, pinned by tag + commit. Local
+      # testing can swap in {type: dir, path: .}.
+      - type: git
+        url: https://github.com/superuser-miguel/foresight.git
+        tag: v0.1.0
+        commit: PLACEHOLDER_PINNED_AFTER_TAGGING
+      - cargo-sources.json

@@ -89,11 +89,25 @@
   <content_rating type="oars-1.1" />
 
   <releases>
-    <release version="0.1.0" date="2026-07-18">
+    <release version="0.1.0" date="2026-07-21">
       <description>
-        <p>First release. Multi-source jobs, grouped dry-run preview, live
-        transfer with a structured log, mirror-deletion confirmation, advanced
-        options with presets, and an in-app capability inventory.</p>
+        <p>First release.</p>
+        <ul>
+          <li>Preview any sync as a grouped change list — created, updated,
+          deleted, attributes-only — from a real dry run.</li>
+          <li>Add files and folders from several locations to one job, by
+          browsing or by drag and drop.</li>
+          <li>Live transfer with a progress bar, current-file label, a
+          structured streaming log, and cancel.</li>
+          <li>Mirror deletions asks you to confirm the exact list of files it
+          will remove.</li>
+          <li>Advanced options — move, bandwidth limit, excludes, extra
+          arguments — saveable as presets.</li>
+          <li>A What Foresight Can Do dialog listing every rsync flag this
+          build exposes, alongside the bundled rsync's own help.</li>
+        </ul>
+        <p>Ships sandboxed, reaching your files only through portals, with
+        rsync 3.4.4 bundled and version-pinned.</p>
       </description>
     </release>
   </releases>

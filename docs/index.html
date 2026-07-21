@@ -116,7 +116,7 @@
       <path d="M54 68 L40 80 L54 92"/>
     </g>
   </svg>
-  <span class="badge">Working — building toward first release</span>
+  <span class="badge">v0.1.0 — first release out now</span>
   <h1>Foresight</h1>
   <p class="tagline">See exactly what rsync will change — before a byte moves.</p>
   <p class="lede">
@@ -125,8 +125,9 @@
     so a mistake is obvious before it runs. Multi-source, sandboxed, engine bundled.
   </p>
   <div class="btns">
-    <a class="btn primary" href="https://github.com/superuser-miguel/foresight">View on GitHub</a>
-    <a class="btn" href="https://github.com/superuser-miguel/foresight#build-from-source">Build from source</a>
+    <a class="btn primary" href="https://github.com/superuser-miguel/foresight/releases/latest">Download (.flatpak)</a>
+    <a class="btn" href="https://github.com/superuser-miguel/foresight">View on GitHub</a>
+    <a class="btn" href="https://github.com/superuser-miguel/foresight#build--run">Build from source</a>
   </div>
   <p class="note">Linux · Flatpak · portals only — no host filesystem access · rsync engine bundled &amp; version-pinned · no telemetry</p>
 </header>
@@ -235,7 +236,8 @@
     <li class="done"><b>Saved presets</b> — store an Advanced-option set and reapply it in one click.</li>
     <li class="done"><b>Help / capability disclosure</b> — an in-app, honest inventory of exactly which rsync flags Foresight exposes, checked against the bundled <code>rsync --help</code>.</li>
     <li class="done"><b>AppStream metainfo, screenshots &amp; landing page</b> — the release metadata and this page.</li>
-    <li><b>First <code>.flatpak</code> release</b> — a downloadable bundle on GitHub Releases, then a self-hosted repo so <code>flatpak update</code> pulls new versions.</li>
+    <li class="done"><b>First <code>.flatpak</code> release</b> — an offline, reproducible bundle built from a GPG-signed tag, <a href="https://github.com/superuser-miguel/foresight/releases/latest">on GitHub Releases</a>.</li>
+    <li><b>Self-hosted repo</b> — a signed OSTree remote and <code>.flatpakref</code> so <code>flatpak update</code> pulls new versions instead of re-downloading a bundle.</li>
     <li><b>Excludes editor</b> — manage exclude/include patterns as a list, not a single field.</li>
     <li><b>Remote sync over SSH</b> — to and from a <code>user@host:/path</code> endpoint. Key-based auth first (your existing SSH key, no extra permissions); the engine and sandbox are already verified to carry it.</li>
     <li><b>Distant future / speculative</b> — optionally remember a password-based SSH or rsync-daemon credential in the system keyring (<code>org.freedesktop.secrets</code>) instead of a config file. A deliberate opt-in permission; key-based auth would never need it.</li>

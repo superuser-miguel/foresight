@@ -106,7 +106,24 @@ dedicated control. A few useful ones:
 **Not on Flathub** — Foresight is distributed as a Flatpak **bundle via
 [GitHub Releases](https://github.com/superuser-miguel/foresight/releases)**, with
 the project page on [GitHub Pages](https://superuser-miguel.github.io/foresight/).
-The first bundle is being cut now; until it lands, build from source below.
+
+Download
+**[`Foresight.flatpak`](https://github.com/superuser-miguel/foresight/releases/latest)**
+and install it:
+
+```sh
+flatpak install --user Foresight.flatpak
+flatpak run io.github.superuser_miguel.Foresight
+```
+
+You need the GNOME runtime it builds against; if you don't have it yet:
+
+```sh
+flatpak install flathub org.gnome.Platform//49
+```
+
+Release tags are GPG-signed (key `D67DB8E03D50A8C0`). Verify with
+`git verify-tag v0.1.0`.
 
 ## Layout
 
@@ -148,11 +165,22 @@ meson test -C builddir                       # includes AppStream metainfo valid
 
 ### Release bundle
 
-For a reproducible `flatpak build-bundle` to publish on GitHub Releases, vendor
-the crate graph
-(`python3 flatpak-cargo-generator.py Cargo.lock -o cargo-sources.json`), add it to
-the app module, and remove the `--share=network` **build-arg** — see the comments
-in `io.github.superuser_miguel.Foresight.yml`.
+The published bundle is built from a separate **release manifest**,
+`io.github.superuser_miguel.Foresight.release.yml`: it takes its source from the
+signed release tag rather than the working tree, and builds with **no network**
+against the vendored crate graph in `cargo-sources.json`.
+
+```sh
+flatpak-builder --user --force-clean --repo=repo-release build-dir-release \
+    io.github.superuser_miguel.Foresight.release.yml
+flatpak build-bundle repo-release Foresight.flatpak \
+    io.github.superuser_miguel.Foresight \
+    --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo
+```
+
+Regenerate `cargo-sources.json` whenever `Cargo.lock` changes
+(`python3 flatpak-cargo-generator.py Cargo.lock -o cargo-sources.json`; needs a
+venv with `tomlkit` + `aiohttp`).
 
 ## Roadmap
 
@@ -171,12 +199,13 @@ in `io.github.superuser_miguel.Foresight.yml`.
       inventory of the flags Foresight exposes, cross-referenced to the bundled
       `rsync --help`.
 - [x] **AppStream metainfo, screenshots, and a landing page.**
+- [x] **First `.flatpak` release** — an offline, reproducible bundle built from a
+      GPG-signed tag, published on GitHub Releases.
 
 ### Next
 
-- [ ] **First `.flatpak` release** — a downloadable bundle on GitHub Releases,
-      then a self-hosted repo (signed OSTree + `.flatpakref`) so `flatpak update`
-      pulls new versions.
+- [ ] **Self-hosted repo** — a signed OSTree remote + `.flatpakref` so
+      `flatpak update` pulls new versions instead of re-downloading a bundle.
 - [ ] **Excludes editor** — manage exclude/include rules as a list, not a field.
 - [ ] **Remote sync over SSH** — rsync to/from a `user@host:/path` endpoint.
       Key-based auth first (uses your existing SSH key + agent, no extra

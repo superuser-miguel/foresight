@@ -144,6 +144,12 @@ template $ForesightWindow: Adw.ApplicationWindow {
                     title: _("Advanced");
                     subtitle: _("Extra rsync options");
 
+                    Adw.SwitchRow contents_row {
+                      title: _("Sync folder contents");
+                      subtitle: _("Copy what's inside the folder instead of the folder itself (a trailing / for rsync). Only for a single-folder sync.");
+                      active: false;       // OFF — a dropped folder nests in the destination
+                    }
+
                     Adw.SwitchRow delete_row {
                       title: _("Mirror deletions");
                       subtitle: _("Remove destination files not in the source (--delete). Only for a single-folder sync.");

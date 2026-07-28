@@ -6,9 +6,14 @@
 //! The app must invoke the *bundled* rsync with this exact reporting contract:
 //!
 //! ```text
-//! rsync -a --info=progress2 --out-format='%i %n%L' SRC/ DST/   # real run
-//! rsync -a -n -i --delete SRC/ DST/                            # dry-run preview
+//! rsync -a --info=progress2 --out-format='%i %n%L' SRC DST   # real run
+//! rsync -a -n -i --delete SRC DST                            # dry-run preview
 //! ```
+//!
+//! Whether `SRC` carries a trailing `/` is the app's choice and does not affect
+//! this contract — it only shifts where the paths in [`ItemizedChange`] are
+//! rooted (`SRC` yields `dir/file`, `SRC/` yields `file`). The event *format* is
+//! identical either way.
 //!
 //! The app may prepend optional user flags (`-v`, `--bwlimit`, `--exclude`,
 //! `--remove-source-files`, free-form extra args) *before* these reporting

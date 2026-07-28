@@ -10,9 +10,15 @@
 //! `rsync-events` is tested against (see that crate's docs):
 //!
 //! ```text
-//! rsync -a --info=progress2 --out-format='%i %n%L' [--delete] SRC/ DST/   # Sync
-//! rsync -a -n -i [--delete] SRC/ DST/                                     # Preview
+//! rsync -a --info=progress2 --out-format='%i %n%L' [--delete] SRC DST   # Sync
+//! rsync -a -n -i [--delete] SRC DST                                     # Preview
 //! ```
+//!
+//! `SRC` is passed **verbatim** by default, so a selected folder lands inside
+//! the destination as `DST/<folder>/` — what dragging a folder onto the app
+//! visibly promises. A trailing `/` (rsync's "contents of", which spills the
+//! folder's children directly into `DST`) is only ever appended when the user
+//! explicitly turns on [`Job::sync_contents`]. See [`Job::source_args`].
 
 use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
@@ -44,10 +50,20 @@ pub struct Job {
     pub sources: Vec<Source>,
     pub dest: PathBuf,
     /// Mirror deletions (`--delete`). Off by default; a safety rail in the UI.
-    /// Only offered for the single-directory "mirror" case (see [`is_mirror`]).
+    /// Only offered for the single-directory case (see [`is_single_dir`]).
     ///
-    /// [`is_mirror`]: Self::is_mirror
+    /// [`is_single_dir`]: Self::is_single_dir
     pub delete: bool,
+    /// Copy the *contents* of a single selected folder into the destination
+    /// (rsync's trailing-slash form) instead of the folder itself.
+    ///
+    /// Off by default: a folder named `Photos` normally lands as
+    /// `dest/Photos/…`. With this on it becomes `dest/…`, spilling its children
+    /// straight into the destination. Only meaningful when [`is_single_dir`] —
+    /// a trailing slash on a file makes rsync reject it as "not a directory".
+    ///
+    /// [`is_single_dir`]: Self::is_single_dir
+    pub sync_contents: bool,
 
     // -- Advanced options (all optional; none change rsync's *reporting*
     //    format, so the rsync-events contract is unaffected) ---------------
@@ -83,23 +99,43 @@ impl Job {
         }
     }
 
-    /// The "mirror" case: exactly one source and it is a directory. Only then
-    /// do we copy the source's *contents* into dest (trailing slash) and offer
-    /// `--delete`. Any other shape (a file, or several sources) is a "collect"
-    /// that drops each item *into* dest.
-    pub fn is_mirror(&self) -> bool {
+    /// Exactly one source and it is a directory. Only this shape may offer
+    /// `--delete` and the [`sync_contents`] choice; any other shape (a file, or
+    /// several sources) is a "collect" that drops each item *into* dest.
+    ///
+    /// [`sync_contents`]: Self::sync_contents
+    pub fn is_single_dir(&self) -> bool {
         self.sources.len() == 1 && self.sources[0].is_dir
+    }
+
+    /// The source operands, in argv order.
+    ///
+    /// Every source is passed verbatim — a folder therefore nests as
+    /// `dest/<folder>/` and a file lands as `dest/<name>`. The single exception
+    /// is an explicit [`sync_contents`] request on a lone folder, which appends
+    /// the trailing `/` that tells rsync "the contents of this directory".
+    ///
+    /// [`sync_contents`]: Self::sync_contents
+    fn source_args(&self) -> Vec<OsString> {
+        if self.sync_contents && self.is_single_dir() {
+            return vec![with_trailing_slash(&self.sources[0].path)];
+        }
+        self.sources
+            .iter()
+            .map(|s| s.path.as_os_str().to_os_string())
+            .collect()
     }
 
     /// Build the exact argv for `mode`. The program name (`rsync`) is **not**
     /// included — the caller supplies the bundled binary path to the spawner.
     ///
-    /// - Mirror (one directory): the source gets a trailing `/` so rsync copies
-    ///   its *contents* into dest rather than nesting the directory inside it.
-    /// - Collect (a file, or multiple sources): each source is passed verbatim
-    ///   — a trailing slash on a file would make rsync reject it as "not a
-    ///   directory" — so a file lands as `dest/<name>` and a folder as
-    ///   `dest/<dir>/…`.
+    /// Sources are laid out by [`source_args`]: verbatim by default (a folder
+    /// nests as `dest/<dir>/`, a file lands as `dest/<name>`), with the
+    /// trailing-slash "contents of" form reserved for an explicit
+    /// [`sync_contents`] request on a lone folder.
+    ///
+    /// [`source_args`]: Self::source_args
+    /// [`sync_contents`]: Self::sync_contents
     pub fn build_argv(&self, mode: Mode) -> Vec<OsString> {
         let mut argv: Vec<OsString> = Vec::new();
         argv.push(OsString::from("-a"));
@@ -140,13 +176,7 @@ impl Job {
             argv.push(OsString::from("--delete"));
         }
 
-        if self.is_mirror() {
-            argv.push(with_trailing_slash(&self.sources[0].path));
-        } else {
-            for s in &self.sources {
-                argv.push(s.path.as_os_str().to_os_string());
-            }
-        }
+        argv.extend(self.source_args());
         argv.push(self.dest.as_os_str().to_os_string());
         argv
     }
@@ -299,10 +329,7 @@ mod tests {
     fn preview_matches_contract() {
         let job = Job::new("/data/src", "/data/dst");
         let argv = job.build_argv(Mode::Preview);
-        assert_eq!(
-            as_strs(&argv),
-            ["-a", "-n", "-i", "/data/src/", "/data/dst"]
-        );
+        assert_eq!(as_strs(&argv), ["-a", "-n", "-i", "/data/src", "/data/dst"]);
     }
 
     #[test]
@@ -315,7 +342,7 @@ mod tests {
                 "-a",
                 "--info=progress2",
                 "--out-format=%i %n%L",
-                "/data/src/",
+                "/data/src",
                 "/data/dst",
             ]
         );
@@ -327,7 +354,7 @@ mod tests {
         job.delete = true;
         assert_eq!(
             as_strs(&job.build_argv(Mode::Preview)),
-            ["-a", "-n", "-i", "--delete", "/s/", "/d"]
+            ["-a", "-n", "-i", "--delete", "/s", "/d"]
         );
         assert_eq!(
             as_strs(&job.build_argv(Mode::Sync)),
@@ -336,7 +363,7 @@ mod tests {
                 "--info=progress2",
                 "--out-format=%i %n%L",
                 "--delete",
-                "/s/",
+                "/s",
                 "/d"
             ]
         );
@@ -349,15 +376,58 @@ mod tests {
         assert!(!job.build_argv(Mode::Sync).iter().any(|a| a == "--delete"));
     }
 
+    /// The reported bug: a dropped folder must arrive *as a folder*, not have
+    /// its children spill loose into the destination. That means no trailing
+    /// slash unless the user explicitly asks for one.
     #[test]
-    fn source_gets_single_trailing_slash() {
-        // no slash -> one added
-        let a = Job::new("/a/b", "/x").build_argv(Mode::Sync);
+    fn a_lone_folder_is_passed_verbatim_so_it_nests_in_dest() {
+        let argv = Job::new("/a/b", "/x").build_argv(Mode::Sync);
+        assert!(argv.iter().any(|s| s.as_bytes() == b"/a/b"));
+        assert!(
+            !argv.iter().any(|s| s.as_bytes() == b"/a/b/"),
+            "a trailing slash would spill b's contents into /x: {argv:?}"
+        );
+    }
+
+    #[test]
+    fn sync_contents_opts_into_a_single_trailing_slash() {
+        let contents = |p: &str| Job {
+            sync_contents: true,
+            ..Job::new(p, "/x")
+        };
+        // no slash -> exactly one added
+        let a = contents("/a/b").build_argv(Mode::Sync);
         assert!(a.iter().any(|s| s.as_bytes() == b"/a/b/"));
         // already slashed -> not doubled
-        let b = Job::new("/a/b/", "/x").build_argv(Mode::Sync);
+        let b = contents("/a/b/").build_argv(Mode::Sync);
         assert!(b.iter().any(|s| s.as_bytes() == b"/a/b/"));
         assert!(!b.iter().any(|s| s.as_bytes() == b"/a/b//"));
+    }
+
+    /// `sync_contents` is a single-folder concept: a trailing slash on a file
+    /// makes rsync reject it, and on a multi-source collect it is meaningless.
+    #[test]
+    fn sync_contents_is_ignored_unless_the_source_is_a_lone_folder() {
+        let file = Job {
+            sources: vec![file_source("/a/notes.txt")],
+            dest: PathBuf::from("/x"),
+            sync_contents: true,
+            ..Default::default()
+        };
+        let argv = file.build_argv(Mode::Sync);
+        assert!(argv.iter().any(|s| s.as_bytes() == b"/a/notes.txt"));
+        assert!(!argv.iter().any(|s| s.as_bytes() == b"/a/notes.txt/"));
+
+        let two = Job {
+            sources: vec![dir_source("/a/one"), dir_source("/a/two")],
+            dest: PathBuf::from("/x"),
+            sync_contents: true,
+            ..Default::default()
+        };
+        let argv = two.build_argv(Mode::Sync);
+        assert!(argv.iter().any(|s| s.as_bytes() == b"/a/one"));
+        assert!(argv.iter().any(|s| s.as_bytes() == b"/a/two"));
+        assert!(!argv.iter().any(|s| s.as_bytes().ends_with(b"/one/")));
     }
 
     #[test]
@@ -394,8 +464,10 @@ mod tests {
         assert!(!argv.iter().any(|s| s.as_bytes() == b"/a/b/notes.txt/"));
     }
 
+    /// By default a folder and a file source look identical in argv — both
+    /// verbatim, both landing *inside* dest. Only `sync_contents` separates them.
     #[test]
-    fn dir_vs_file_source_differ_only_by_trailing_slash() {
+    fn dir_and_file_sources_are_both_verbatim_by_default() {
         let dir = Job {
             sources: vec![dir_source("/data/x")],
             dest: PathBuf::from("/d"),
@@ -406,14 +478,20 @@ mod tests {
             sources: vec![file_source("/data/x")],
             ..dir.clone()
         };
-        assert!(dir
+        for job in [&dir, &file] {
+            assert!(job
+                .build_argv(Mode::Sync)
+                .iter()
+                .any(|s| s.as_bytes() == b"/data/x"));
+        }
+        let contents = Job {
+            sync_contents: true,
+            ..dir
+        };
+        assert!(contents
             .build_argv(Mode::Sync)
             .iter()
             .any(|s| s.as_bytes() == b"/data/x/"));
-        assert!(file
-            .build_argv(Mode::Sync)
-            .iter()
-            .any(|s| s.as_bytes() == b"/data/x"));
     }
 
     #[test]
@@ -435,19 +513,25 @@ mod tests {
         assert_eq!(tail[0], b"/backup");
         assert_eq!(tail[1], b"/home/u/Documents/dl");
         assert_eq!(tail[2], b"/home/u/Downloads/a.txt");
-        assert!(!job.is_mirror());
+        assert!(!job.is_single_dir());
     }
 
     #[test]
-    fn single_dir_is_mirror_but_two_dirs_are_not() {
-        assert!(Job::new("/one", "/d").is_mirror());
+    fn single_dir_predicate_rejects_two_dirs_and_files() {
+        assert!(Job::new("/one", "/d").is_single_dir());
         let two = Job {
             sources: vec![dir_source("/one"), dir_source("/two")],
             dest: PathBuf::from("/d"),
             delete: false,
             ..Default::default()
         };
-        assert!(!two.is_mirror());
+        assert!(!two.is_single_dir());
+        let file = Job {
+            sources: vec![file_source("/one")],
+            dest: PathBuf::from("/d"),
+            ..Default::default()
+        };
+        assert!(!file.is_single_dir());
     }
 
     #[test]
@@ -548,9 +632,18 @@ mod tests {
     fn non_utf8_path_is_preserved_byte_for_byte() {
         use std::os::unix::ffi::OsStrExt;
         let src = PathBuf::from(OsStr::from_bytes(b"/bad/\xff\xfename"));
-        let argv = Job::new(src, "/d").build_argv(Mode::Preview);
-        // trailing slash appended, original bytes intact
-        assert!(argv.iter().any(|a| a.as_bytes() == b"/bad/\xff\xfename/"));
+        let argv = Job::new(&src, "/d").build_argv(Mode::Preview);
+        assert!(argv.iter().any(|a| a.as_bytes() == b"/bad/\xff\xfename"));
+        // ...and the opt-in slash is appended to the raw bytes, not to a lossy
+        // UTF-8 round-trip of them.
+        let contents = Job {
+            sync_contents: true,
+            ..Job::new(&src, "/d")
+        };
+        assert!(contents
+            .build_argv(Mode::Preview)
+            .iter()
+            .any(|a| a.as_bytes() == b"/bad/\xff\xfename/"));
     }
 
     // -- engine runner: drives real rsync through spawn_rsync ---------------
@@ -627,14 +720,74 @@ mod tests {
 
         let changes = changes.borrow();
         assert!(
-            changes.iter().any(|p| p == "a.txt"),
-            "expected a.txt in itemized changes, got {changes:?}"
+            changes.iter().any(|p| p == "src/a.txt"),
+            "expected src/a.txt in itemized changes, got {changes:?}"
         );
         assert!(saw_progress.get(), "expected at least one progress event");
 
-        // The bytes really moved.
+        // The folder arrived as a folder: dst/src/…, not dst/… .
+        assert_eq!(
+            std::fs::read(dst.join("src/a.txt")).unwrap(),
+            b"hello world"
+        );
+        assert!(dst.join("src/sub/b.txt").exists());
+        assert!(
+            !dst.join("a.txt").exists(),
+            "source contents must not spill loose into the destination"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// The opt-in inverse: `sync_contents` makes dest a copy of the folder's
+    /// children, which is what `--delete` mirroring wants.
+    #[test]
+    fn spawn_rsync_sync_contents_spills_children_into_dest() {
+        if !rsync_available() {
+            eprintln!("skipping: rsync not on PATH");
+            return;
+        }
+
+        let tmp = std::env::temp_dir().join(format!("foresight-contents-{}", std::process::id()));
+        let src = tmp.join("src");
+        let dst = tmp.join("dst");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&dst).unwrap();
+        std::fs::write(src.join("a.txt"), b"hello world").unwrap();
+
+        let completion: Rc<RefCell<Option<Completion>>> = Rc::new(RefCell::new(None));
+        let job = Job {
+            sources: vec![Source {
+                path: src.clone(),
+                is_dir: true,
+            }],
+            dest: dst.clone(),
+            sync_contents: true,
+            ..Default::default()
+        };
+
+        let ctx = glib::MainContext::new();
+        ctx.with_thread_default(|| {
+            let main_loop = glib::MainLoop::new(Some(&ctx), false);
+            let ml = main_loop.clone();
+            let comp = completion.clone();
+            spawn_rsync(
+                job.build_argv(Mode::Sync),
+                |_ev| {},
+                move |c: Completion| {
+                    *comp.borrow_mut() = Some(c);
+                    ml.quit();
+                },
+            )
+            .expect("spawn rsync");
+            main_loop.run();
+        })
+        .expect("run with thread-default context");
+
+        let completion = completion.borrow().clone().expect("on_done fired");
+        assert_eq!(completion.severity, Severity::Success, "{completion:?}");
         assert_eq!(std::fs::read(dst.join("a.txt")).unwrap(), b"hello world");
-        assert!(dst.join("sub/b.txt").exists());
+        assert!(!dst.join("src").exists(), "contents mode must not nest");
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

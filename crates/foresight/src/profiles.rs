@@ -15,6 +15,8 @@ use std::path::{Path, PathBuf};
 pub struct Profile {
     pub name: String,
     pub delete: bool,
+    /// Copy a lone folder's *contents* rather than the folder itself.
+    pub sync_contents: bool,
     pub verbose: bool,
     pub remove_source_files: bool,
     /// rsync rate token like `"85M"`; empty/`None` means unlimited.
@@ -56,6 +58,11 @@ fn load_from(path: &Path) -> Vec<Profile> {
         let bw = get("bwlimit");
         out.push(Profile {
             delete: key_file.boolean(&name, "delete").unwrap_or(false),
+            // Absent in presets saved before this option existed — those were
+            // written when a lone folder always synced its contents, so `false`
+            // (nest the folder) is the honest new default, not a silent change
+            // of what the preset used to do to the *paths* it never stored.
+            sync_contents: key_file.boolean(&name, "sync_contents").unwrap_or(false),
             verbose: key_file.boolean(&name, "verbose").unwrap_or(false),
             remove_source_files: key_file.boolean(&name, "move").unwrap_or(false),
             bwlimit: (!bw.is_empty()).then_some(bw),
@@ -76,6 +83,7 @@ fn save_all_to(profiles: &[Profile], path: &Path) {
     let key_file = KeyFile::new();
     for p in profiles {
         key_file.set_boolean(&p.name, "delete", p.delete);
+        key_file.set_boolean(&p.name, "sync_contents", p.sync_contents);
         key_file.set_boolean(&p.name, "verbose", p.verbose);
         key_file.set_boolean(&p.name, "move", p.remove_source_files);
         key_file.set_string(&p.name, "bwlimit", p.bwlimit.as_deref().unwrap_or(""));
@@ -99,6 +107,7 @@ mod tests {
             Profile {
                 name: "HDD move".into(),
                 delete: false,
+                sync_contents: false,
                 verbose: true,
                 remove_source_files: true,
                 bwlimit: Some("85M".into()),
@@ -108,6 +117,7 @@ mod tests {
             Profile {
                 name: "Mirror strict".into(),
                 delete: true,
+                sync_contents: true,
                 verbose: false,
                 remove_source_files: false,
                 bwlimit: None,

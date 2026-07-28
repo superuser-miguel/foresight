@@ -82,7 +82,7 @@ pub const CAPABILITIES: &[Capability] = &[
         flags: &["--delete"],
         control: "Advanced → Mirror deletions",
         description: "Remove destination files that no longer exist in the source. \
-                      Off by default; offered only for a single-folder mirror, and \
+                      Off by default; offered only for a single-folder sync, and \
                       always confirmed against a fresh dry run.",
         man_option: "--delete",
         group: Group::Options,
@@ -122,6 +122,19 @@ pub const CAPABILITIES: &[Capability] = &[
     },
 ];
 
+/// How Foresight places sources in the destination. Not a flag — it is the
+/// shape of the *path operands* [`crate::job::Job::build_argv`] emits — but it
+/// changes where files land, so the Help states it outright rather than leaving
+/// users to rediscover rsync's trailing-slash rule the hard way.
+pub const PATH_BEHAVIOR: (&str, &str) = (
+    "Where your files land",
+    "Everything you add lands inside the destination: a folder named Photos becomes \
+     destination/Photos/, a file becomes destination/file. Turn on Advanced → Sync \
+     folder contents to get rsync's other form instead, where a single folder's \
+     children are copied straight into the destination and the folder itself is not \
+     recreated.",
+);
+
 /// Common rsync capabilities Foresight does **not** yet expose as a dedicated
 /// control. The Help dialog lists these and points users at the *Extra
 /// arguments* field, which passes them through verbatim.
@@ -159,6 +172,7 @@ mod tests {
             }],
             dest: PathBuf::from("/d"),
             delete: true,
+            sync_contents: true,
             verbose: true,
             remove_source_files: true,
             bwlimit: Some("85M".into()),

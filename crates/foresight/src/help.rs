@@ -13,7 +13,7 @@
 use adw::prelude::*;
 use gtk::glib;
 
-use crate::capabilities::{Group, CAPABILITIES, NOT_EXPOSED};
+use crate::capabilities::{Group, CAPABILITIES, NOT_EXPOSED, PATH_BEHAVIOR};
 
 /// Build and present the capabilities dialog over `parent`.
 pub fn present(parent: &impl IsA<gtk::Widget>) {
@@ -54,6 +54,7 @@ pub fn present(parent: &impl IsA<gtk::Widget>) {
     let concepts = adw::PreferencesGroup::builder()
         .title("Good to know")
         .build();
+    concepts.add(&concept_row(PATH_BEHAVIOR.0, PATH_BEHAVIOR.1));
     concepts.add(&concept_row(
         "Dry Run is always safe",
         "Dry Run really runs rsync, but with --dry-run: nothing is written, moved, \
@@ -63,9 +64,10 @@ pub fn present(parent: &impl IsA<gtk::Widget>) {
     concepts.add(&concept_row(
         "How Mirror deletions stays safe",
         "Mirror deletions (--delete) removes destination files that aren't in the \
-         source. It's off by default, offered only for a single-folder mirror, and \
+         source. It's off by default, offered only for a single-folder sync, and \
          starting a sync with it on always re-runs a fresh dry run so the \
-         confirmation lists exactly what this transfer would remove.",
+         confirmation lists exactly what this transfer would remove. It only ever \
+         prunes the folders this transfer actually writes.",
     ));
     page.add(&concepts);
 

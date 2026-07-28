@@ -4,8 +4,12 @@ Designed as the pure, UI-free core of a GTK4/libadwaita rsync frontend.
 
 The app must invoke the *bundled* rsync with this exact reporting contract:
 
-    rsync -a --info=progress2 --out-format='%i %n%L' SRC/ DST/     # real run
-    rsync -a -n -i --delete SRC/ DST/                              # dry-run preview
+    rsync -a --info=progress2 --out-format='%i %n%L' SRC DST     # real run
+    rsync -a -n -i --delete SRC DST                              # dry-run preview
+
+Whether SRC carries a trailing "/" is the app's choice and does not affect this
+contract — it only shifts where itemized paths are rooted (SRC yields
+"dir/file", SRC/ yields "file"). The event format is identical either way.
 
 Pinning the bundled rsync version pins these formats; this module is tested
 against captured transcripts from rsync 3.4.4 (see tests/fixtures/).

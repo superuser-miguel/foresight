@@ -61,6 +61,8 @@ mod imp {
         #[template_child]
         pub dest_row: TemplateChild<adw::ActionRow>,
         #[template_child]
+        pub contents_row: TemplateChild<adw::SwitchRow>,
+        #[template_child]
         pub delete_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
         pub verbose_row: TemplateChild<adw::SwitchRow>,
@@ -451,6 +453,7 @@ impl ForesightWindow {
         *imp.dest.borrow_mut() = None;
         imp.dest_row.set_subtitle("Not selected");
         imp.dest_row.set_tooltip_text(None);
+        imp.contents_row.set_active(false);
         imp.delete_row.set_active(false);
 
         // Advanced options.
@@ -617,17 +620,20 @@ impl ForesightWindow {
         self.refresh_action_sensitivity();
     }
 
-    /// Recompute the placeholder, the `--delete` availability (only the
-    /// single-directory "mirror" case), and the action-button sensitivity.
+    /// Recompute the placeholder, the availability of the two single-folder
+    /// options (`--delete` and *Sync folder contents*), and the action-button
+    /// sensitivity.
     fn refresh_sources_state(&self) {
         let imp = self.imp();
         let sources = imp.sources.borrow();
         imp.sources_placeholder.set_visible(sources.is_empty());
 
-        let is_mirror = sources.len() == 1 && sources[0].is_dir;
-        imp.delete_row.set_sensitive(is_mirror);
-        if !is_mirror {
-            imp.delete_row.set_active(false);
+        let single_dir = sources.len() == 1 && sources[0].is_dir;
+        for row in [&*imp.contents_row, &*imp.delete_row] {
+            row.set_sensitive(single_dir);
+            if !single_dir {
+                row.set_active(false);
+            }
         }
         drop(sources);
         self.refresh_action_sensitivity();
@@ -653,6 +659,7 @@ impl ForesightWindow {
             sources,
             dest,
             delete: adv.delete,
+            sync_contents: adv.sync_contents,
             verbose: adv.verbose,
             remove_source_files: adv.remove_source_files,
             bwlimit: adv.bwlimit,
@@ -680,6 +687,7 @@ impl ForesightWindow {
         Profile {
             name: String::new(),
             delete: imp.delete_row.is_active(),
+            sync_contents: imp.contents_row.is_active(),
             verbose: imp.verbose_row.is_active(),
             remove_source_files: imp.remove_source_row.is_active(),
             bwlimit,
@@ -688,8 +696,8 @@ impl ForesightWindow {
         }
     }
 
-    /// Push a preset's options into the Advanced controls. `--delete` is only
-    /// set when its switch is currently allowed (the single-folder mirror case).
+    /// Push a preset's options into the Advanced controls. The two single-folder
+    /// options are only set when their switches are currently allowed.
     fn apply_advanced(&self, p: &Profile) {
         let imp = self.imp();
         imp.verbose_row.set_active(p.verbose);
@@ -699,6 +707,8 @@ impl ForesightWindow {
         imp.bwlimit_unit_row.set_selected(unit);
         imp.exclude_row.set_text(&p.excludes.join(" "));
         imp.extra_args_row.set_text(&p.extra_args.join(" "));
+        imp.contents_row
+            .set_active(p.sync_contents && imp.contents_row.is_sensitive());
         imp.delete_row
             .set_active(p.delete && imp.delete_row.is_sensitive());
     }

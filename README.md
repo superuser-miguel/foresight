@@ -59,8 +59,10 @@ Where Foresight aims to *win*, not just match:
 - **Multiple sources from anywhere** — add files *and* folders from different
   locations (e.g. one from Downloads, one from Documents), each with a remove
   button, or drop them in from the file manager.
-- **Right transfer semantics, automatically** — a single folder mirrors its
-  *contents* into the destination; a file or several items are *collected* into it.
+- **What you add is what you get** — a folder lands in the destination *as that
+  folder*, a file as that file. No surprise spills. If you want rsync's other
+  form — a single folder's *contents* copied straight into the destination —
+  Advanced → **Sync folder contents** does exactly that.
 - **Live transfer** — a real progress bar, current-file label, and a **structured
   streaming log** (one typed row per file and rsync message, not a wall of text)
   that opens with the exact `rsync …` command — with **cancel** at any time.
@@ -189,7 +191,8 @@ venv with `tomlkit` + `aiohttp`).
 - [x] **Dry-run preview** — grouped change list from a real `-n -i` run.
 - [x] **Multi-source transfers** — files and folders from different locations,
       with per-item remove and drag-and-drop.
-- [x] **Single-file and single-folder-mirror** semantics, chosen automatically.
+- [x] **Predictable placement** — everything you add lands *inside* the
+      destination, with an opt-in **Sync folder contents** for the other form.
 - [x] **Live progress, cancel, and a structured streaming log** of the run.
 - [x] **`--delete` with a confirmation** listing the deletions from the dry run.
 - [x] **Advanced options** — move (`--remove-source-files`), unit-aware bandwidth

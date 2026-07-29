@@ -139,12 +139,27 @@ pub const PATH_BEHAVIOR: (&str, &str) = (
 /// control. The Help dialog lists these and points users at the *Extra
 /// arguments* field, which passes them through verbatim.
 pub const NOT_EXPOSED: &[(&str, &str)] = &[
-    ("--checksum (-c)", "Compare by checksum instead of size and modification time."),
+    (
+        "--checksum (-c)",
+        "Compare by checksum instead of size and modification time.",
+    ),
     ("--compress (-z)", "Compress file data during the transfer."),
-    ("--backup (-b)", "Keep backups of files that get replaced or deleted."),
-    ("--partial", "Keep partially transferred files so a re-run can resume them."),
-    ("host:path (SSH)", "Sync to or from another machine over SSH (planned as a control)."),
-    ("--filter / merge files", "Complex include/exclude rule files."),
+    (
+        "--backup (-b)",
+        "Keep backups of files that get replaced or deleted.",
+    ),
+    (
+        "--partial",
+        "Keep partially transferred files so a re-run can resume them.",
+    ),
+    (
+        "host:path (SSH)",
+        "Sync to or from another machine over SSH (planned as a control).",
+    ),
+    (
+        "--filter / merge files",
+        "Complex include/exclude rule files.",
+    ),
 ];
 
 #[cfg(test)]

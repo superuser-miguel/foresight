@@ -28,7 +28,9 @@ pub fn present(parent: &impl IsA<gtk::Widget>) {
 
     // One group per registry category, capability rows rendered from the table.
     for group in Group::ORDER {
-        let pg = adw::PreferencesGroup::builder().title(group.title()).build();
+        let pg = adw::PreferencesGroup::builder()
+            .title(group.title())
+            .build();
         for cap in CAPABILITIES.iter().filter(|c| c.group == group) {
             let row = adw::ActionRow::builder()
                 .title(cap.name)
@@ -74,8 +76,10 @@ pub fn present(parent: &impl IsA<gtk::Widget>) {
     // The honest boundary: what isn't a dedicated control yet.
     let boundary = adw::PreferencesGroup::builder()
         .title("Not yet a dedicated control")
-        .description("Type any of these in Advanced → Extra arguments; Foresight \
-                      passes them straight through to rsync.")
+        .description(
+            "Type any of these in Advanced → Extra arguments; Foresight \
+                      passes them straight through to rsync.",
+        )
         .build();
     for (flag, desc) in NOT_EXPOSED {
         let row = adw::ActionRow::builder()
@@ -91,8 +95,10 @@ pub fn present(parent: &impl IsA<gtk::Widget>) {
     // Version stamp + the bundled-engine reference action.
     let about = adw::PreferencesGroup::builder()
         .title("This release")
-        .description("The pinned rsync version is the behavior contract — these \
-                      capabilities describe exactly this build.")
+        .description(
+            "The pinned rsync version is the behavior contract — these \
+                      capabilities describe exactly this build.",
+        )
         .build();
 
     let app_row = adw::ActionRow::builder()

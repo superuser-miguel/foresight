@@ -41,7 +41,14 @@ glib::wrapper! {
 }
 
 impl LogObject {
-    fn build(icon: &str, primary: String, detail: &str, danger: bool, dim: bool, mono: bool) -> Self {
+    fn build(
+        icon: &str,
+        primary: String,
+        detail: &str,
+        danger: bool,
+        dim: bool,
+        mono: bool,
+    ) -> Self {
         let obj: Self = glib::Object::new();
         let imp = obj.imp();
         *imp.icon.borrow_mut() = icon.to_string();
@@ -55,7 +62,14 @@ impl LogObject {
 
     /// The `rsync …` command shown once at the top of a run.
     pub fn command(command: String) -> Self {
-        Self::build("utilities-terminal-symbolic", command, "", false, true, true)
+        Self::build(
+            "utilities-terminal-symbolic",
+            command,
+            "",
+            false,
+            true,
+            true,
+        )
     }
 
     /// One itemized file from the live transfer (`%i %n%L`).
@@ -73,7 +87,14 @@ impl LogObject {
     /// A verbatim rsync message (informational or an error/warning).
     pub fn message(message: &Message) -> Self {
         if message.is_error {
-            Self::build("dialog-error-symbolic", message.text.clone(), "", true, false, false)
+            Self::build(
+                "dialog-error-symbolic",
+                message.text.clone(),
+                "",
+                true,
+                false,
+                false,
+            )
         } else {
             Self::build(
                 "dialog-information-symbolic",

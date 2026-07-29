@@ -105,26 +105,49 @@ dedicated control. A few useful ones:
 
 ## Install
 
-**Not on Flathub** — Foresight is distributed as a Flatpak **bundle via
-[GitHub Releases](https://github.com/superuser-miguel/foresight/releases)**, with
+**Not on Flathub** — Foresight ships from its own **signed repository**, with
 the project page on [GitHub Pages](https://superuser-miguel.github.io/foresight/).
 
-Download
-**[`Foresight.flatpak`](https://github.com/superuser-miguel/foresight/releases/latest)**
-and install it:
+### Recommended — the repository (gets `flatpak update`)
 
 ```sh
-flatpak install --user Foresight.flatpak
+flatpak install --user https://superuser-miguel.github.io/foresight/foresight.flatpakref
 flatpak run io.github.superuser_miguel.Foresight
 ```
 
-You need the GNOME runtime it builds against; if you don't have it yet:
+That one command adds the remote and installs the app, so new versions arrive
+with a normal `flatpak update` — no re-downloading a bundle. The remote is
+GPG-signed with key `D67DB8E03D50A8C0`; flatpak verifies every pull against the
+key embedded in the `.flatpakref` and refuses the remote if it doesn't match.
+
+To add the remote without installing anything:
+
+```sh
+flatpak remote-add --user --if-not-exists \
+    foresight https://superuser-miguel.github.io/foresight/foresight.flatpakrepo
+```
+
+### Alternative — the standalone bundle
+
+A `Foresight.flatpak` bundle is also published on
+[GitHub Releases](https://github.com/superuser-miguel/foresight/releases/latest)
+for offline or air-gapped installs:
+
+```sh
+flatpak install --user Foresight.flatpak
+```
+
+> A bundle install has **no origin to pull from**, so `flatpak update` cannot
+> upgrade it — moving versions means downloading the next bundle by hand. Prefer
+> the repository unless you specifically need a single offline file.
+
+Either way you need the GNOME runtime it builds against; if you don't have it:
 
 ```sh
 flatpak install flathub org.gnome.Platform//49
 ```
 
-Release tags are GPG-signed (key `D67DB8E03D50A8C0`). Verify with
+Release tags are GPG-signed with the same key. Verify with
 `git verify-tag v0.1.1`.
 
 ## Layout
@@ -211,11 +234,11 @@ venv with `tomlkit` + `aiohttp`).
 - [x] **AppStream metainfo, screenshots, and a landing page.**
 - [x] **First `.flatpak` release** — an offline, reproducible bundle built from a
       GPG-signed tag, published on GitHub Releases.
+- [x] **Self-hosted repo** — a GPG-signed OSTree remote served from GitHub
+      Pages, plus a `.flatpakref`, so `flatpak update` pulls new versions
+      instead of re-downloading a bundle.
 
 ### Next
-
-- [ ] **Self-hosted repo** — a signed OSTree remote + `.flatpakref` so
-      `flatpak update` pulls new versions instead of re-downloading a bundle.
 - [ ] **Excludes editor** — manage exclude/include rules as a list, not a field.
 - [ ] **Remote sync over SSH** — rsync to/from a `user@host:/path` endpoint.
       Key-based auth first (uses your existing SSH key + agent, no extra

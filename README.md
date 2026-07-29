@@ -245,10 +245,19 @@ venv with `tomlkit` + `aiohttp`).
 ### Next
 - [ ] **Include rules** — `--include` alongside excludes, so a rule can carve an
       exception out of a broader exclude.
-- [ ] **Remote sync over SSH** — rsync to/from a `user@host:/path` endpoint.
-      Key-based auth first (uses your existing SSH key + agent, no extra
-      permissions). The engine and sandbox are already verified to carry this;
-      only the endpoint UI is missing.
+- [ ] **Remote sync over SSH** — rsync to/from a `user@host:/path` endpoint,
+      key-based auth first. Three parts, not one:
+      1. **Agent access.** `--share=network` and the runtime's `ssh` are already
+         there, but `SSH_AUTH_SOCK` does not resolve inside the sandbox and
+         `~/.ssh` is (correctly) invisible, so no key is reachable today. Adding
+         **`--socket=ssh-auth`** fixes it — verified: the agent's keys become
+         usable while no private key material ever enters the sandbox. It is a
+         `finish-args` change, so PLAN.md §5 must move with it.
+      2. **Host-key trust.** `known_hosts` is not readable either, so first
+         contact has nothing to verify against. Preference is an app-managed
+         `known_hosts` in the config dir with the fingerprint shown for
+         confirmation, rather than granting access to `~/.ssh`.
+      3. **The endpoint UI** — parsing and validating `user@host:/path`.
 
 ### Distant future / speculative
 

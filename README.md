@@ -20,13 +20,15 @@ Rust · GTK4 · gtk4-rs · libadwaita · Blueprint · Meson · Flatpak, with rsy
 **3.4.4** bundled and version-pinned. See [`PLAN.md`](PLAN.md) for the phased
 build plan and the guardrails it holds to.
 
-> **Status: feature-rich, gating the first release.** Multi-source transfers,
-> the grouped dry-run preview, live progress with a structured streaming log,
-> cancel, `--delete` with confirmation, the advanced flag set with saved presets,
-> and an in-app capability inventory all work today in a sandboxed Flatpak. The
-> `rsync-events` engine ships 33 tests and stays UI-free. Distributed as a Flatpak
-> **bundle via [GitHub Releases](https://github.com/superuser-miguel/foresight/releases)**,
-> with the project page on
+> **Status: released and self-hosted.** Multi-source transfers, the grouped
+> dry-run preview, live progress with a structured streaming log, cancel,
+> `--delete` with confirmation, the advanced flag set with saved presets, a
+> managed exclude-rule list, and an in-app capability inventory all work today
+> in a sandboxed Flatpak, covered by **44 tests** across the workspace — with
+> `rsync-events` staying UI-free. Installed from the project's own **GPG-signed
+> repository** so `flatpak update` works, with a standalone bundle on
+> [GitHub Releases](https://github.com/superuser-miguel/foresight/releases) for
+> offline installs and the project page on
 > [GitHub Pages](https://superuser-miguel.github.io/foresight/) — **not** Flathub.
 
 ---
@@ -149,7 +151,7 @@ flatpak install flathub org.gnome.Platform//49
 ```
 
 Release tags are GPG-signed with the same key. Verify with
-`git verify-tag v0.1.1`.
+`git verify-tag v0.1.2`.
 
 ## Layout
 

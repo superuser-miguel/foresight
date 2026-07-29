@@ -89,6 +89,26 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.1.2" date="2026-07-29">
+      <description>
+        <p>An exclude-rule editor, and a fix for presets that quietly failed to
+        save.</p>
+        <ul>
+          <li>Exclude patterns are now a managed list — one row per rule, each
+          with its own remove button, added by typing a rule and pressing
+          Enter.</li>
+          <li>A rule may contain spaces. The old single field split on
+          whitespace, so a rule like "My Documents/" became two rules and
+          matched nothing.</li>
+          <li>Fixed: a preset whose name contained a square bracket, tab or line
+          break was silently discarded when saved. It appeared to save, worked
+          for the rest of the session, and was gone at the next launch. Any
+          name can now be stored.</li>
+          <li>Presets saved by earlier versions load unchanged and are migrated
+          the next time they are saved.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.1" date="2026-07-29">
       <description>
         <p>Fixes where a folder lands in the destination.</p>

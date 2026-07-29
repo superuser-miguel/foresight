@@ -185,8 +185,16 @@ template $ForesightWindow: Adw.ApplicationWindow {
                       };
                     }
 
-                    Adw.EntryRow exclude_row {
-                      title: _("Exclude patterns — space-separated, e.g. *.tmp .git");
+                    Adw.ExpanderRow excludes_row {
+                      title: _("Exclude patterns");
+                      subtitle: _("Skip anything matching these rules (--exclude)");
+
+                      // Each rule is its own row, so a pattern may contain
+                      // spaces — "My Documents/" is one rule, not two.
+                      Adw.EntryRow exclude_entry {
+                        title: _("Add a rule — e.g. *.tmp, .git, node_modules/");
+                        show-apply-button: true;
+                      }
                     }
 
                     Adw.EntryRow extra_args_row {

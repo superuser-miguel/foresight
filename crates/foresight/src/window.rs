@@ -31,6 +31,15 @@ pub struct SourceEntry {
     row: adw::ActionRow,
 }
 
+/// One exclude rule and the row showing it. The pattern is stored verbatim —
+/// it goes straight into `--exclude=<pattern>` as a single argv element, so a
+/// rule may legitimately contain spaces (`My Documents/`).
+#[derive(Clone, Debug)]
+pub struct ExcludeEntry {
+    pattern: String,
+    row: adw::ActionRow,
+}
+
 mod imp {
     use super::*;
     use std::cell::{Cell, OnceCell, RefCell};
@@ -73,7 +82,9 @@ mod imp {
         #[template_child]
         pub bwlimit_unit_row: TemplateChild<adw::ComboRow>,
         #[template_child]
-        pub exclude_row: TemplateChild<adw::EntryRow>,
+        pub excludes_row: TemplateChild<adw::ExpanderRow>,
+        #[template_child]
+        pub exclude_entry: TemplateChild<adw::EntryRow>,
         #[template_child]
         pub extra_args_row: TemplateChild<adw::EntryRow>,
         #[template_child]
@@ -95,6 +106,8 @@ mod imp {
 
         /// The selected sources, in the order added. Real paths for argv.
         pub sources: RefCell<Vec<SourceEntry>>,
+        /// Exclude rules, in the order added — one `--exclude=` each.
+        pub excludes: RefCell<Vec<ExcludeEntry>>,
         /// The destination directory (never lossy-converted).
         pub dest: RefCell<Option<PathBuf>>,
 
@@ -202,6 +215,18 @@ impl ForesightWindow {
             }
         ));
         imp.sources_group.add_controller(sources_drop);
+
+        // Exclude rules: the entry commits on Enter or its apply button.
+        imp.exclude_entry.connect_apply(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |entry| {
+                if win.add_exclude(&entry.text()) {
+                    entry.set_text("");
+                }
+            }
+        ));
+        self.refresh_excludes_state();
 
         // Destination: row body opens the folder picker; drop accepts a folder.
         imp.dest_row.connect_activated(glib::clone!(
@@ -461,7 +486,8 @@ impl ForesightWindow {
         imp.remove_source_row.set_active(false);
         imp.bwlimit_row.set_value(0.0);
         imp.bwlimit_unit_row.set_selected(1); // MB/s
-        imp.exclude_row.set_text("");
+        self.set_excludes(&[]);
+        imp.exclude_entry.set_text("");
         imp.extra_args_row.set_text("");
         imp.suppress_combo.set(true);
         imp.preset_combo.set_selected(0);
@@ -592,6 +618,85 @@ impl ForesightWindow {
         self.refresh_sources_state();
     }
 
+    // -- exclude rules ------------------------------------------------------
+
+    /// Add one exclude rule. Returns whether it was added, so the caller only
+    /// clears the entry on success — a rejected rule stays put to be edited
+    /// rather than silently vanishing.
+    ///
+    /// Surrounding whitespace is trimmed (it is invariably a typo), but interior
+    /// spaces are kept: the pattern becomes one argv element, never two.
+    fn add_exclude(&self, pattern: &str) -> bool {
+        let pattern = pattern.trim();
+        if pattern.is_empty() {
+            return false;
+        }
+        let imp = self.imp();
+        if imp.excludes.borrow().iter().any(|e| e.pattern == pattern) {
+            self.toast(&format!("“{pattern}” is already excluded"));
+            return false;
+        }
+
+        let row = adw::ActionRow::builder()
+            .title(glib::markup_escape_text(pattern))
+            .build();
+        row.add_prefix(&gtk::Image::from_icon_name("action-unavailable-symbolic"));
+
+        let remove = gtk::Button::builder()
+            .icon_name("edit-delete-symbolic")
+            .tooltip_text("Remove this rule")
+            .valign(gtk::Align::Center)
+            .css_classes(["flat"])
+            .build();
+        remove.connect_clicked(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            #[weak]
+            row,
+            move |_| win.remove_exclude(&row)
+        ));
+        row.add_suffix(&remove);
+
+        imp.excludes_row.add_row(&row);
+        imp.excludes.borrow_mut().push(ExcludeEntry {
+            pattern: pattern.to_string(),
+            row,
+        });
+        self.refresh_excludes_state();
+        true
+    }
+
+    fn remove_exclude(&self, row: &adw::ActionRow) {
+        let imp = self.imp();
+        imp.excludes_row.remove(row);
+        imp.excludes.borrow_mut().retain(|e| &e.row != row);
+        self.refresh_excludes_state();
+    }
+
+    /// Replace every rule at once (preset applied, or job cleared).
+    fn set_excludes(&self, patterns: &[String]) {
+        let imp = self.imp();
+        for entry in imp.excludes.borrow_mut().drain(..) {
+            imp.excludes_row.remove(&entry.row);
+        }
+        self.refresh_excludes_state();
+        for p in patterns {
+            self.add_exclude(p);
+        }
+    }
+
+    /// Keep the expander's subtitle honest about how many rules are active, so
+    /// the count is visible without expanding it.
+    fn refresh_excludes_state(&self) {
+        let imp = self.imp();
+        let n = imp.excludes.borrow().len();
+        imp.excludes_row.set_subtitle(&match n {
+            0 => "Skip anything matching these rules (--exclude)".to_string(),
+            1 => "1 rule".to_string(),
+            n => format!("{n} rules"),
+        });
+    }
+
     fn choose_dest(&self) {
         let dialog = gtk::FileDialog::builder()
             .title("Select destination folder")
@@ -668,9 +773,10 @@ impl ForesightWindow {
         })
     }
 
-    /// Snapshot the Advanced controls into a [`Profile`] (paths excluded). Text
-    /// fields are tokenised on whitespace (never shell-interpreted); an empty
-    /// bandwidth limit means unlimited.
+    /// Snapshot the Advanced controls into a [`Profile`] (paths excluded).
+    /// Exclude rules come from the list verbatim, one element each; extra
+    /// arguments are tokenised on whitespace (never shell-interpreted, so no
+    /// quoting or brace expansion). An empty bandwidth limit means unlimited.
     fn read_advanced(&self) -> Profile {
         let imp = self.imp();
         let bwlimit = match imp.bwlimit_row.value() as u64 {
@@ -691,7 +797,12 @@ impl ForesightWindow {
             verbose: imp.verbose_row.is_active(),
             remove_source_files: imp.remove_source_row.is_active(),
             bwlimit,
-            excludes: tokenize(&imp.exclude_row.text()),
+            excludes: imp
+                .excludes
+                .borrow()
+                .iter()
+                .map(|e| e.pattern.clone())
+                .collect(),
             extra_args: tokenize(&imp.extra_args_row.text()),
         }
     }
@@ -705,7 +816,7 @@ impl ForesightWindow {
         let (value, unit) = parse_bwlimit(p.bwlimit.as_deref().unwrap_or(""));
         imp.bwlimit_row.set_value(value);
         imp.bwlimit_unit_row.set_selected(unit);
-        imp.exclude_row.set_text(&p.excludes.join(" "));
+        self.set_excludes(&p.excludes);
         imp.extra_args_row.set_text(&p.extra_args.join(" "));
         imp.contents_row
             .set_active(p.sync_contents && imp.contents_row.is_sensitive());

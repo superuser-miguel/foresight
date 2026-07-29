@@ -1,7 +1,7 @@
 //! The capability registry — the single, honest source of truth for *which*
 //! rsync flags Foresight actually exposes in this release.
 //!
-//! This table sits beside [`crate::job::build_argv`] on purpose: the Help
+//! This table sits beside [`crate::job::Job::build_argv`] on purpose: the Help
 //! surface renders straight from it, and a test in this module asserts the
 //! registry and `build_argv` agree exactly — every fixed flag the app can emit
 //! has an entry here, and every entry maps to a flag the app can emit. Drift
@@ -116,7 +116,8 @@ pub const CAPABILITIES: &[Capability] = &[
         name: "Exclude patterns",
         flags: &["--exclude"],
         control: "Advanced → Exclude patterns",
-        description: "Skip files matching each space-separated pattern (e.g. *.tmp .git).",
+        description: "Skip anything matching a rule in the list (e.g. *.tmp, .git). \
+                      Each rule is passed whole, so it may contain spaces.",
         man_option: "--exclude",
         group: Group::Options,
     },

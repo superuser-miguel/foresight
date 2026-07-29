@@ -565,6 +565,28 @@ mod tests {
         assert!(has("--partial"));
     }
 
+    /// The whole reason exclude rules are a list rather than a text field: a
+    /// pattern with a space must reach rsync as ONE argument. There is no shell
+    /// here, so `--exclude=My Documents/` is unambiguous — but only if nothing
+    /// upstream split it first.
+    #[test]
+    fn an_exclude_rule_containing_spaces_stays_a_single_argument() {
+        let job = Job {
+            sources: vec![dir_source("/s")],
+            dest: PathBuf::from("/d"),
+            excludes: vec!["My Documents/".into(), "Old Backups/**".into()],
+            ..Default::default()
+        };
+        let argv = job.build_argv(Mode::Sync);
+        let excludes: Vec<_> = argv
+            .iter()
+            .filter(|a| a.as_bytes().starts_with(b"--exclude="))
+            .collect();
+        assert_eq!(excludes.len(), 2, "one argument per rule, not per word");
+        assert_eq!(excludes[0].as_bytes(), b"--exclude=My Documents/");
+        assert_eq!(excludes[1].as_bytes(), b"--exclude=Old Backups/**");
+    }
+
     #[test]
     fn bwlimit_none_or_empty_omits_the_flag() {
         for bw in [None, Some(String::new())] {

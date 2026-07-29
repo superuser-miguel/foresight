@@ -76,7 +76,8 @@ Where Foresight aims to *win*, not just match:
   - **Move files** — `--remove-source-files` (remove each source after it transfers).
   - **Bandwidth limit** — `--bwlimit` with a unit picker (**KB/s · MB/s · GB/s**),
     so capping a big transfer to a disk's speed is `85` + `MB/s`, not `85000`.
-  - **Exclude patterns** — each becomes a `--exclude=`.
+  - **Exclude rules** — a managed list, one `--exclude=` each. Rules are passed
+    whole, so `My Documents/` is one rule rather than two broken ones.
   - **Extra arguments** — a free-text escape hatch for any other rsync switch.
 - **New Job** — clear the whole form for the next transfer in one click.
 - Ships as a **Flatpak** with rsync **3.4.4** bundled — **portals only, no host
@@ -237,9 +238,13 @@ venv with `tomlkit` + `aiohttp`).
 - [x] **Self-hosted repo** — a GPG-signed OSTree remote served from GitHub
       Pages, plus a `.flatpakref`, so `flatpak update` pulls new versions
       instead of re-downloading a bundle.
+- [x] **Excludes editor** — exclude rules as a managed list with per-rule
+      removal, replacing the space-separated field that could not express a
+      pattern containing a space.
 
 ### Next
-- [ ] **Excludes editor** — manage exclude/include rules as a list, not a field.
+- [ ] **Include rules** — `--include` alongside excludes, so a rule can carve an
+      exception out of a broader exclude.
 - [ ] **Remote sync over SSH** — rsync to/from a `user@host:/path` endpoint.
       Key-based auth first (uses your existing SSH key + agent, no extra
       permissions). The engine and sandbox are already verified to carry this;

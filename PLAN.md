@@ -182,7 +182,7 @@ with live progress.
 
 ### Milestone 4 — polish gate (defer until 0–3 are done)
 
-Saved presets (done), excludes editor, appstream metainfo + screenshots, and a
+Saved presets (done), excludes editor (done), appstream metainfo + screenshots, and a
 `.flatpak` bundle published on **GitHub Releases** (distribution is GitHub
 Releases + a GitHub Pages landing page — **not** Flathub). Tracked in the
 roadmap deck; not specced here yet.

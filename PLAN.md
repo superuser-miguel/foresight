@@ -187,7 +187,7 @@ Saved presets (done), excludes editor, appstream metainfo + screenshots, and a
 Releases + a GitHub Pages landing page — **not** Flathub). Tracked in the
 roadmap deck; not specced here yet.
 
-- [ ] **Help / capability disclosure.** A Help surface (dialog opened from the
+- [x] **Help / capability disclosure.** A Help surface (dialog opened from the
       primary menu) that states *explicitly and honestly* which rsync
       capabilities Foresight exposes **in this release** — no aspirational
       claims. Design constraints:

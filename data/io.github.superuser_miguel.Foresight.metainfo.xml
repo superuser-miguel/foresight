@@ -89,6 +89,21 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="0.1.1" date="2026-07-29">
+      <description>
+        <p>Fixes where a folder lands in the destination.</p>
+        <ul>
+          <li>A folder you add now arrives in the destination as that folder.
+          Previously a lone folder had its contents copied loose into the
+          destination, so they spilled in alongside whatever was already
+          there.</li>
+          <li>The old behaviour is still available, but now you have to ask for
+          it: Advanced, Sync folder contents. It applies only when the job has
+          exactly one folder as its source.</li>
+          <li>The What Foresight Can Do dialog explains where your files land.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-07-21">
       <description>
         <p>First release.</p>

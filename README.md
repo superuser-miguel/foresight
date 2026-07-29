@@ -125,7 +125,7 @@ flatpak install flathub org.gnome.Platform//49
 ```
 
 Release tags are GPG-signed (key `D67DB8E03D50A8C0`). Verify with
-`git verify-tag v0.1.0`.
+`git verify-tag v0.1.1`.
 
 ## Layout
 

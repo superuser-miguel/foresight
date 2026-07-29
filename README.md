@@ -176,13 +176,20 @@ against the vendored crate graph in `cargo-sources.json`.
 flatpak-builder --user --force-clean --repo=repo-release build-dir-release \
     io.github.superuser_miguel.Foresight.release.yml
 flatpak build-bundle repo-release Foresight.flatpak \
-    io.github.superuser_miguel.Foresight \
+    io.github.superuser_miguel.Foresight stable \
     --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo
 ```
 
 Regenerate `cargo-sources.json` whenever `Cargo.lock` changes
 (`python3 flatpak-cargo-generator.py Cargo.lock -o cargo-sources.json`; needs a
 venv with `tomlkit` + `aiohttp`).
+
+> Released bundles ship on the **`stable`** branch, pinned by `branch: stable`
+> in the release manifest. This is load-bearing: flatpak-builder's default is
+> `master`, and a bundle on a different branch than the one users already have
+> installs *beside* it instead of upgrading it. The dev manifest stays on
+> `master` on purpose, so a local `flatpak-builder --install` can't clobber a
+> real install.
 
 ## Roadmap
 

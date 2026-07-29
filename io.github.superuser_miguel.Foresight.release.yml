@@ -5,8 +5,13 @@
 #   flatpak-builder --user --force-clean --repo=repo-release build-dir-release \
 #     io.github.superuser_miguel.Foresight.release.yml
 #   flatpak build-bundle repo-release Foresight.flatpak \
-#     io.github.superuser_miguel.Foresight \
+#     io.github.superuser_miguel.Foresight stable \
 #     --runtime-repo=https://flathub.org/repo/flathub.flatpakrepo
+#
+# The trailing `stable` is required: build-bundle defaults to the master ref
+# regardless of what the manifest built, so omitting it fails outright once
+# `branch: stable` is set below (and, before that, silently produced a bundle
+# that installed beside users' existing one instead of upgrading it).
 #
 # Regenerate cargo-sources.json whenever Cargo.lock changes:
 #   python3 flatpak-cargo-generator.py Cargo.lock -o cargo-sources.json
@@ -17,6 +22,15 @@
 # (dir source, build-time network, no vendoring).
 
 id: io.github.superuser_miguel.Foresight
+
+# Published bundles MUST stay on `stable`. flatpak-builder defaults to
+# `master`, and a bundle on a different branch installs *alongside* the one
+# users already have instead of upgrading it — leaving two Foresights and an
+# ambiguous `flatpak run`. v0.1.0 shipped as stable, so every release after it
+# is stable too. The dev manifest deliberately stays on master, which is what
+# keeps a local `flatpak-builder --install` from clobbering the real install.
+branch: stable
+
 runtime: org.gnome.Platform
 runtime-version: '49'
 sdk: org.gnome.Sdk

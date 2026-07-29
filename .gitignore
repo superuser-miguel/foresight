@@ -10,6 +10,13 @@ Cargo.lock.orig
 /builddir-flatpak.log
 /.flatpak-builder-*
 
+# Flatpak release flow — build outputs, not sources. The bundle is an artifact
+# of the GitHub Release, and repo-release is a regenerable OSTree repo; neither
+# belongs in git. (build-dir-release self-ignores via flatpak-builder.)
+/repo-release
+/build-dir-release
+/Foresight.flatpak
+
 # Meson
 /_build
 /builddir

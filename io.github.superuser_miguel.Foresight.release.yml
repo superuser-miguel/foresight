@@ -103,6 +103,6 @@ modules:
       # testing can swap in {type: dir, path: .}.
       - type: git
         url: https://github.com/superuser-miguel/foresight.git
-        tag: v0.1.1
-        commit: b696817cc30c3ec0e3aeff2a796fce4f6e12c8e5
+        tag: v0.1.2
+        commit: 562885f7888379f7089a11d51f8457f2623b4728
       - cargo-sources.json

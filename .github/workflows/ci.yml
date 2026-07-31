@@ -16,11 +16,13 @@ jobs:
 
       # System deps for the GTK app crate (the parser crate needs none, but the
       # workspace build touches crates/foresight from Milestone 1 onward).
+      # rsync is explicit: the engine tests drive the real binary, and a runner
+      # image that dropped it would turn them into silent no-ops.
       - name: Install GTK4 / libadwaita / blueprint
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libgtk-4-dev libadwaita-1-dev blueprint-compiler
+            libgtk-4-dev libadwaita-1-dev blueprint-compiler rsync
 
       - name: Rust toolchain
         run: |
@@ -45,3 +47,66 @@ jobs:
 
       - name: Test
         run: cargo test --all
+
+  # Everything `cargo` alone cannot see. Blueprint files, the GResource bundle
+  # and the AppStream metainfo are all built by Meson, so a broken .blp or an
+  # invalid <release> block used to reach a tag unnoticed — both releases before
+  # this job existed were cut over a red or unverified build.
+  ui:
+    name: blueprint + metainfo + headless widgets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install GTK4 / Meson / AppStream / Xvfb
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-4-dev libadwaita-1-dev blueprint-compiler \
+            meson ninja-build appstream xvfb dbus rsync
+
+      - name: Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-ui-${{ runner.os }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: cargo-ui-${{ runner.os }}-
+
+      # Compiles .blp -> .ui -> foresight.gresource. Template children are
+      # resolved at runtime, so this only proves the UI *parses*; the widget
+      # step below is what proves it still binds.
+      - name: Meson build
+        run: |
+          meson setup builddir -Dprofile=debug
+          meson compile -C builddir
+
+      - name: Validate AppStream metainfo
+        run: |
+          # appstreamcli is `required: false` in meson.build, so if the package
+          # were missing the suite would quietly shrink to zero tests and still
+          # report success. Fail loudly instead of validating nothing.
+          command -v appstreamcli
+          meson test -C builddir --print-errorlogs
+          meson test -C builddir --list | grep -q metainfo-validate
+
+      # Widget-level checks. libtest gives every test its own thread and GTK
+      # aborts when touched off-main, so these run inside the app's `activate`
+      # under the `selftest` feature and report through the exit code.
+      - name: Headless widget checks
+        run: |
+          cargo build --bin foresight --features selftest
+          mkdir -p "$RUNNER_TEMP/selftest" "$RUNNER_TEMP/selftest-config"
+          xvfb-run -a dbus-run-session -- env \
+            GDK_BACKEND=x11 \
+            XDG_CONFIG_HOME="$RUNNER_TEMP/selftest-config" \
+            FORESIGHT_SELFTEST_DIR="$RUNNER_TEMP/selftest" \
+            FORESIGHT_GRESOURCE="$PWD/builddir/foresight.gresource" \
+            ./target/debug/foresight

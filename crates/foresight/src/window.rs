@@ -1299,6 +1299,181 @@ fn parse_bwlimit(token: &str) -> (f64, u32) {
     (num.trim().parse::<f64>().unwrap_or(0.0), unit)
 }
 
+/// Headless widget checks, compiled only under the `selftest` feature and
+/// driven from `main` so they run on the GTK main thread.
+///
+/// These cover what `cargo test` structurally cannot: libtest gives each test
+/// its own thread and GTK aborts when touched off-main. The exclude-rule editor
+/// lives almost entirely in widget state, so without this it would be tested
+/// only through its data layer — which is how a preset bug survived to release
+/// once already.
+#[cfg(feature = "selftest")]
+impl ForesightWindow {
+    pub(crate) fn run_selftest(&self) -> (u32, u32) {
+        let (mut pass, mut fail) = (0u32, 0u32);
+        let mut check = |name: &str, cond: bool, detail: String| {
+            if cond {
+                pass += 1;
+                println!("PASS  {name}");
+            } else {
+                fail += 1;
+                println!("FAIL  {name}  ({detail})");
+            }
+        };
+        let rules = |w: &ForesightWindow| -> Vec<String> {
+            w.imp()
+                .excludes
+                .borrow()
+                .iter()
+                .map(|e| e.pattern.clone())
+                .collect()
+        };
+
+        // Adding: trim the edges, refuse nothing-rules, refuse duplicates.
+        self.set_excludes(&[]);
+        let added = self.add_exclude("  *.tmp  ");
+        check(
+            "add trims surrounding whitespace",
+            added && rules(self) == ["*.tmp"],
+            format!("{:?}", rules(self)),
+        );
+        check(
+            "exact duplicate refused",
+            !self.add_exclude("*.tmp"),
+            "accepted".into(),
+        );
+        check(
+            "duplicate-after-trim refused",
+            !self.add_exclude("   *.tmp "),
+            "accepted".into(),
+        );
+        check("empty refused", !self.add_exclude(""), "accepted".into());
+        check(
+            "whitespace-only refused",
+            !self.add_exclude("      "),
+            "accepted".into(),
+        );
+        check(
+            "rejected rules add no junk",
+            rules(self) == ["*.tmp"],
+            format!("{:?}", rules(self)),
+        );
+
+        // The point of the list: interior spaces are content, edges are typos.
+        self.set_excludes(&[]);
+        self.add_exclude("  My Documents/  ");
+        check(
+            "interior spaces kept, edges trimmed",
+            rules(self) == ["My Documents/"],
+            format!("{:?}", rules(self)),
+        );
+
+        // A complete job is needed before argv can be inspected.
+        let dir = std::path::PathBuf::from(
+            std::env::var("FORESIGHT_SELFTEST_DIR").expect("FORESIGHT_SELFTEST_DIR"),
+        );
+        let _ = std::fs::create_dir_all(dir.join("src"));
+        let _ = std::fs::create_dir_all(dir.join("dst"));
+        self.add_source(&gio::File::for_path(dir.join("src")));
+        self.set_dest(&gio::File::for_path(dir.join("dst")));
+        let argv_rules = |w: &ForesightWindow| -> Vec<String> {
+            w.current_job()
+                .expect("sources + dest are set")
+                .build_argv(crate::job::Mode::Sync)
+                .iter()
+                .filter(|a| a.as_encoded_bytes().starts_with(b"--exclude="))
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect()
+        };
+
+        // rsync applies filter rules in order and the first match wins, so list
+        // order is behaviour, not presentation.
+        self.set_excludes(&["z-last".into(), "a-first".into(), "m-middle".into()]);
+        let got = argv_rules(self);
+        check(
+            "list order reaches argv unchanged",
+            got == [
+                "--exclude=z-last",
+                "--exclude=a-first",
+                "--exclude=m-middle",
+            ],
+            format!("{got:?}"),
+        );
+
+        self.set_excludes(&["My Documents/".into()]);
+        let got = argv_rules(self);
+        check(
+            "a spaced rule is one argv element",
+            got == ["--exclude=My Documents/"],
+            format!("{got:?}"),
+        );
+
+        self.set_excludes(&["keep-a".into(), "drop-me".into(), "keep-b".into()]);
+        let row = self.imp().excludes.borrow()[1].row.clone();
+        self.remove_exclude(&row);
+        check(
+            "removing the middle rule drops only it",
+            rules(self) == ["keep-a", "keep-b"] && argv_rules(self).len() == 2,
+            format!("{:?}", rules(self)),
+        );
+
+        self.set_excludes(&["a".into(), "b".into(), "c".into()]);
+        self.set_excludes(&["x".into()]);
+        check(
+            "set_excludes replaces rather than appends",
+            rules(self) == ["x"],
+            format!("{:?}", rules(self)),
+        );
+
+        // The count is the only cue when the expander is collapsed.
+        self.set_excludes(&[]);
+        let empty = self.imp().excludes_row.subtitle().to_string();
+        self.add_exclude("one");
+        let one = self.imp().excludes_row.subtitle().to_string();
+        self.add_exclude("two");
+        let two = self.imp().excludes_row.subtitle().to_string();
+        check(
+            "subtitle counts the rules",
+            empty.contains("--exclude") && one == "1 rule" && two == "2 rules",
+            format!("{empty:?} / {one:?} / {two:?}"),
+        );
+
+        self.set_excludes(&["a".into(), "b".into()]);
+        self.clear_job();
+        check(
+            "New Job clears the rules",
+            rules(self).is_empty(),
+            format!("{:?}", rules(self)),
+        );
+
+        self.set_excludes(&["*.tmp".into(), "My Documents/".into()]);
+        let snapshot = self.read_advanced();
+        self.set_excludes(&[]);
+        self.apply_advanced(&snapshot);
+        check(
+            "a preset restores rules verbatim",
+            rules(self) == ["*.tmp", "My Documents/"],
+            format!("{:?}", rules(self)),
+        );
+
+        // Regression guard: a name a KeyFile group could never hold used to be
+        // dropped on save while the UI reported success.
+        self.set_excludes(&["*.tmp".into()]);
+        self.upsert_preset("Photos [raw]".into());
+        let on_disk: Vec<String> = crate::profiles::load()
+            .iter()
+            .map(|p| p.name.clone())
+            .collect();
+        check(
+            "a preset named \"Photos [raw]\" reaches disk",
+            on_disk.contains(&"Photos [raw]".to_string()),
+            format!("in memory only; on disk: {on_disk:?}"),
+        );
+
+        (pass, fail)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{parse_bwlimit, tokenize};

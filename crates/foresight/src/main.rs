@@ -40,10 +40,27 @@ fn main() -> glib::ExitCode {
             window.add_css_class("devel");
         }
         window.present();
+        #[cfg(feature = "selftest")]
+        {
+            let (pass, fail) = window.run_selftest();
+            println!("\n----- selftest: {pass} passed, {fail} failed -----");
+            SELFTEST_FAILED.store(fail > 0, std::sync::atomic::Ordering::SeqCst);
+            app.quit();
+        }
     });
 
-    app.run()
+    let code = app.run();
+
+    // A non-zero exit is what makes CI notice a widget regression.
+    #[cfg(feature = "selftest")]
+    if SELFTEST_FAILED.load(std::sync::atomic::Ordering::SeqCst) {
+        return glib::ExitCode::FAILURE;
+    }
+    code
 }
+
+#[cfg(feature = "selftest")]
+static SELFTEST_FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Load `foresight.gresource`. In an installed build it lives in `PKGDATADIR`;
 /// for host dev runs, point `FORESIGHT_GRESOURCE` at the file Meson built.

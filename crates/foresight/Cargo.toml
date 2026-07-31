@@ -9,6 +9,13 @@ description = "GTK4/libadwaita frontend for rsync (bundled engine)"
 name = "foresight"
 path = "src/main.rs"
 
+[features]
+# Compiles an in-process widget self-test, run headlessly by CI. Off by
+# default, so shipped builds contain none of it. Widgets cannot be covered by
+# `cargo test`: libtest runs each test on a spawned thread and GTK refuses to
+# be touched off the main thread, so the checks run inside `activate` instead.
+selftest = []
+
 [dependencies]
 # Imported as `gtk` / `adw` (idiomatic gtk-rs). gtk re-exports gio & glib.
 gtk = { package = "gtk4", version = "0.11", features = ["v4_12"] }  # ListView sections

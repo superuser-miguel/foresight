@@ -63,7 +63,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libgtk-4-dev libadwaita-1-dev blueprint-compiler \
-            meson ninja-build appstream xvfb dbus rsync
+            meson ninja-build appstream xvfb dbus rsync \
+            desktop-file-utils
+          # desktop-file-utils supplies update-desktop-database, which
+          # meson.build requires unconditionally — without it configuration
+          # fails before a single file is built.
 
       - name: Rust toolchain
         run: |

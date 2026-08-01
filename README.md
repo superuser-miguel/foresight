@@ -114,7 +114,7 @@ the project page on [GitHub Pages](https://superuser-miguel.github.io/foresight/
 ### Recommended — the repository (gets `flatpak update`)
 
 ```sh
-flatpak install --user https://superuser-miguel.github.io/foresight/foresight.flatpakref
+flatpak install --user https://superuser-miguel.github.io/foresight-repo/foresight.flatpakref
 flatpak run io.github.superuser_miguel.Foresight
 ```
 
@@ -127,7 +127,7 @@ To add the remote without installing anything:
 
 ```sh
 flatpak remote-add --user --if-not-exists \
-    foresight https://superuser-miguel.github.io/foresight/foresight.flatpakrepo
+    foresight https://superuser-miguel.github.io/foresight-repo/foresight.flatpakrepo
 ```
 
 ### Alternative — the standalone bundle

@@ -17,6 +17,11 @@ Cargo.lock.orig
 /build-dir-release
 /Foresight.flatpak
 
+# Scratch tree for scripts/publish-repo.sh. Lives in-project rather than /tmp
+# because flatpak-builder refuses a state dir on a different filesystem, and
+# /tmp is tmpfs here.
+/.publish-tmp.*
+
 # Meson
 /_build
 /builddir

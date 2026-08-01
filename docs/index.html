@@ -125,7 +125,7 @@
     so a mistake is obvious before it runs. Multi-source, sandboxed, engine bundled.
   </p>
   <div class="btns">
-    <a class="btn primary" href="foresight.flatpakref">Install (.flatpakref)</a>
+    <a class="btn primary" href="https://superuser-miguel.github.io/foresight-repo/foresight.flatpakref">Install (.flatpakref)</a>
     <a class="btn" href="https://github.com/superuser-miguel/foresight/releases/latest">Download bundle</a>
     <a class="btn" href="https://github.com/superuser-miguel/foresight">View on GitHub</a>
   </div>
@@ -133,7 +133,7 @@
     Installs from the project's own GPG-signed repository, so updates arrive
     with a normal <code>flatpak update</code>:
   </p>
-  <pre style="display:inline-block;text-align:left;margin:.6rem auto 0"><code>flatpak install --user https://superuser-miguel.github.io/foresight/foresight.flatpakref</code></pre>
+  <pre style="display:inline-block;text-align:left;margin:.6rem auto 0"><code>flatpak install --user https://superuser-miguel.github.io/foresight-repo/foresight.flatpakref</code></pre>
   <p class="note">Linux · Flatpak · portals only — no host filesystem access · rsync engine bundled &amp; version-pinned · no telemetry</p>
 </header>
 
@@ -242,7 +242,7 @@
     <li class="done"><b>Help / capability disclosure</b> — an in-app, honest inventory of exactly which rsync flags Foresight exposes, checked against the bundled <code>rsync --help</code>.</li>
     <li class="done"><b>AppStream metainfo, screenshots &amp; landing page</b> — the release metadata and this page.</li>
     <li class="done"><b>First <code>.flatpak</code> release</b> — an offline, reproducible bundle built from a GPG-signed tag, <a href="https://github.com/superuser-miguel/foresight/releases/latest">on GitHub Releases</a>.</li>
-    <li class="done"><b>Self-hosted repo</b> — a GPG-signed OSTree remote served from this site, plus a <a href="foresight.flatpakref"><code>.flatpakref</code></a>, so <code>flatpak update</code> pulls new versions instead of re-downloading a bundle.</li>
+    <li class="done"><b>Self-hosted repo</b> — a GPG-signed OSTree remote in its own <a href="https://superuser-miguel.github.io/foresight-repo/">foresight-repo</a>, plus a <a href="https://superuser-miguel.github.io/foresight-repo/foresight.flatpakref"><code>.flatpakref</code></a>, so <code>flatpak update</code> pulls new versions instead of re-downloading a bundle.</li>
     <li class="done"><b>Excludes editor</b> — exclude rules as a managed list with per-rule removal, replacing the space-separated field that could not express a pattern containing a space.</li>
     <li><b>Include rules</b> — <code>--include</code> alongside excludes, so a rule can carve an exception out of a broader exclude.</li>
     <li><b>Remote sync over SSH</b> — to and from a <code>user@host:/path</code> endpoint, key-based auth first. Network access and an <code>ssh</code> client are already in place; still needed are agent forwarding (<code>--socket=ssh-auth</code>, so keys stay outside the sandbox), a host-key trust story, and the endpoint UI.</li>

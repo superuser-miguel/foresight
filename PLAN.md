@@ -223,6 +223,70 @@ roadmap deck; not specced here yet.
       - Stamp the page with the app version + bundled rsync version, since the
         version pin **is** the behavior contract (§2).
 
+### Milestone 5 — the 1.0 gate
+
+1.0 is not "more features". It is the point where the advertised surface is
+complete and the **formats stop moving**. Three things, and no more:
+
+- [ ] **Remote sync over SSH.** The only gap the README admits to, in its three
+      real parts: agent access (`--socket=ssh-auth`, which is a `finish-args`
+      change and therefore moves §5 with it), an app-managed `known_hosts` with
+      the fingerprint shown for confirmation, and the `user@host:/path` endpoint
+      UI. The old "it's only the UI" sizing was wrong and is not to be revived.
+- [ ] **Freeze the preset format.** It has now churned three times
+      (space-joined → `exclude_N` → `filter_N` + `_kind`). 1.0 is the promise
+      that it stops. The migration chain already in `profiles.rs` is what makes
+      that promise cheap to keep — every future reader must keep reading all
+      three encodings, and adding a fourth needs a written reason here.
+- [ ] **Current screenshots**, and one pass confirming the Help still cannot
+      lie (the registry test covers the flags; the prose is on us).
+
+### Beyond 1.0 — what a 2.0 would be
+
+A 2.0 is a change in what the app **is**, not a longer flag list. Today a job is
+transient window state: presets deliberately store options but **not paths**,
+because portal grants do not survive the session. Inverting exactly that is the
+whole of 2.0.
+
+> **The thesis: jobs become durable, schedulable, auditable objects.**
+> That is the pivot from "a nicer way to type an rsync command" to a backup
+> application.
+
+In dependency order — each item is unbuildable before the one above it:
+
+1. **Durable jobs.** A named job that stores its source *and* destination and
+   survives a restart. This is the hard one and it is the gate on everything
+   below: portal paths are handles, not locations, but document IDs persist and
+   `org.freedesktop.portal.Documents.GetHostPaths` resolves them. Solve it here,
+   once, honestly — §5 gets *amended*, not abandoned. If the only workable
+   answer turns out to be a blanket `--filesystem`, the answer is no and 2.0
+   stops at this line.
+2. **Scheduling.** "Every night at 02:00", or "when this drive appears" —
+   generated systemd **user** timers and `.path`/mount units, not a daemon of
+   our own. The drive-appears trigger is the more useful of the two for the
+   external-disk case this app is really used for.
+3. **Run history.** What ran, when, what changed, what failed. Not optional once
+   (2) exists: an unattended run nobody watched is worthless without a record,
+   so history and scheduling are one feature wearing two names.
+4. **Snapshot backups via `--link-dest`.** Hardlinked incremental trees — the
+   thing that turns copies into *backups*. Pure rsync, so it stays inside the
+   charter, and it composes with (2) and (3) rather than replacing them.
+5. **Remote as a first-class endpoint.** Saved hosts and key/`known_hosts`
+   management, once 1.0's SSH support has proven the plumbing.
+
+**Still non-goals at 2.0**, and these are load-bearing:
+
+- **Root / whole-system backups.** Would gut the sandbox story the entire
+  project is built on. This is the one that will be asked for most.
+- **Cloud-storage backends.** That is rclone's job, not rsync's.
+- **rsyncd hosting** and reimplementing any part of the delta algorithm (§1).
+
+**The honest cost:** items 1–3 give Foresight *background behavior*. Today the
+app is inert when closed, and that inertness is a real part of why it can be
+trusted with a `--delete`. A 2.0 that acts while nobody is watching has to buy
+that trust back — with the history view, and by holding the dry-run-first
+discipline for scheduled runs exactly as hard as for interactive ones.
+
 ## 5. Flatpak permissions policy
 
 The manifest's `finish-args` are a contract. Claude Code must never add a

@@ -256,7 +256,12 @@ venv with `tomlkit` + `aiohttp`).
       rules as one ordered list rather than an includes set plus an excludes set
       is what makes the second of those expressible at all.
 
-### Next
+### Next — the road to 1.0
+
+1.0 is not "more features"; it's the point where the advertised surface is
+complete and the saved formats stop moving. That's remote SSH, a frozen preset
+format, and current screenshots — nothing else.
+
 - [ ] **Remote sync over SSH** — rsync to/from a `user@host:/path` endpoint,
       key-based auth first. Three parts, not one:
       1. **Agent access.** `--share=network` and the runtime's `ssh` are already
@@ -270,6 +275,38 @@ venv with `tomlkit` + `aiohttp`).
          `known_hosts` in the config dir with the fingerprint shown for
          confirmation, rather than granting access to `~/.ssh`.
       3. **The endpoint UI** — parsing and validating `user@host:/path`.
+- [ ] **A frozen preset format.** It has churned three times; 1.0 is the promise
+      that it stops. Every reader keeps reading all three encodings, so no saved
+      rule set is ever lost to an upgrade.
+
+### After 1.0 — from a front-end to a backup app
+
+Today a job is transient: presets store your options but deliberately **not**
+your paths, because portal grants don't outlive the session. Inverting that is
+the whole of the next major version — **jobs become durable, schedulable and
+auditable objects** — and each step below is unbuildable before the one above
+it.
+
+- [ ] **Durable jobs** — a named job that remembers its source *and* destination
+      across restarts. The hard one, and the gate on everything else: portal
+      paths are handles rather than locations, so this gets solved through the
+      documents portal, not by asking for your whole home directory.
+- [ ] **Scheduling** — "every night", or "when this drive appears", as generated
+      systemd **user** timers and mount/path units. No daemon of Foresight's own.
+- [ ] **Run history** — what ran, when, what changed, what failed. An unattended
+      run nobody watched is worthless without a record, so this ships *with*
+      scheduling, not after it.
+- [ ] **Snapshot backups** (`--link-dest`) — hardlinked incremental trees, the
+      thing that turns copies into backups. Still pure rsync.
+
+**Deliberately not planned, at any version:** root or whole-system backups
+(they would gut the sandbox this app is built on), cloud-storage backends
+(that's rclone's job, not rsync's), and rsyncd hosting.
+
+Worth saying plainly: steps 1–3 would give Foresight *background behavior*,
+and today's inertness-when-closed is part of why it can be trusted with a
+`--delete`. Scheduled runs will hold the same dry-run-first discipline as
+interactive ones, or they won't ship.
 
 ### Distant future / speculative
 

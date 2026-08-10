@@ -124,6 +124,17 @@ pub const CAPABILITIES: &[Capability] = &[
         man_option: "--exclude, --include",
         group: Group::Options,
     },
+    Capability {
+        name: "Remote shell for SSH transfers",
+        flags: &["-e"],
+        control: "Set automatically for a remote endpoint",
+        description: "Runs ssh with Foresight's own known_hosts, strict host-key \
+                      checking, and no interactive prompts. Your keys come from \
+                      the desktop's SSH agent — no private key ever enters the \
+                      sandbox, and ~/.ssh is never read.",
+        man_option: "--rsh, -e",
+        group: Group::Options,
+    },
 ];
 
 /// How Foresight places sources in the destination. Not a flag — it is the
@@ -199,6 +210,7 @@ mod tests {
             bwlimit: Some("85M".into()),
             // Both kinds, so the registry must account for both flags.
             filters: vec![FilterRule::exclude("*.tmp"), FilterRule::include("*.jpg")],
+            remote_shell: Some("ssh".into()),
             extra_args: vec![],
         };
         let mut out = BTreeSet::new();

@@ -10,6 +10,12 @@ mod help;
 mod job;
 mod log_object;
 mod profiles;
+// Host-key trust for remote sync. Nothing calls it yet: it lands ahead of the
+// endpoint UI (M5 part 3) because it is the part that can be verified against a
+// real sshd on its own, and its own tests do exactly that. Drop this allow the
+// moment `current_job` can produce a remote job.
+#[allow(dead_code)]
+mod ssh;
 mod window;
 
 mod config {

@@ -24,7 +24,7 @@ build plan and the guardrails it holds to.
 > dry-run preview, live progress with a structured streaming log, cancel,
 > `--delete` with confirmation, the advanced flag set with saved presets, an
 > ordered include/exclude filter list, and an in-app capability inventory all
-> work today in a sandboxed Flatpak, covered by **51 tests** across the
+> work today in a sandboxed Flatpak, covered by **63 tests** across the
 > workspace and **25 headless widget checks** — with
 > `rsync-events` staying UI-free. Installed from the project's own **GPG-signed
 > repository** so `flatpak update` works, with a standalone bundle on
@@ -272,12 +272,15 @@ format, and current screenshots — nothing else.
          sandbox** — the agent stays outside and only signs on request, which
          is exactly why this is the right grant and `--filesystem=~/.ssh` is
          not. `~/.ssh` remains invisible with it on.
-      2. **Host-key trust.** `known_hosts` is not readable either, so first
-         contact has nothing to verify against. It will be an app-managed
-         `known_hosts` in the config dir with the fingerprint shown for
-         confirmation, rather than granting access to `~/.ssh` — and it cannot
-         use ssh's default file, because the sandbox home is ephemeral: anything
-         written to `~/.ssh` inside it is gone on the next launch.
+      2. ✅ **Host-key trust — engine done.** Foresight keeps its **own**
+         `known_hosts` beside your presets and never reads or writes `~/.ssh`.
+         It can't use ssh's default file, because the sandbox home is
+         ephemeral — anything written to `~/.ssh` inside it is gone on the next
+         launch, so trust-on-first-use would never actually remember. Transfers
+         run with strict host-key checking against that file: a host you have
+         not confirmed is refused outright, never silently accepted. The
+         confirmation dialog arrives with the endpoint UI, since until then
+         there is no host to confirm.
       3. **The endpoint UI** — parsing and validating `user@host:/path`,
          including IPv6 link-local endpoints with a scope id
          (`[fe80::1%wlo1]:/path`).

@@ -172,6 +172,15 @@ pub struct Job {
     /// the first rule that matches a path. Filtering never changes rsync's
     /// *reporting* format, so the `rsync-events` contract is unaffected.
     pub filters: Vec<FilterRule>,
+    /// `-e <command>`: the remote shell rsync should use, for a job with a
+    /// remote endpoint. `None` for a purely local job — which is every job
+    /// today, until the endpoint UI lands.
+    ///
+    /// Built by [`crate::ssh::rsh_command`], not here: this module composes
+    /// argv and holds no policy about *which* ssh options are right. Note this
+    /// is the one value rsync re-tokenises itself, so it arrives pre-quoted —
+    /// see that module for the rules it has to obey.
+    pub remote_shell: Option<String>,
     /// Extra rsync arguments, already tokenised (never shell-interpreted).
     pub extra_args: Vec<String>,
 }
@@ -250,6 +259,12 @@ impl Job {
         // arranged in the UI is the precedence they get.
         for rule in &self.filters {
             argv.push(rule.to_arg());
+        }
+        // Emitted before extra_args so a user-supplied -e still wins (rsync
+        // takes the last), keeping the escape hatch an escape hatch.
+        if let Some(shell) = &self.remote_shell {
+            argv.push(OsString::from("-e"));
+            argv.push(OsString::from(shell));
         }
         for token in &self.extra_args {
             argv.push(OsString::from(token));
@@ -767,6 +782,55 @@ mod tests {
                 .collect()
         };
         assert_eq!(rules(Mode::Preview), rules(Mode::Sync));
+    }
+
+    /// `-e` is two argv elements, and the command stays whole in the second.
+    /// rsync re-tokenises that string itself, so it must arrive exactly as
+    /// `ssh.rs` quoted it — anything splitting it here would silently drop the
+    /// host-key policy and fall back to ssh's defaults.
+    #[test]
+    fn the_remote_shell_reaches_argv_as_one_element() {
+        let shell = "ssh -o 'UserKnownHostsFile=/a b/known_hosts' -o StrictHostKeyChecking=yes";
+        let job = Job {
+            sources: vec![dir_source("/s")],
+            dest: PathBuf::from("/d"),
+            remote_shell: Some(shell.into()),
+            ..Default::default()
+        };
+        let argv = job.build_argv(Mode::Sync);
+        let at = argv
+            .iter()
+            .position(|a| a.as_bytes() == b"-e")
+            .expect("-e emitted");
+        assert_eq!(argv[at + 1].as_bytes(), shell.as_bytes());
+    }
+
+    #[test]
+    fn no_remote_shell_means_no_dash_e() {
+        let argv = Job::new("/s", "/d").build_argv(Mode::Sync);
+        assert!(!argv.iter().any(|a| a.as_bytes() == b"-e"));
+    }
+
+    /// The escape hatch has to stay an escape hatch: a `-e` typed into Extra
+    /// arguments is emitted later, and rsync takes the last one.
+    #[test]
+    fn a_user_supplied_remote_shell_still_wins() {
+        let job = Job {
+            sources: vec![dir_source("/s")],
+            dest: PathBuf::from("/d"),
+            remote_shell: Some("ssh -o StrictHostKeyChecking=yes".into()),
+            extra_args: vec!["-e".into(), "ssh -p 2222".into()],
+            ..Default::default()
+        };
+        let argv = job.build_argv(Mode::Sync);
+        let positions: Vec<_> = argv
+            .iter()
+            .enumerate()
+            .filter(|(_, a)| a.as_bytes() == b"-e")
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(positions.len(), 2, "both are emitted: {argv:?}");
+        assert_eq!(argv[positions[1] + 1].as_bytes(), b"ssh -p 2222");
     }
 
     #[test]

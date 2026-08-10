@@ -233,12 +233,18 @@ complete and the **formats stop moving**. Three things, and no more:
       that passed an explicit `-i <key>` under a `--filesystem` grant — and is
       not to be revived.
       - [x] **Agent access.** `--socket=ssh-auth`; §5 moved with it.
-      - [ ] **Host-key trust.** An app-managed `known_hosts` with the
-            fingerprint shown for confirmation. It cannot ride on ssh's default
-            file: **the sandbox home is ephemeral tmpfs**, so `accept-new`
-            writes `~/.ssh/known_hosts` inside the sandbox and it is gone on the
-            next launch (verified). Point `-o UserKnownHostsFile=` at the
-            persisted app config dir instead.
+      - [x] **Host-key trust — engine done** (`ssh.rs`). An app-managed
+            `known_hosts` in the config dir beside `profiles.ini`, never
+            `~/.ssh`. It cannot ride on ssh's default file: **the sandbox home
+            is ephemeral**, so `accept-new` writes `~/.ssh/known_hosts` inside
+            the sandbox and it is gone on the next launch — verified by writing
+            to both files and coming back in a fresh sandbox, where only the
+            config-dir one survived. Policy is `StrictHostKeyChecking=yes` +
+            `GlobalKnownHostsFile=/dev/null` + `BatchMode=yes`, never
+            `accept-new` (that is TOFU without asking) and never a prompt (there
+            is no terminal, so a prompt is a hang). The confirmation *dialog*
+            lands with the endpoint UI below — until a host can be entered there
+            is nothing to confirm.
       - [ ] **The endpoint UI** — parsing and validating `user@host:/path`.
             Must survive **IPv6 link-local with a scope id**
             (`[fe80::1%wlo1]:/path`): brackets and `%scope` have to reach argv
@@ -338,6 +344,22 @@ These were discovered by building the pinned rsync and capturing transcripts
 7. **`-a` implies `-og`**, which cannot apply ownership without privileges.
    Userland syncs may emit attribute warnings — downgrade these to calm,
    grouped notices, not per-file error spam.
+8. **`-e` is the one argv element rsync re-tokenises itself.** Everywhere else
+   the app's argv discipline means a value with a space is safe; here it is
+   not, because rsync splits the remote-shell string a second time. Measured
+   against the bundled 3.4.4 by logging what the `-e` command actually received:
+   - Single **or** double quotes group a token, so
+     `-o "UserKnownHostsFile=/a b/kh"` arrives as **one** argument.
+   - The *other* quote character is literal inside a quoted token.
+   - **Backslash is not an escape.** `/a\ b` tokenises to `/a\`, and
+     `"/a\"b"` to `/a\` — a backslash never protects anything.
+
+   So a value containing both quote characters is genuinely inexpressible;
+   `ssh::quote_for_rsh` returns `None` for it rather than emitting a command
+   that breaks in a way no error message would explain.
+9. **`--info=progress2` and the `%i %n%L` out-format stream identically over
+   ssh**, so `rsync-events` parses a remote job with no changes. Verified
+   through a real ssh transfer from inside the sandbox.
 
 ## 7. Claude Code operating notes
 

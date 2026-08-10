@@ -866,6 +866,10 @@ impl ForesightWindow {
             remove_source_files: adv.remove_source_files,
             bwlimit: adv.bwlimit,
             filters: adv.filters,
+            // Local only until the endpoint UI lands (M5 part 3): with no way
+            // to enter a remote host, every job here is local and rsync needs
+            // no remote shell.
+            remote_shell: None,
             extra_args: adv.extra_args,
         })
     }

@@ -17,7 +17,9 @@ use gtk::{gdk, gio, glib};
 use std::path::PathBuf;
 
 use crate::change_object::ChangeObject;
-use crate::job::{argv_display, spawn_rsync, Completion, Job, Mode, Runner, Source};
+use crate::job::{
+    argv_display, spawn_rsync, Completion, FilterKind, FilterRule, Job, Mode, Runner, Source,
+};
 use crate::log_object::LogObject;
 use crate::profiles::{self, Profile};
 use rsync_events::{Event, Severity};
@@ -28,15 +30,6 @@ use rsync_events::{Event, Severity};
 pub struct SourceEntry {
     path: PathBuf,
     is_dir: bool,
-    row: adw::ActionRow,
-}
-
-/// One exclude rule and the row showing it. The pattern is stored verbatim —
-/// it goes straight into `--exclude=<pattern>` as a single argv element, so a
-/// rule may legitimately contain spaces (`My Documents/`).
-#[derive(Clone, Debug)]
-pub struct ExcludeEntry {
-    pattern: String,
     row: adw::ActionRow,
 }
 
@@ -82,9 +75,11 @@ mod imp {
         #[template_child]
         pub bwlimit_unit_row: TemplateChild<adw::ComboRow>,
         #[template_child]
-        pub excludes_row: TemplateChild<adw::ExpanderRow>,
+        pub filters_row: TemplateChild<adw::ExpanderRow>,
         #[template_child]
-        pub exclude_entry: TemplateChild<adw::EntryRow>,
+        pub filter_entry: TemplateChild<adw::EntryRow>,
+        #[template_child]
+        pub filter_kind: TemplateChild<gtk::DropDown>,
         #[template_child]
         pub extra_args_row: TemplateChild<adw::EntryRow>,
         #[template_child]
@@ -106,8 +101,13 @@ mod imp {
 
         /// The selected sources, in the order added. Real paths for argv.
         pub sources: RefCell<Vec<SourceEntry>>,
-        /// Exclude rules, in the order added — one `--exclude=` each.
-        pub excludes: RefCell<Vec<ExcludeEntry>>,
+        /// Filter rules, in the order the user arranged them. This is the model;
+        /// the rows in `filters_row` are rebuilt from it on every change, since
+        /// `AdwExpanderRow` can append and remove rows but not reorder them.
+        pub filters: RefCell<Vec<FilterRule>>,
+        /// The rows currently inside `filters_row`, so a rebuild can take them
+        /// back out — an `AdwExpanderRow` will not enumerate them for us.
+        pub filter_rows: RefCell<Vec<adw::ActionRow>>,
         /// The destination directory (never lossy-converted).
         pub dest: RefCell<Option<PathBuf>>,
 
@@ -216,17 +216,18 @@ impl ForesightWindow {
         ));
         imp.sources_group.add_controller(sources_drop);
 
-        // Exclude rules: the entry commits on Enter or its apply button.
-        imp.exclude_entry.connect_apply(glib::clone!(
+        // Filter rules: the entry commits on Enter or its apply button, using
+        // whichever kind the dropdown beside it is showing.
+        imp.filter_entry.connect_apply(glib::clone!(
             #[weak(rename_to = win)]
             self,
             move |entry| {
-                if win.add_exclude(&entry.text()) {
+                if win.add_filter(win.selected_filter_kind(), &entry.text()) {
                     entry.set_text("");
                 }
             }
         ));
-        self.refresh_excludes_state();
+        self.refresh_filters_state();
 
         // Destination: row body opens the folder picker; drop accepts a folder.
         imp.dest_row.connect_activated(glib::clone!(
@@ -486,8 +487,9 @@ impl ForesightWindow {
         imp.remove_source_row.set_active(false);
         imp.bwlimit_row.set_value(0.0);
         imp.bwlimit_unit_row.set_selected(1); // MB/s
-        self.set_excludes(&[]);
-        imp.exclude_entry.set_text("");
+        self.set_filters(&[]);
+        imp.filter_entry.set_text("");
+        imp.filter_kind.set_selected(0); // Exclude
         imp.extra_args_row.set_text("");
         imp.suppress_combo.set(true);
         imp.preset_combo.set_selected(0);
@@ -618,82 +620,177 @@ impl ForesightWindow {
         self.refresh_sources_state();
     }
 
-    // -- exclude rules ------------------------------------------------------
+    // -- filter rules -------------------------------------------------------
 
-    /// Add one exclude rule. Returns whether it was added, so the caller only
-    /// clears the entry on success — a rejected rule stays put to be edited
-    /// rather than silently vanishing.
+    /// Which kind the dropdown beside the entry is currently offering. Index 1
+    /// is Include; anything else is Exclude, matching the order in the
+    /// Blueprint's `StringList` (Exclude first, as the common case).
+    fn selected_filter_kind(&self) -> FilterKind {
+        match self.imp().filter_kind.selected() {
+            1 => FilterKind::Include,
+            _ => FilterKind::Exclude,
+        }
+    }
+
+    /// Add one filter rule at the end of the list. Returns whether it was added,
+    /// so the caller only clears the entry on success — a rejected rule stays
+    /// put to be edited rather than silently vanishing.
     ///
     /// Surrounding whitespace is trimmed (it is invariably a typo), but interior
     /// spaces are kept: the pattern becomes one argv element, never two.
-    fn add_exclude(&self, pattern: &str) -> bool {
+    ///
+    /// Only an exact `(kind, pattern)` repeat is refused. The *same* pattern
+    /// with the other kind is allowed on purpose: it is contradictory, but rsync
+    /// resolves it by position (the earlier rule wins), so the list can express
+    /// it and the user can see which one is on top.
+    fn add_filter(&self, kind: FilterKind, pattern: &str) -> bool {
         let pattern = pattern.trim();
         if pattern.is_empty() {
             return false;
         }
         let imp = self.imp();
-        if imp.excludes.borrow().iter().any(|e| e.pattern == pattern) {
-            self.toast(&format!("“{pattern}” is already excluded"));
+        let duplicate = imp
+            .filters
+            .borrow()
+            .iter()
+            .any(|r| r.kind == kind && r.pattern == pattern);
+        if duplicate {
+            let verb = match kind {
+                FilterKind::Include => "included",
+                FilterKind::Exclude => "excluded",
+            };
+            self.toast(&format!("“{pattern}” is already {verb}"));
             return false;
         }
 
-        let row = adw::ActionRow::builder()
-            .title(glib::markup_escape_text(pattern))
-            .build();
-        row.add_prefix(&gtk::Image::from_icon_name("action-unavailable-symbolic"));
-
-        let remove = gtk::Button::builder()
-            .icon_name("edit-delete-symbolic")
-            .tooltip_text("Remove this rule")
-            .valign(gtk::Align::Center)
-            .css_classes(["flat"])
-            .build();
-        remove.connect_clicked(glib::clone!(
-            #[weak(rename_to = win)]
-            self,
-            #[weak]
-            row,
-            move |_| win.remove_exclude(&row)
-        ));
-        row.add_suffix(&remove);
-
-        imp.excludes_row.add_row(&row);
-        imp.excludes.borrow_mut().push(ExcludeEntry {
+        imp.filters.borrow_mut().push(FilterRule {
+            kind,
             pattern: pattern.to_string(),
-            row,
         });
-        self.refresh_excludes_state();
+        self.rebuild_filter_rows();
         true
     }
 
-    fn remove_exclude(&self, row: &adw::ActionRow) {
+    fn remove_filter(&self, index: usize) {
         let imp = self.imp();
-        imp.excludes_row.remove(row);
-        imp.excludes.borrow_mut().retain(|e| &e.row != row);
-        self.refresh_excludes_state();
+        {
+            let mut filters = imp.filters.borrow_mut();
+            if index >= filters.len() {
+                return;
+            }
+            filters.remove(index);
+        }
+        self.rebuild_filter_rows();
+    }
+
+    /// Move the rule at `index` one position earlier (`delta` -1) or later
+    /// (+1). This is not cosmetic: rsync takes the first rule that matches, so
+    /// moving a rule above another changes which of them decides a path.
+    fn move_filter(&self, index: usize, delta: isize) {
+        let imp = self.imp();
+        {
+            let mut filters = imp.filters.borrow_mut();
+            let Some(target) = index.checked_add_signed(delta) else {
+                return;
+            };
+            if index >= filters.len() || target >= filters.len() {
+                return;
+            }
+            filters.swap(index, target);
+        }
+        self.rebuild_filter_rows();
     }
 
     /// Replace every rule at once (preset applied, or job cleared).
-    fn set_excludes(&self, patterns: &[String]) {
-        let imp = self.imp();
-        for entry in imp.excludes.borrow_mut().drain(..) {
-            imp.excludes_row.remove(&entry.row);
-        }
-        self.refresh_excludes_state();
-        for p in patterns {
-            self.add_exclude(p);
-        }
+    fn set_filters(&self, rules: &[FilterRule]) {
+        *self.imp().filters.borrow_mut() = rules.to_vec();
+        self.rebuild_filter_rows();
     }
 
-    /// Keep the expander's subtitle honest about how many rules are active, so
-    /// the count is visible without expanding it.
-    fn refresh_excludes_state(&self) {
+    /// Rebuild the rule rows from the model.
+    ///
+    /// Every mutation goes through here rather than patching rows in place:
+    /// `AdwExpanderRow` has no reorder API, so a moved rule would need the rows
+    /// torn down anyway, and each row's buttons close over its index — which
+    /// every insertion, removal and swap invalidates for the rows after it.
+    /// Rebuilding keeps the widgets and the model incapable of disagreeing.
+    fn rebuild_filter_rows(&self) {
         let imp = self.imp();
-        let n = imp.excludes.borrow().len();
-        imp.excludes_row.set_subtitle(&match n {
-            0 => "Skip anything matching these rules (--exclude)".to_string(),
+        for row in imp.filter_rows.borrow_mut().drain(..) {
+            imp.filters_row.remove(&row);
+        }
+
+        // Cloned: building rows runs GTK code, and nothing may be holding a
+        // borrow if any of it reaches back into these handlers.
+        let rules = imp.filters.borrow().clone();
+        let last = rules.len().saturating_sub(1);
+        for (index, rule) in rules.iter().enumerate() {
+            let row = adw::ActionRow::builder()
+                .title(glib::markup_escape_text(&rule.pattern))
+                .subtitle(format!("{} ({})", rule.kind.label(), rule.kind.flag()))
+                .build();
+            row.add_prefix(&gtk::Image::from_icon_name(match rule.kind {
+                FilterKind::Include => "object-select-symbolic",
+                FilterKind::Exclude => "action-unavailable-symbolic",
+            }));
+
+            let up = gtk::Button::builder()
+                .icon_name("go-up-symbolic")
+                .tooltip_text("Apply this rule earlier")
+                .valign(gtk::Align::Center)
+                .css_classes(["flat"])
+                .sensitive(index > 0)
+                .build();
+            up.connect_clicked(glib::clone!(
+                #[weak(rename_to = win)]
+                self,
+                move |_| win.move_filter(index, -1)
+            ));
+            row.add_suffix(&up);
+
+            let down = gtk::Button::builder()
+                .icon_name("go-down-symbolic")
+                .tooltip_text("Apply this rule later")
+                .valign(gtk::Align::Center)
+                .css_classes(["flat"])
+                .sensitive(index < last)
+                .build();
+            down.connect_clicked(glib::clone!(
+                #[weak(rename_to = win)]
+                self,
+                move |_| win.move_filter(index, 1)
+            ));
+            row.add_suffix(&down);
+
+            let remove = gtk::Button::builder()
+                .icon_name("edit-delete-symbolic")
+                .tooltip_text("Remove this rule")
+                .valign(gtk::Align::Center)
+                .css_classes(["flat"])
+                .build();
+            remove.connect_clicked(glib::clone!(
+                #[weak(rename_to = win)]
+                self,
+                move |_| win.remove_filter(index)
+            ));
+            row.add_suffix(&remove);
+
+            imp.filters_row.add_row(&row);
+            imp.filter_rows.borrow_mut().push(row);
+        }
+
+        self.refresh_filters_state();
+    }
+
+    /// Keep the expander's subtitle honest about how many rules are active and
+    /// that their order decides ties, so neither needs the expander open to see.
+    fn refresh_filters_state(&self) {
+        let imp = self.imp();
+        let n = imp.filters.borrow().len();
+        imp.filters_row.set_subtitle(&match n {
+            0 => "Skip or keep paths by pattern (--exclude / --include)".to_string(),
             1 => "1 rule".to_string(),
-            n => format!("{n} rules"),
+            n => format!("{n} rules · the first one that matches wins"),
         });
     }
 
@@ -768,15 +865,15 @@ impl ForesightWindow {
             verbose: adv.verbose,
             remove_source_files: adv.remove_source_files,
             bwlimit: adv.bwlimit,
-            excludes: adv.excludes,
+            filters: adv.filters,
             extra_args: adv.extra_args,
         })
     }
 
     /// Snapshot the Advanced controls into a [`Profile`] (paths excluded).
-    /// Exclude rules come from the list verbatim, one element each; extra
-    /// arguments are tokenised on whitespace (never shell-interpreted, so no
-    /// quoting or brace expansion). An empty bandwidth limit means unlimited.
+    /// Filter rules come from the list verbatim and in order, one element each;
+    /// extra arguments are tokenised on whitespace (never shell-interpreted, so
+    /// no quoting or brace expansion). An empty bandwidth limit means unlimited.
     fn read_advanced(&self) -> Profile {
         let imp = self.imp();
         let bwlimit = match imp.bwlimit_row.value() as u64 {
@@ -797,12 +894,7 @@ impl ForesightWindow {
             verbose: imp.verbose_row.is_active(),
             remove_source_files: imp.remove_source_row.is_active(),
             bwlimit,
-            excludes: imp
-                .excludes
-                .borrow()
-                .iter()
-                .map(|e| e.pattern.clone())
-                .collect(),
+            filters: imp.filters.borrow().clone(),
             extra_args: tokenize(&imp.extra_args_row.text()),
         }
     }
@@ -816,7 +908,7 @@ impl ForesightWindow {
         let (value, unit) = parse_bwlimit(p.bwlimit.as_deref().unwrap_or(""));
         imp.bwlimit_row.set_value(value);
         imp.bwlimit_unit_row.set_selected(unit);
-        self.set_excludes(&p.excludes);
+        self.set_filters(&p.filters);
         imp.extra_args_row.set_text(&p.extra_args.join(" "));
         imp.contents_row
             .set_active(p.sync_contents && imp.contents_row.is_sensitive());
@@ -1303,7 +1395,7 @@ fn parse_bwlimit(token: &str) -> (f64, u32) {
 /// driven from `main` so they run on the GTK main thread.
 ///
 /// These cover what `cargo test` structurally cannot: libtest gives each test
-/// its own thread and GTK aborts when touched off-main. The exclude-rule editor
+/// its own thread and GTK aborts when touched off-main. The filter-rule editor
 /// lives almost entirely in widget state, so without this it would be tested
 /// only through its data layer — which is how a preset bug survived to release
 /// once already.
@@ -1320,18 +1412,30 @@ impl ForesightWindow {
                 println!("FAIL  {name}  ({detail})");
             }
         };
+        // Patterns only — for the checks where the kind is not what's at stake.
         let rules = |w: &ForesightWindow| -> Vec<String> {
             w.imp()
-                .excludes
+                .filters
                 .borrow()
                 .iter()
-                .map(|e| e.pattern.clone())
+                .map(|r| r.pattern.clone())
                 .collect()
         };
+        // Kind + pattern, rendered compactly so a failure prints legibly.
+        let kinded = |w: &ForesightWindow| -> Vec<String> {
+            w.imp()
+                .filters
+                .borrow()
+                .iter()
+                .map(|r| format!("{}:{}", r.kind.as_key(), r.pattern))
+                .collect()
+        };
+        let ex = FilterKind::Exclude;
+        let inc = FilterKind::Include;
 
         // Adding: trim the edges, refuse nothing-rules, refuse duplicates.
-        self.set_excludes(&[]);
-        let added = self.add_exclude("  *.tmp  ");
+        self.set_filters(&[]);
+        let added = self.add_filter(ex, "  *.tmp  ");
         check(
             "add trims surrounding whitespace",
             added && rules(self) == ["*.tmp"],
@@ -1339,18 +1443,18 @@ impl ForesightWindow {
         );
         check(
             "exact duplicate refused",
-            !self.add_exclude("*.tmp"),
+            !self.add_filter(ex, "*.tmp"),
             "accepted".into(),
         );
         check(
             "duplicate-after-trim refused",
-            !self.add_exclude("   *.tmp "),
+            !self.add_filter(ex, "   *.tmp "),
             "accepted".into(),
         );
-        check("empty refused", !self.add_exclude(""), "accepted".into());
+        check("empty refused", !self.add_filter(ex, ""), "accepted".into());
         check(
             "whitespace-only refused",
-            !self.add_exclude("      "),
+            !self.add_filter(ex, "      "),
             "accepted".into(),
         );
         check(
@@ -1358,10 +1462,48 @@ impl ForesightWindow {
             rules(self) == ["*.tmp"],
             format!("{:?}", rules(self)),
         );
+        // The same pattern with the other kind is a different rule: rsync
+        // resolves the contradiction by position, so the list must hold both.
+        check(
+            "same pattern, other kind accepted",
+            self.add_filter(inc, "*.tmp") && kinded(self) == ["exclude:*.tmp", "include:*.tmp"],
+            format!("{:?}", kinded(self)),
+        );
+
+        // The path a user actually takes: type a pattern, pick a kind, apply.
+        // Everything above calls `add_filter` directly, so without this the
+        // dropdown could be wired to nothing and every check would still pass.
+        self.set_filters(&[]);
+        let imp = self.imp();
+        imp.filter_kind.set_selected(1); // Include
+        imp.filter_entry.set_text("*.jpg");
+        imp.filter_entry.emit_by_name::<()>("apply", &[]);
+        imp.filter_kind.set_selected(0); // Exclude
+        imp.filter_entry.set_text("*.tmp");
+        imp.filter_entry.emit_by_name::<()>("apply", &[]);
+        check(
+            "the entry adds with the kind the dropdown shows",
+            kinded(self) == ["include:*.jpg", "exclude:*.tmp"],
+            format!("{:?}", kinded(self)),
+        );
+        check(
+            "a committed rule clears the entry",
+            imp.filter_entry.text().is_empty(),
+            format!("{:?}", imp.filter_entry.text()),
+        );
+        // A refused rule must stay in the entry to be corrected, not vanish.
+        imp.filter_entry.set_text("*.tmp");
+        imp.filter_entry.emit_by_name::<()>("apply", &[]);
+        check(
+            "a refused rule stays in the entry",
+            imp.filter_entry.text() == "*.tmp" && kinded(self).len() == 2,
+            format!("{:?} / {:?}", imp.filter_entry.text(), kinded(self)),
+        );
+        imp.filter_entry.set_text("");
 
         // The point of the list: interior spaces are content, edges are typos.
-        self.set_excludes(&[]);
-        self.add_exclude("  My Documents/  ");
+        self.set_filters(&[]);
+        self.add_filter(ex, "  My Documents/  ");
         check(
             "interior spaces kept, edges trimmed",
             rules(self) == ["My Documents/"],
@@ -1381,26 +1523,33 @@ impl ForesightWindow {
                 .expect("sources + dest are set")
                 .build_argv(crate::job::Mode::Sync)
                 .iter()
-                .filter(|a| a.as_encoded_bytes().starts_with(b"--exclude="))
+                .filter(|a| {
+                    a.as_encoded_bytes().starts_with(b"--exclude=")
+                        || a.as_encoded_bytes().starts_with(b"--include=")
+                })
                 .map(|a| a.to_string_lossy().into_owned())
                 .collect()
         };
 
         // rsync applies filter rules in order and the first match wins, so list
         // order is behaviour, not presentation.
-        self.set_excludes(&["z-last".into(), "a-first".into(), "m-middle".into()]);
+        self.set_filters(&[
+            FilterRule::exclude("z-last"),
+            FilterRule::include("a-first"),
+            FilterRule::exclude("m-middle"),
+        ]);
         let got = argv_rules(self);
         check(
-            "list order reaches argv unchanged",
+            "list order and kind reach argv unchanged",
             got == [
                 "--exclude=z-last",
-                "--exclude=a-first",
+                "--include=a-first",
                 "--exclude=m-middle",
             ],
             format!("{got:?}"),
         );
 
-        self.set_excludes(&["My Documents/".into()]);
+        self.set_filters(&[FilterRule::exclude("My Documents/")]);
         let got = argv_rules(self);
         check(
             "a spaced rule is one argv element",
@@ -1408,57 +1557,135 @@ impl ForesightWindow {
             format!("{got:?}"),
         );
 
-        self.set_excludes(&["keep-a".into(), "drop-me".into(), "keep-b".into()]);
-        let row = self.imp().excludes.borrow()[1].row.clone();
-        self.remove_exclude(&row);
+        // Reordering is the whole reason the list is ordered: moving an include
+        // above a broader exclude is what carves an exception out of it.
+        self.set_filters(&[FilterRule::exclude("*"), FilterRule::include("*.jpg")]);
+        self.move_filter(1, -1);
+        let got = argv_rules(self);
+        check(
+            "moving a rule up changes which one wins",
+            got == ["--include=*.jpg", "--exclude=*"],
+            format!("{got:?}"),
+        );
+        self.move_filter(0, 1);
+        let got = argv_rules(self);
+        check(
+            "moving a rule down puts it back",
+            got == ["--exclude=*", "--include=*.jpg"],
+            format!("{got:?}"),
+        );
+
+        // The ends must be inert rather than wrap around or panic — the arrows
+        // are insensitive there, but nothing else may rely on that.
+        self.set_filters(&[FilterRule::exclude("a"), FilterRule::exclude("b")]);
+        self.move_filter(0, -1);
+        self.move_filter(1, 1);
+        check(
+            "moving past either end is a no-op",
+            rules(self) == ["a", "b"],
+            format!("{:?}", rules(self)),
+        );
+        self.move_filter(9, -1); // stale index, as a rebuilt row could hold
+        check(
+            "an out-of-range move is ignored",
+            rules(self) == ["a", "b"],
+            format!("{:?}", rules(self)),
+        );
+
+        self.set_filters(&[
+            FilterRule::exclude("keep-a"),
+            FilterRule::include("drop-me"),
+            FilterRule::exclude("keep-b"),
+        ]);
+        self.remove_filter(1);
         check(
             "removing the middle rule drops only it",
             rules(self) == ["keep-a", "keep-b"] && argv_rules(self).len() == 2,
             format!("{:?}", rules(self)),
         );
 
-        self.set_excludes(&["a".into(), "b".into(), "c".into()]);
-        self.set_excludes(&["x".into()]);
+        // Every mutation rebuilds the rows, so the widgets and the model must
+        // still agree on how many rules there are.
         check(
-            "set_excludes replaces rather than appends",
-            rules(self) == ["x"],
+            "rows track the model after a rebuild",
+            self.imp().filter_rows.borrow().len() == self.imp().filters.borrow().len(),
+            format!(
+                "{} rows vs {} rules",
+                self.imp().filter_rows.borrow().len(),
+                self.imp().filters.borrow().len()
+            ),
+        );
+
+        self.set_filters(&[
+            FilterRule::exclude("a"),
+            FilterRule::exclude("b"),
+            FilterRule::exclude("c"),
+        ]);
+        self.set_filters(&[FilterRule::exclude("x")]);
+        check(
+            "set_filters replaces rather than appends",
+            rules(self) == ["x"] && self.imp().filter_rows.borrow().len() == 1,
             format!("{:?}", rules(self)),
         );
 
         // The count is the only cue when the expander is collapsed.
-        self.set_excludes(&[]);
-        let empty = self.imp().excludes_row.subtitle().to_string();
-        self.add_exclude("one");
-        let one = self.imp().excludes_row.subtitle().to_string();
-        self.add_exclude("two");
-        let two = self.imp().excludes_row.subtitle().to_string();
+        self.set_filters(&[]);
+        let empty = self.imp().filters_row.subtitle().to_string();
+        self.add_filter(ex, "one");
+        let one = self.imp().filters_row.subtitle().to_string();
+        self.add_filter(inc, "two");
+        let two = self.imp().filters_row.subtitle().to_string();
         check(
             "subtitle counts the rules",
-            empty.contains("--exclude") && one == "1 rule" && two == "2 rules",
+            empty.contains("--exclude")
+                && empty.contains("--include")
+                && one == "1 rule"
+                && two.starts_with("2 rules"),
             format!("{empty:?} / {one:?} / {two:?}"),
         );
 
-        self.set_excludes(&["a".into(), "b".into()]);
+        self.set_filters(&[FilterRule::exclude("a"), FilterRule::include("b")]);
         self.clear_job();
         check(
             "New Job clears the rules",
-            rules(self).is_empty(),
+            rules(self).is_empty() && self.imp().filter_rows.borrow().is_empty(),
             format!("{:?}", rules(self)),
         );
 
-        self.set_excludes(&["*.tmp".into(), "My Documents/".into()]);
+        self.set_filters(&[
+            FilterRule::exclude("*.tmp"),
+            FilterRule::include("My Documents/"),
+        ]);
         let snapshot = self.read_advanced();
-        self.set_excludes(&[]);
+        self.set_filters(&[]);
         self.apply_advanced(&snapshot);
         check(
-            "a preset restores rules verbatim",
-            rules(self) == ["*.tmp", "My Documents/"],
-            format!("{:?}", rules(self)),
+            "a preset restores rules, kinds and order verbatim",
+            kinded(self) == ["exclude:*.tmp", "include:My Documents/"],
+            format!("{:?}", kinded(self)),
+        );
+
+        // A preset is only worth anything if it survives the disk. Kind and
+        // order are part of what must come back.
+        self.upsert_preset("Filter round trip".into());
+        let stored = crate::profiles::load()
+            .into_iter()
+            .find(|p| p.name == "Filter round trip")
+            .map(|p| p.filters)
+            .unwrap_or_default();
+        check(
+            "kinds and order survive a save/load cycle",
+            stored
+                == [
+                    FilterRule::exclude("*.tmp"),
+                    FilterRule::include("My Documents/"),
+                ],
+            format!("{stored:?}"),
         );
 
         // Regression guard: a name a KeyFile group could never hold used to be
         // dropped on save while the UI reported success.
-        self.set_excludes(&["*.tmp".into()]);
+        self.set_filters(&[FilterRule::exclude("*.tmp")]);
         self.upsert_preset("Photos [raw]".into());
         let on_disk: Vec<String> = crate::profiles::load()
             .iter()

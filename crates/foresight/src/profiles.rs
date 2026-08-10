@@ -7,10 +7,15 @@
 //! index rather than by name; see [`GROUP_PREFIX`] for why that matters.
 //!
 //! Extra arguments are stored space-joined, matching how the UI tokenises that
-//! field. Exclude rules are *not*: a rule may contain spaces (`My Documents/`),
+//! field. Filter rules are *not*: a rule may contain spaces (`My Documents/`),
 //! and space-joining would silently split it into two wrong rules on the next
-//! load. Each rule gets its own key instead — see [`EXCLUDE_KEY_PREFIX`].
+//! load. Each rule gets its own key instead — see [`FILTER_KEY_PREFIX`].
+//!
+//! Three rule encodings have shipped, and [`load_from`] reads all of them so no
+//! upgrade silently drops a user's rules: the current include/exclude pair, the
+//! v0.1.2 exclude-only list, and the pre-editor space-joined field.
 
+use crate::job::{FilterKind, FilterRule};
 use gtk::glib::{self, KeyFile, KeyFileFlags};
 use std::path::{Path, PathBuf};
 
@@ -25,7 +30,8 @@ pub struct Profile {
     pub remove_source_files: bool,
     /// rsync rate token like `"85M"`; empty/`None` means unlimited.
     pub bwlimit: Option<String>,
-    pub excludes: Vec<String>,
+    /// Filter rules in order — order is part of the preset, not incidental.
+    pub filters: Vec<FilterRule>,
     pub extra_args: Vec<String>,
 }
 
@@ -39,8 +45,8 @@ fn split(s: &str) -> Vec<String> {
     s.split_whitespace().map(str::to_string).collect()
 }
 
-/// Prefix for the per-rule keys: `exclude_0`, `exclude_1`, … — one key each
-/// rather than a single delimited value.
+/// Prefix for the per-rule pattern keys: `filter_0`, `filter_1`, … — one key
+/// each rather than a single delimited value.
 ///
 /// A delimited list is the obvious encoding, but glib-rs binds
 /// `KeyFile::string_list` without a matching `set_string_list`, and writing one
@@ -49,12 +55,17 @@ fn split(s: &str) -> Vec<String> {
 /// per rule removes the separator from the problem entirely: `set_string`
 /// already escapes anything a rule can hold, `;` and spaces included.
 ///
-/// Deliberately not the old `excludes` key. Presets written before this editor
-/// stored rules space-joined, so a distinct key lets [`load_from`] tell the two
-/// encodings apart outright instead of inferring it from whether some value
-/// happens to contain a space.
-const EXCLUDE_KEY_PREFIX: &str = "exclude_";
-/// The pre-editor key, still read so old presets keep their rules.
+/// Each version of this encoding got a **new prefix** rather than new values
+/// under the old one, so [`load_from`] can tell them apart outright instead of
+/// inferring a format from the shape of a value.
+const FILTER_KEY_PREFIX: &str = "filter_";
+/// Suffix pairing a rule's kind with its pattern: `filter_0` / `filter_0_kind`.
+/// Holds [`FilterKind::as_key`], never the display label.
+const FILTER_KIND_SUFFIX: &str = "_kind";
+/// The v0.1.2 per-rule key. Every rule it can hold is an exclude — include
+/// rules did not exist yet.
+const LEGACY_EXCLUDE_KEY_PREFIX: &str = "exclude_";
+/// The pre-editor key, still read so the oldest presets keep their rules.
 const LEGACY_EXCLUDES_KEY: &str = "excludes";
 
 /// Groups are synthetic (`preset_0`, `preset_1`, …) rather than the preset's
@@ -70,13 +81,37 @@ const GROUP_PREFIX: &str = "preset_";
 /// Key holding a preset's display name inside its group.
 const NAME_KEY: &str = "name";
 
-/// Read `exclude_0`, `exclude_1`, … until one is missing. `save_all_to` writes
-/// a fresh KeyFile every time, so the run is always contiguous — a gap can only
-/// mean the end.
-fn read_exclude_rules(key_file: &KeyFile, group: &str) -> Vec<String> {
+/// Read `filter_0`, `filter_1`, … (each with its `_kind`) until one is missing.
+/// `save_all_to` writes a fresh KeyFile every time, so the run is always
+/// contiguous — a gap can only mean the end.
+///
+/// A pattern whose `_kind` is missing reads as an exclude via
+/// [`FilterKind::from_key`], so a half-written group degrades to the safer rule
+/// rather than to an include that would let files through.
+fn read_filter_rules(key_file: &KeyFile, group: &str) -> Vec<FilterRule> {
     let mut rules = Vec::new();
-    while let Ok(rule) = key_file.string(group, &format!("{EXCLUDE_KEY_PREFIX}{}", rules.len())) {
-        rules.push(rule.to_string());
+    while let Ok(pattern) = key_file.string(group, &format!("{FILTER_KEY_PREFIX}{}", rules.len())) {
+        let kind_key = format!("{FILTER_KEY_PREFIX}{}{FILTER_KIND_SUFFIX}", rules.len());
+        let kind = key_file
+            .string(group, &kind_key)
+            .map(|k| FilterKind::from_key(&k))
+            .unwrap_or_default();
+        rules.push(FilterRule {
+            kind,
+            pattern: pattern.to_string(),
+        });
+    }
+    rules
+}
+
+/// Read the v0.1.2 `exclude_0`, `exclude_1`, … run. Every entry is an exclude.
+fn read_legacy_exclude_rules(key_file: &KeyFile, group: &str) -> Vec<FilterRule> {
+    let mut rules = Vec::new();
+    while let Ok(pattern) = key_file.string(
+        group,
+        &format!("{LEGACY_EXCLUDE_KEY_PREFIX}{}", rules.len()),
+    ) {
+        rules.push(FilterRule::exclude(pattern.to_string()));
     }
     rules
 }
@@ -119,11 +154,19 @@ fn load_from(path: &Path) -> Vec<Profile> {
             verbose: key_file.boolean(&group, "verbose").unwrap_or(false),
             remove_source_files: key_file.boolean(&group, "move").unwrap_or(false),
             bwlimit: (!bw.is_empty()).then_some(bw),
-            excludes: match read_exclude_rules(&key_file, &group) {
-                // Pre-editor preset: the only encoding it ever had was
-                // space-joined, so splitting is exact, not a heuristic.
-                rules if rules.is_empty() => split(&get(LEGACY_EXCLUDES_KEY)),
-                rules => rules,
+            // Newest encoding wins; fall back through the two older ones so an
+            // upgrade never quietly discards the rules a user saved.
+            filters: match read_filter_rules(&key_file, &group) {
+                rules if !rules.is_empty() => rules,
+                _ => match read_legacy_exclude_rules(&key_file, &group) {
+                    rules if !rules.is_empty() => rules,
+                    // Pre-editor preset: the only encoding it ever had was
+                    // space-joined, so splitting is exact, not a heuristic.
+                    _ => split(&get(LEGACY_EXCLUDES_KEY))
+                        .into_iter()
+                        .map(FilterRule::exclude)
+                        .collect(),
+                },
             },
             extra_args: split(&get("extra_args")),
             name,
@@ -149,8 +192,13 @@ fn save_all_to(profiles: &[Profile], path: &Path) {
         key_file.set_boolean(&group, "verbose", p.verbose);
         key_file.set_boolean(&group, "move", p.remove_source_files);
         key_file.set_string(&group, "bwlimit", p.bwlimit.as_deref().unwrap_or(""));
-        for (i, rule) in p.excludes.iter().enumerate() {
-            key_file.set_string(&group, &format!("{EXCLUDE_KEY_PREFIX}{i}"), rule);
+        for (i, rule) in p.filters.iter().enumerate() {
+            key_file.set_string(&group, &format!("{FILTER_KEY_PREFIX}{i}"), &rule.pattern);
+            key_file.set_string(
+                &group,
+                &format!("{FILTER_KEY_PREFIX}{i}{FILTER_KIND_SUFFIX}"),
+                rule.kind.as_key(),
+            );
         }
         key_file.set_string(&group, "extra_args", &p.extra_args.join(" "));
     }
@@ -177,7 +225,11 @@ mod tests {
                 bwlimit: Some("85M".into()),
                 // The middle rule is the point: a space inside a pattern must
                 // survive the round trip as one rule, not split into two.
-                excludes: vec!["*.tmp".into(), "My Documents/".into(), ".git".into()],
+                filters: vec![
+                    FilterRule::exclude("*.tmp"),
+                    FilterRule::include("My Documents/"),
+                    FilterRule::exclude(".git"),
+                ],
                 extra_args: vec!["--partial".into()],
             },
             Profile {
@@ -187,7 +239,7 @@ mod tests {
                 verbose: false,
                 remove_source_files: false,
                 bwlimit: None,
-                excludes: vec![],
+                filters: vec![],
                 extra_args: vec![],
             },
         ];
@@ -211,12 +263,94 @@ mod tests {
         let path = std::env::temp_dir().join(format!("foresight-semi-{}.ini", std::process::id()));
         let originals = vec![Profile {
             name: "odd".into(),
-            excludes: vec!["weird;name".into(), "b".into()],
+            filters: vec![FilterRule::exclude("weird;name"), FilterRule::include("b")],
             ..Profile::default()
         }];
 
         save_all_to(&originals, &path);
-        assert_eq!(load_from(&path)[0].excludes, vec!["weird;name", "b"]);
+        assert_eq!(
+            load_from(&path)[0].filters,
+            vec![FilterRule::exclude("weird;name"), FilterRule::include("b")]
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Kind travels with its pattern, and the list order survives — both are
+    /// meaning, not presentation: rsync stops at the first rule that matches, so
+    /// a reordered or re-kinded preset would sync a different set of files.
+    #[test]
+    fn rule_kinds_and_their_order_round_trip() {
+        let path = std::env::temp_dir().join(format!("foresight-kinds-{}.ini", std::process::id()));
+        let rules = vec![
+            FilterRule::include("*/"),
+            FilterRule::include("*.jpg"),
+            FilterRule::exclude("build/"),
+            FilterRule::exclude("*"),
+        ];
+        let p = Profile {
+            name: "only jpegs".into(),
+            filters: rules.clone(),
+            ..Default::default()
+        };
+
+        save_all_to(std::slice::from_ref(&p), &path);
+        assert_eq!(load_from(&path)[0].filters, rules);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Presets written by v0.1.2 stored one key per rule under `exclude_N`, and
+    /// every rule it could express was an exclude. Those must load as excludes —
+    /// reading them as includes would invert the preset and copy exactly the
+    /// files the user had been skipping.
+    #[test]
+    fn presets_from_v0_1_2_load_as_exclude_rules() {
+        let path = std::env::temp_dir().join(format!("foresight-v012-{}.ini", std::process::id()));
+        std::fs::write(
+            &path,
+            "[preset_0]\nname=HDD move\ndelete=false\nverbose=true\nbwlimit=85M\n\
+             exclude_0=*.tmp\nexclude_1=My Documents/\nexclude_2=.git\nextra_args=--partial\n",
+        )
+        .unwrap();
+
+        let loaded = load_from(&path);
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].name, "HDD move");
+        assert_eq!(
+            loaded[0].filters,
+            vec![
+                FilterRule::exclude("*.tmp"),
+                FilterRule::exclude("My Documents/"),
+                FilterRule::exclude(".git"),
+            ],
+            "every pre-include-rules rule is an exclude"
+        );
+
+        // Re-saving migrates it to the kinded encoding without changing meaning.
+        save_all_to(&loaded, &path);
+        assert_eq!(load_from(&path)[0].filters, loaded[0].filters);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// A pattern whose `_kind` key is missing (a truncated or hand-edited file)
+    /// must read as the conservative kind. An unreadable rule that defaulted to
+    /// *include* would silently widen a filter set meant to restrict.
+    #[test]
+    fn a_rule_with_no_recorded_kind_reads_as_exclude() {
+        let path =
+            std::env::temp_dir().join(format!("foresight-nokind-{}.ini", std::process::id()));
+        std::fs::write(
+            &path,
+            "[preset_0]\nname=truncated\nfilter_0=*.tmp\nfilter_1=*.jpg\nfilter_1_kind=include\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            load_from(&path)[0].filters,
+            vec![FilterRule::exclude("*.tmp"), FilterRule::include("*.jpg")]
+        );
 
         let _ = std::fs::remove_file(&path);
     }
@@ -236,13 +370,19 @@ mod tests {
 
         let loaded = load_from(&path);
         assert_eq!(loaded.len(), 1);
-        assert_eq!(loaded[0].excludes, vec!["*.tmp", ".git"]);
+        assert_eq!(
+            loaded[0].filters,
+            vec![FilterRule::exclude("*.tmp"), FilterRule::exclude(".git")]
+        );
         assert_eq!(loaded[0].extra_args, vec!["--partial"]);
         assert!(loaded[0].verbose);
 
         // Re-saving migrates it to the list encoding, and it still round-trips.
         save_all_to(&loaded, &path);
-        assert_eq!(load_from(&path)[0].excludes, vec!["*.tmp", ".git"]);
+        assert_eq!(
+            load_from(&path)[0].filters,
+            vec![FilterRule::exclude("*.tmp"), FilterRule::exclude(".git")]
+        );
 
         let _ = std::fs::remove_file(&path);
     }
@@ -253,7 +393,9 @@ mod tests {
     #[test]
     fn rules_containing_keyfile_metacharacters_round_trip() {
         let path = std::env::temp_dir().join(format!("foresight-meta-{}.ini", std::process::id()));
-        let rules: Vec<String> = [
+        // Alternating kinds so the `_kind` keys are exercised beside patterns
+        // that could corrupt the key/value encoding.
+        let rules: Vec<FilterRule> = [
             "foo=bar",
             "a=b=c",
             "back\\slash",
@@ -264,16 +406,23 @@ mod tests {
             "*.tmp",
         ]
         .iter()
-        .map(|s| s.to_string())
+        .enumerate()
+        .map(|(i, s)| {
+            if i % 2 == 0 {
+                FilterRule::exclude(*s)
+            } else {
+                FilterRule::include(*s)
+            }
+        })
         .collect();
         let p = Profile {
             name: "meta".into(),
-            excludes: rules.clone(),
+            filters: rules.clone(),
             ..Default::default()
         };
 
         save_all_to(std::slice::from_ref(&p), &path);
-        assert_eq!(load_from(&path)[0].excludes, rules);
+        assert_eq!(load_from(&path)[0].filters, rules);
 
         let _ = std::fs::remove_file(&path);
     }
@@ -284,15 +433,17 @@ mod tests {
     #[test]
     fn many_rules_keep_their_order() {
         let path = std::env::temp_dir().join(format!("foresight-order-{}.ini", std::process::id()));
-        let rules: Vec<String> = (0..150).map(|i| format!("rule{i}")).collect();
+        let rules: Vec<FilterRule> = (0..150)
+            .map(|i| FilterRule::exclude(format!("rule{i}")))
+            .collect();
         let p = Profile {
             name: "many".into(),
-            excludes: rules.clone(),
+            filters: rules.clone(),
             ..Default::default()
         };
 
         save_all_to(std::slice::from_ref(&p), &path);
-        assert_eq!(load_from(&path)[0].excludes, rules);
+        assert_eq!(load_from(&path)[0].filters, rules);
 
         let _ = std::fs::remove_file(&path);
     }
@@ -321,7 +472,7 @@ mod tests {
             .iter()
             .map(|n| Profile {
                 name: (*n).into(),
-                excludes: vec![format!("{n}-rule")],
+                filters: vec![FilterRule::exclude(format!("{n}-rule"))],
                 ..Default::default()
             })
             .collect();
@@ -331,10 +482,7 @@ mod tests {
         assert_eq!(loaded.len(), names.len(), "every preset must survive");
         for (want, got) in originals.iter().zip(loaded.iter()) {
             assert_eq!(got.name, want.name);
-            assert_eq!(
-                got.excludes, want.excludes,
-                "rules must follow their preset"
-            );
+            assert_eq!(got.filters, want.filters, "rules must follow their preset");
         }
 
         let _ = std::fs::remove_file(&path);
@@ -376,14 +524,20 @@ mod tests {
             loaded[0].name, "HDD move",
             "group name is the preset name in the old layout"
         );
-        assert_eq!(loaded[0].excludes, vec!["*.tmp", ".git"]);
+        assert_eq!(
+            loaded[0].filters,
+            vec![FilterRule::exclude("*.tmp"), FilterRule::exclude(".git")]
+        );
         assert!(loaded[0].delete);
 
         // Re-saving migrates it; the name survives the move into a value.
         save_all_to(&loaded, &path);
         let again = load_from(&path);
         assert_eq!(again[0].name, "HDD move");
-        assert_eq!(again[0].excludes, vec!["*.tmp", ".git"]);
+        assert_eq!(
+            again[0].filters,
+            vec![FilterRule::exclude("*.tmp"), FilterRule::exclude(".git")]
+        );
 
         let _ = std::fs::remove_file(&path);
     }

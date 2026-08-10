@@ -26,7 +26,7 @@
       <li>Add files and folders from different locations as sources, or drop them in</li>
       <li>Live transfer view with a progress bar and a structured activity log</li>
       <li>Mirror deletions (--delete) gated behind a confirmation of exactly what would be removed</li>
-      <li>Advanced options: move, unit-aware bandwidth limit, excludes, and free-form extra arguments</li>
+      <li>Advanced options: move, unit-aware bandwidth limit, ordered include/exclude filter rules, and free-form extra arguments</li>
       <li>Reusable presets for your Advanced-option sets</li>
       <li>An honest, in-app inventory of exactly which rsync flags this build exposes</li>
     </ul>

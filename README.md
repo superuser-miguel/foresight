@@ -22,9 +22,10 @@ build plan and the guardrails it holds to.
 
 > **Status: released and self-hosted.** Multi-source transfers, the grouped
 > dry-run preview, live progress with a structured streaming log, cancel,
-> `--delete` with confirmation, the advanced flag set with saved presets, a
-> managed exclude-rule list, and an in-app capability inventory all work today
-> in a sandboxed Flatpak, covered by **44 tests** across the workspace — with
+> `--delete` with confirmation, the advanced flag set with saved presets, an
+> ordered include/exclude filter list, and an in-app capability inventory all
+> work today in a sandboxed Flatpak, covered by **51 tests** across the
+> workspace and **25 headless widget checks** — with
 > `rsync-events` staying UI-free. Installed from the project's own **GPG-signed
 > repository** so `flatpak update` works, with a standalone bundle on
 > [GitHub Releases](https://github.com/superuser-miguel/foresight/releases) for
@@ -78,8 +79,12 @@ Where Foresight aims to *win*, not just match:
   - **Move files** — `--remove-source-files` (remove each source after it transfers).
   - **Bandwidth limit** — `--bwlimit` with a unit picker (**KB/s · MB/s · GB/s**),
     so capping a big transfer to a disk's speed is `85` + `MB/s`, not `85000`.
-  - **Exclude rules** — a managed list, one `--exclude=` each. Rules are passed
-    whole, so `My Documents/` is one rule rather than two broken ones.
+  - **Filter rules** — an **ordered** list of Include and Exclude patterns, one
+    `--include=`/`--exclude=` each. rsync obeys the first rule that matches, so
+    the arrows on a rule decide which one wins: put `*.jpg` **above** `*` and
+    only JPEGs come across; put `build/` above `*.jpg` and nothing in `build/`
+    does. Rules are passed whole, so `My Documents/` is one rule rather than
+    two broken ones.
   - **Extra arguments** — a free-text escape hatch for any other rsync switch.
 - **New Job** — clear the whole form for the next transfer in one click.
 - Ships as a **Flatpak** with rsync **3.4.4** bundled — **portals only, no host
@@ -229,7 +234,7 @@ venv with `tomlkit` + `aiohttp`).
 - [x] **Live progress, cancel, and a structured streaming log** of the run.
 - [x] **`--delete` with a confirmation** listing the deletions from the dry run.
 - [x] **Advanced options** — move (`--remove-source-files`), unit-aware bandwidth
-      limit (`--bwlimit`), excludes, and a free-form extra-arguments field.
+      limit (`--bwlimit`), filter rules, and a free-form extra-arguments field.
 - [x] **Saved presets** for Advanced-option sets.
 - [x] **Help / capability disclosure** — a registry-driven, test-enforced in-app
       inventory of the flags Foresight exposes, cross-referenced to the bundled
@@ -243,10 +248,15 @@ venv with `tomlkit` + `aiohttp`).
 - [x] **Excludes editor** — exclude rules as a managed list with per-rule
       removal, replacing the space-separated field that could not express a
       pattern containing a space.
+- [x] **Include rules** — the exclude list became an **ordered filter list**
+      where each rule is an Include or an Exclude and can be moved up or down.
+      rsync applies the first rule that matches, so position is the whole
+      meaning: an Include above a broader Exclude carves an exception out of it,
+      and an Exclude above an Include shuts a subtree even to it. Modelling the
+      rules as one ordered list rather than an includes set plus an excludes set
+      is what makes the second of those expressible at all.
 
 ### Next
-- [ ] **Include rules** — `--include` alongside excludes, so a rule can carve an
-      exception out of a broader exclude.
 - [ ] **Remote sync over SSH** — rsync to/from a `user@host:/path` endpoint,
       key-based auth first. Three parts, not one:
       1. **Agent access.** `--share=network` and the runtime's `ssh` are already

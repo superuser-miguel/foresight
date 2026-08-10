@@ -185,15 +185,29 @@ template $ForesightWindow: Adw.ApplicationWindow {
                       };
                     }
 
-                    Adw.ExpanderRow excludes_row {
-                      title: _("Exclude patterns");
-                      subtitle: _("Skip anything matching these rules (--exclude)");
+                    Adw.ExpanderRow filters_row {
+                      title: _("Filter rules");
+                      subtitle: _("Skip or keep paths by pattern (--exclude / --include)");
 
                       // Each rule is its own row, so a pattern may contain
                       // spaces — "My Documents/" is one rule, not two.
-                      Adw.EntryRow exclude_entry {
+                      //
+                      // The list is ORDERED: rsync applies the first rule that
+                      // matches a path, so the arrows on each row are meaning,
+                      // not tidying. Exclude is index 0 — the common case, and
+                      // the only kind that existed before include rules.
+                      Adw.EntryRow filter_entry {
                         title: _("Add a rule — e.g. *.tmp, .git, node_modules/");
                         show-apply-button: true;
+
+                        [prefix]
+                        Gtk.DropDown filter_kind {
+                          valign: center;
+                          tooltip-text: _("Whether this rule skips or keeps what it matches");
+                          model: Gtk.StringList {
+                            strings ["Exclude", "Include"]
+                          };
+                        }
                       }
                     }
 

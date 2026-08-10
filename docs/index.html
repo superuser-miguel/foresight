@@ -225,8 +225,8 @@
       <p><code>--bwlimit</code> with a unit picker: cap a big transfer to a disk's speed as <strong>85 · MB/s</strong>, not <code>85000</code> KB/s.</p>
     </div>
     <div class="card">
-      <h3>Excludes &amp; an escape hatch</h3>
-      <p>Exclude patterns become <code>--exclude=</code>; the Extra arguments field forwards any other rsync switch, tokenised — never through a shell.</p>
+      <h3>Filter rules &amp; an escape hatch</h3>
+      <p>An ordered list of Include and Exclude patterns — rsync obeys the first rule that matches, so moving one up changes which wins. The Extra arguments field forwards any other rsync switch, tokenised — never through a shell.</p>
     </div>
   </div>
 </section>
@@ -236,7 +236,7 @@
   <p class="sub">Honest about what works today and what's next.</p>
   <ul class="road">
     <li class="done"><b>Dry-run preview, multi-source, live progress, cancel</b> — all working today.</li>
-    <li class="done"><b>Advanced options</b> — move, unit-aware bandwidth limit, excludes, extra arguments.</li>
+    <li class="done"><b>Advanced options</b> — move, unit-aware bandwidth limit, filter rules, extra arguments.</li>
     <li class="done"><b>Structured transfer log</b> — a streaming activity list, one typed row per file and message, not a wall of text.</li>
     <li class="done"><b>Saved presets</b> — store an Advanced-option set and reapply it in one click.</li>
     <li class="done"><b>Help / capability disclosure</b> — an in-app, honest inventory of exactly which rsync flags Foresight exposes, checked against the bundled <code>rsync --help</code>.</li>
@@ -244,7 +244,7 @@
     <li class="done"><b>First <code>.flatpak</code> release</b> — an offline, reproducible bundle built from a GPG-signed tag, <a href="https://github.com/superuser-miguel/foresight/releases/latest">on GitHub Releases</a>.</li>
     <li class="done"><b>Self-hosted repo</b> — a GPG-signed OSTree remote in its own <a href="https://superuser-miguel.github.io/foresight-repo/">foresight-repo</a>, plus a <a href="https://superuser-miguel.github.io/foresight-repo/foresight.flatpakref"><code>.flatpakref</code></a>, so <code>flatpak update</code> pulls new versions instead of re-downloading a bundle.</li>
     <li class="done"><b>Excludes editor</b> — exclude rules as a managed list with per-rule removal, replacing the space-separated field that could not express a pattern containing a space.</li>
-    <li><b>Include rules</b> — <code>--include</code> alongside excludes, so a rule can carve an exception out of a broader exclude.</li>
+    <li class="done"><b>Include rules</b> — the exclude list became an <b>ordered filter list</b>: each rule is an Include or an Exclude and can be moved up or down. rsync applies the first rule that matches, so position is the meaning — an Include above a broader Exclude carves an exception out of it, and an Exclude above an Include shuts a subtree even to it.</li>
     <li><b>Remote sync over SSH</b> — to and from a <code>user@host:/path</code> endpoint, key-based auth first. Network access and an <code>ssh</code> client are already in place; still needed are agent forwarding (<code>--socket=ssh-auth</code>, so keys stay outside the sandbox), a host-key trust story, and the endpoint UI.</li>
     <li><b>Distant future / speculative</b> — optionally remember a password-based SSH or rsync-daemon credential in the system keyring (<code>org.freedesktop.secrets</code>) instead of a config file. A deliberate opt-in permission; key-based auth would never need it.</li>
   </ul>

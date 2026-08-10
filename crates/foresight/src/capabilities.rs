@@ -113,12 +113,15 @@ pub const CAPABILITIES: &[Capability] = &[
         group: Group::Options,
     },
     Capability {
-        name: "Exclude patterns",
-        flags: &["--exclude"],
-        control: "Advanced → Exclude patterns",
-        description: "Skip anything matching a rule in the list (e.g. *.tmp, .git). \
-                      Each rule is passed whole, so it may contain spaces.",
-        man_option: "--exclude",
+        name: "Filter rules",
+        flags: &["--exclude", "--include"],
+        control: "Advanced → Filter rules",
+        description: "Skip or keep paths by pattern (e.g. *.tmp, .git). The list is \
+                      ordered and rsync obeys the first rule that matches, so an \
+                      Include above a broader Exclude carves an exception out of it \
+                      — use the arrows on a rule to change which one wins. Each rule \
+                      is passed whole, so it may contain spaces.",
+        man_option: "--exclude, --include",
         group: Group::Options,
     },
 ];
@@ -159,14 +162,16 @@ pub const NOT_EXPOSED: &[(&str, &str)] = &[
     ),
     (
         "--filter / merge files",
-        "Complex include/exclude rule files.",
+        "rsync's fuller filter syntax: rules read from a file, and per-directory \
+         merge rules. Plain include and exclude rules are a control — see Filter \
+         rules above.",
     ),
 ];
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::job::{Job, Mode, Source};
+    use crate::job::{FilterRule, Job, Mode, Source};
     use std::collections::BTreeSet;
     use std::path::PathBuf;
 
@@ -192,7 +197,8 @@ mod tests {
             verbose: true,
             remove_source_files: true,
             bwlimit: Some("85M".into()),
-            excludes: vec!["*.tmp".into()],
+            // Both kinds, so the registry must account for both flags.
+            filters: vec![FilterRule::exclude("*.tmp"), FilterRule::include("*.jpg")],
             extra_args: vec![],
         };
         let mut out = BTreeSet::new();

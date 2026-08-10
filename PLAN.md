@@ -182,10 +182,22 @@ with live progress.
 
 ### Milestone 4 — polish gate (defer until 0–3 are done)
 
-Saved presets (done), excludes editor (done), appstream metainfo + screenshots, and a
+Saved presets (done), filter-rule editor (done — excludes first, then include
+rules), appstream metainfo + screenshots, and a
 `.flatpak` bundle published on **GitHub Releases** (distribution is GitHub
 Releases + a GitHub Pages landing page — **not** Flathub). Tracked in the
 roadmap deck; not specced here yet.
+
+- [x] **Filter rules are one ordered list**, not an includes set beside an
+      excludes set. rsync evaluates filter rules in argv order and the first
+      match decides a path, so the two arrangements are not equivalent: a
+      two-list UI can only ever emit every include before every exclude, which
+      silently forbids "exclude this subtree even from an include that would
+      otherwise pull files out of it". The list carries a kind per rule and
+      move-up/move-down, and `build_argv` emits it verbatim — the order on
+      screen is the precedence rsync gets. `Job::filters` is the only encoding;
+      preset storage keeps a `_kind` beside each pattern and reads both older
+      exclude-only encodings so no saved rule set is lost on upgrade.
 
 - [x] **Help / capability disclosure.** A Help surface (dialog opened from the
       primary menu) that states *explicitly and honestly* which rsync

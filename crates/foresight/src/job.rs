@@ -40,6 +40,95 @@ pub struct Source {
     pub is_dir: bool,
 }
 
+/// Which way a filter rule decides: keep what it matches, or skip it.
+///
+/// `Exclude` is the default because it is the rule people reach for first, and
+/// because every rule that existed before include rules was an exclude — so a
+/// preset loaded without a recorded kind means exactly that.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FilterKind {
+    /// `--include=<pattern>`: keep a match even if a *later* rule would skip it.
+    Include,
+    /// `--exclude=<pattern>`: skip a match.
+    #[default]
+    Exclude,
+}
+
+impl FilterKind {
+    /// The argv flag this kind emits, without its `=value`.
+    pub fn flag(self) -> &'static str {
+        match self {
+            Self::Include => "--include",
+            Self::Exclude => "--exclude",
+        }
+    }
+
+    /// Human label for the UI.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Include => "Include",
+            Self::Exclude => "Exclude",
+        }
+    }
+
+    /// Stable token for on-disk presets. Not the label: the label is display
+    /// text and may be reworded or translated, while this is a storage format.
+    pub fn as_key(self) -> &'static str {
+        match self {
+            Self::Include => "include",
+            Self::Exclude => "exclude",
+        }
+    }
+
+    /// Parse [`as_key`]. Anything unrecognised — including a key written by a
+    /// future version — reads as `Exclude`, the conservative answer: an
+    /// unreadable rule then skips files rather than silently letting them
+    /// through a filter set that was meant to be restrictive.
+    ///
+    /// [`as_key`]: Self::as_key
+    pub fn from_key(key: &str) -> Self {
+        match key {
+            "include" => Self::Include,
+            _ => Self::Exclude,
+        }
+    }
+}
+
+/// One filter rule: a pattern and what to do with what it matches.
+///
+/// Rules are an **ordered** list, not two sets. rsync walks the filter rules in
+/// argv order and the *first* one that matches a path decides it, so position
+/// is meaning: `--include=*.jpg` above `--exclude=*` keeps the JPEGs, while the
+/// same two rules swapped keep nothing. Both orders are expressible on purpose
+/// — see [`Job::filters`].
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FilterRule {
+    pub kind: FilterKind,
+    /// Stored verbatim. It becomes one argv element, so it may contain spaces.
+    pub pattern: String,
+}
+
+impl FilterRule {
+    pub fn include(pattern: impl Into<String>) -> Self {
+        Self {
+            kind: FilterKind::Include,
+            pattern: pattern.into(),
+        }
+    }
+
+    pub fn exclude(pattern: impl Into<String>) -> Self {
+        Self {
+            kind: FilterKind::Exclude,
+            pattern: pattern.into(),
+        }
+    }
+
+    /// The exact argv element this rule contributes.
+    fn to_arg(&self) -> OsString {
+        OsString::from(format!("{}={}", self.kind.flag(), self.pattern))
+    }
+}
+
 /// A configured sync. The preview and the real run are built from the *same*
 /// `Job`, so the dry run faithfully predicts what the transfer will do —
 /// including deletions when [`delete`](Self::delete) is on.
@@ -78,8 +167,11 @@ pub struct Job {
     /// (`"85M"`, `"500K"`, `"2G"` — rsync's default unit is KiB/s). `None` or an
     /// empty string means unlimited (the flag is omitted).
     pub bwlimit: Option<String>,
-    /// One `--exclude=<pattern>` per entry (filters files; format unchanged).
-    pub excludes: Vec<String>,
+    /// Filter rules in the order the user arranged them — one `--include=` or
+    /// `--exclude=` each, emitted in exactly this order because rsync stops at
+    /// the first rule that matches a path. Filtering never changes rsync's
+    /// *reporting* format, so the `rsync-events` contract is unaffected.
+    pub filters: Vec<FilterRule>,
     /// Extra rsync arguments, already tokenised (never shell-interpreted).
     pub extra_args: Vec<String>,
 }
@@ -153,8 +245,11 @@ impl Job {
                 argv.push(OsString::from(format!("--bwlimit={rate}")));
             }
         }
-        for pattern in &self.excludes {
-            argv.push(OsString::from(format!("--exclude={pattern}")));
+        // Order within this loop is load-bearing: rsync applies the first
+        // matching filter rule and ignores the rest, so the list order the user
+        // arranged in the UI is the precedence they get.
+        for rule in &self.filters {
+            argv.push(rule.to_arg());
         }
         for token in &self.extra_args {
             argv.push(OsString::from(token));
@@ -550,7 +645,7 @@ mod tests {
             verbose: true,
             remove_source_files: true,
             bwlimit: Some("85M".into()),
-            excludes: vec!["*.tmp".into(), ".git".into()],
+            filters: vec![FilterRule::exclude("*.tmp"), FilterRule::exclude(".git")],
             extra_args: vec!["--checksum".into(), "--partial".into()],
             ..Default::default()
         };
@@ -565,26 +660,113 @@ mod tests {
         assert!(has("--partial"));
     }
 
-    /// The whole reason exclude rules are a list rather than a text field: a
+    /// The whole reason filter rules are a list rather than a text field: a
     /// pattern with a space must reach rsync as ONE argument. There is no shell
     /// here, so `--exclude=My Documents/` is unambiguous — but only if nothing
     /// upstream split it first.
     #[test]
-    fn an_exclude_rule_containing_spaces_stays_a_single_argument() {
+    fn a_filter_rule_containing_spaces_stays_a_single_argument() {
         let job = Job {
             sources: vec![dir_source("/s")],
             dest: PathBuf::from("/d"),
-            excludes: vec!["My Documents/".into(), "Old Backups/**".into()],
+            filters: vec![
+                FilterRule::exclude("My Documents/"),
+                FilterRule::include("Old Backups/**"),
+            ],
             ..Default::default()
         };
         let argv = job.build_argv(Mode::Sync);
-        let excludes: Vec<_> = argv
+        let rules: Vec<_> = argv
             .iter()
-            .filter(|a| a.as_bytes().starts_with(b"--exclude="))
+            .filter(|a| {
+                a.as_bytes().starts_with(b"--exclude=") || a.as_bytes().starts_with(b"--include=")
+            })
             .collect();
-        assert_eq!(excludes.len(), 2, "one argument per rule, not per word");
-        assert_eq!(excludes[0].as_bytes(), b"--exclude=My Documents/");
-        assert_eq!(excludes[1].as_bytes(), b"--exclude=Old Backups/**");
+        assert_eq!(rules.len(), 2, "one argument per rule, not per word");
+        assert_eq!(rules[0].as_bytes(), b"--exclude=My Documents/");
+        assert_eq!(rules[1].as_bytes(), b"--include=Old Backups/**");
+    }
+
+    /// Each kind emits its own flag; nothing else in argv changes.
+    #[test]
+    fn each_filter_kind_emits_its_own_flag() {
+        let job = Job {
+            sources: vec![dir_source("/s")],
+            dest: PathBuf::from("/d"),
+            filters: vec![FilterRule::include("*.jpg"), FilterRule::exclude("*")],
+            ..Default::default()
+        };
+        let argv = job.build_argv(Mode::Sync);
+        let has = |s: &str| argv.iter().any(|a| a.as_bytes() == s.as_bytes());
+        assert!(has("--include=*.jpg"));
+        assert!(has("--exclude=*"));
+    }
+
+    /// The point of an ordered list rather than an includes set plus an
+    /// excludes set: rsync takes the FIRST rule that matches, so the two orders
+    /// below mean opposite things and both must be expressible. A two-list UI
+    /// (all includes, then all excludes) could only ever produce the first.
+    #[test]
+    fn filter_rules_reach_argv_in_list_order() {
+        let filters_of = |argv: &[OsString]| -> Vec<String> {
+            argv.iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .filter(|a| a.starts_with("--include=") || a.starts_with("--exclude="))
+                .collect()
+        };
+
+        // "Only JPEGs" — the include must precede the catch-all exclude.
+        let only_jpegs = Job {
+            sources: vec![dir_source("/s")],
+            dest: PathBuf::from("/d"),
+            filters: vec![
+                FilterRule::include("*/"),
+                FilterRule::include("*.jpg"),
+                FilterRule::exclude("*"),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            filters_of(&only_jpegs.build_argv(Mode::Sync)),
+            vec!["--include=*/", "--include=*.jpg", "--exclude=*"]
+        );
+
+        // "JPEGs, but nothing under build/" — the exclude must precede the
+        // include, which is precisely what an includes-first model cannot say.
+        let not_in_build = Job {
+            sources: vec![dir_source("/s")],
+            dest: PathBuf::from("/d"),
+            filters: vec![
+                FilterRule::exclude("build/"),
+                FilterRule::include("*.jpg"),
+                FilterRule::exclude("*"),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            filters_of(&not_in_build.build_argv(Mode::Sync)),
+            vec!["--exclude=build/", "--include=*.jpg", "--exclude=*"]
+        );
+    }
+
+    /// Preview and Sync must filter identically, or the dry run stops
+    /// predicting the transfer — the app's whole premise.
+    #[test]
+    fn both_modes_get_the_same_filter_rules() {
+        let job = Job {
+            sources: vec![dir_source("/s")],
+            dest: PathBuf::from("/d"),
+            filters: vec![FilterRule::include("*.jpg"), FilterRule::exclude("*")],
+            ..Default::default()
+        };
+        let rules = |mode| -> Vec<String> {
+            job.build_argv(mode)
+                .iter()
+                .map(|a| a.to_string_lossy().into_owned())
+                .filter(|a| a.starts_with("--include=") || a.starts_with("--exclude="))
+                .collect()
+        };
+        assert_eq!(rules(Mode::Preview), rules(Mode::Sync));
     }
 
     #[test]
@@ -641,7 +823,7 @@ mod tests {
         let job = Job {
             sources: vec![file_source("/s/a.txt")],
             dest: PathBuf::from("/d"),
-            excludes: vec!["*.bak".into()],
+            filters: vec![FilterRule::exclude("*.bak")],
             ..Default::default()
         };
         let argv = job.build_argv(Mode::Sync);
@@ -931,6 +1113,112 @@ mod tests {
         // Both files, from two different locations, are now in dest.
         assert_eq!(std::fs::read(dst.join("from_downloads.txt")).unwrap(), b"A");
         assert_eq!(std::fs::read(dst.join("from_documents.txt")).unwrap(), b"B");
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Filter rules against the real engine, not just the argv we build.
+    ///
+    /// Runs the same tree twice, changing only where `--exclude=build/` sits
+    /// relative to `--include=*.jpg`. rsync obeys the first rule that matches,
+    /// so the two orders must land different files — this is the behaviour the
+    /// ordered list exists to give users, and the assertion that would fail if
+    /// anything upstream ever sorted or grouped the rules.
+    #[test]
+    fn filter_rule_order_decides_what_real_rsync_copies() {
+        if !rsync_available() {
+            eprintln!("skipping: rsync not on PATH");
+            return;
+        }
+
+        let tmp = std::env::temp_dir().join(format!("foresight-filters-{}", std::process::id()));
+        let src = tmp.join("src");
+        std::fs::create_dir_all(src.join("photos")).unwrap();
+        std::fs::create_dir_all(src.join("build")).unwrap();
+        std::fs::write(src.join("keep.jpg"), b"jpg").unwrap();
+        std::fs::write(src.join("notes.txt"), b"txt").unwrap();
+        std::fs::write(src.join("photos/a.jpg"), b"jpg").unwrap();
+        std::fs::write(src.join("photos/b.txt"), b"txt").unwrap();
+        std::fs::write(src.join("build/gen.jpg"), b"jpg").unwrap();
+
+        let run = |dst: &Path, filters: Vec<FilterRule>| {
+            std::fs::create_dir_all(dst).unwrap();
+            let job = Job {
+                sources: vec![Source {
+                    path: src.clone(),
+                    is_dir: true,
+                }],
+                dest: dst.to_path_buf(),
+                sync_contents: true, // children land directly in dst
+                filters,
+                ..Default::default()
+            };
+            let completion: Rc<RefCell<Option<Completion>>> = Rc::new(RefCell::new(None));
+            let ctx = glib::MainContext::new();
+            ctx.with_thread_default(|| {
+                let main_loop = glib::MainLoop::new(Some(&ctx), false);
+                let ml = main_loop.clone();
+                let comp = completion.clone();
+                spawn_rsync(
+                    job.build_argv(Mode::Sync),
+                    |_ev| {},
+                    move |c: Completion| {
+                        *comp.borrow_mut() = Some(c);
+                        ml.quit();
+                    },
+                )
+                .expect("spawn rsync");
+                main_loop.run();
+            })
+            .expect("run with thread-default context");
+            let completion = completion.borrow().clone().expect("on_done fired");
+            assert_eq!(completion.severity, Severity::Success, "{completion:?}");
+        };
+
+        // "Every JPEG except anything under build/" — the exclude is first, so
+        // it decides build/ before the include ever sees what is inside it.
+        let guarded = tmp.join("guarded");
+        run(
+            &guarded,
+            vec![
+                FilterRule::exclude("build/"),
+                FilterRule::include("*/"),
+                FilterRule::include("*.jpg"),
+                FilterRule::exclude("*"),
+            ],
+        );
+        assert!(guarded.join("keep.jpg").exists(), "a JPEG at the top level");
+        assert!(
+            guarded.join("photos/a.jpg").exists(),
+            "a JPEG in a subfolder"
+        );
+        assert!(!guarded.join("notes.txt").exists(), "--exclude=* drops it");
+        assert!(
+            !guarded.join("photos/b.txt").exists(),
+            "--exclude=* drops it"
+        );
+        assert!(
+            !guarded.join("build").exists(),
+            "the exclude runs before the include, so build/ never opens"
+        );
+
+        // The same four rules with the exclude moved last: now --include=*.jpg
+        // matches build/gen.jpg first and the file comes through. Nothing but
+        // rule order differs between the two runs.
+        let open = tmp.join("open");
+        run(
+            &open,
+            vec![
+                FilterRule::include("*/"),
+                FilterRule::include("*.jpg"),
+                FilterRule::exclude("build/"),
+                FilterRule::exclude("*"),
+            ],
+        );
+        assert!(
+            open.join("build/gen.jpg").exists(),
+            "the include now wins, so the same tree yields a different result"
+        );
 
         let _ = std::fs::remove_dir_all(&tmp);
     }

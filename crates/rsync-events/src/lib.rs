@@ -218,6 +218,50 @@ static PROGRESS_RE: Lazy<Regex> = Lazy::new(|| {
 
 static ERROR_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^rsync(:| error:)").unwrap());
 
+/// ssh's own diagnostics, which share the stream for a remote transfer.
+///
+/// These carry the *reason* a remote job failed. rsync only ever says
+/// "unexplained error (code 255)" — the useful line ("Permission denied",
+/// "Host key verification failed", "REMOTE HOST IDENTIFICATION HAS CHANGED")
+/// comes from ssh and does not start with `rsync:`. Without this they reached
+/// the activity log but never the collected-errors list behind the result
+/// banner, so a failed remote sync reported that something went wrong and not
+/// one word about what.
+///
+/// Deliberately a short list of known-fatal lines rather than anything
+/// resembling "looks scary": ssh's routine chatter (`Warning: Permanently
+/// added …`, the `@@@@` banner rule that decorates the host-key warning) is
+/// *not* an error, and promoting it would put noise in front of the real cause.
+static SSH_ERROR_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"(?x)
+        ^(
+            Host\ key\ verification\ failed
+            # Distinguishes a CHANGED key from a merely unknown one — the
+            # difference between first contact and someone may be in the
+            # middle — so it must not be dropped as noise.
+          | Host\ key\ for\ .+\ has\ changed
+          | No\ .+\ host\ key\ is\ known\ for
+          | Permission\ denied
+          | ssh:
+          | Connection\ closed\ by
+          | Connection\ timed\ out
+          | kex_exchange_identification:
+          | Bad\ configuration\ option:
+        )
+        # Unanchored on purpose: ssh prints this padded inside its @-banner,
+        # as `@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @`.
+        # Anchoring it — which is the obvious thing to write — silently misses
+        # the single loudest line ssh has.
+        | WARNING:\ REMOTE\ HOST\ IDENTIFICATION\ HAS\ CHANGED
+        # `user@host: Permission denied (publickey).` — the reason a key-based
+        # login was refused, which is the single most likely remote failure.
+        | :\ Permission\ denied\ \(
+        ",
+    )
+    .unwrap()
+});
+
 fn parse_u64(s: &str) -> u64 {
     s.replace(',', "").parse().unwrap_or(0)
 }
@@ -374,7 +418,9 @@ impl StreamParser {
         }
         Some(Event::Message(Message {
             text: line.trim_end().to_string(),
-            is_error: ERROR_RE.is_match(line),
+            // A remote job's stream carries ssh's stderr as well as rsync's,
+            // and for those failures ssh is the one that says why.
+            is_error: ERROR_RE.is_match(line) || SSH_ERROR_RE.is_match(line),
         }))
     }
 }
@@ -436,4 +482,86 @@ pub fn classify_exit(code: i32) -> (Severity, String) {
         other => return (Error, format!("rsync exited with code {other}.")),
     };
     (sev, msg.to_string())
+}
+
+#[cfg(test)]
+mod ssh_error_tests {
+    use super::*;
+
+    /// Through the public streaming API, exactly as the app consumes it.
+    fn is_error(line: &str) -> bool {
+        let mut parser = StreamParser::new();
+        match parser.feed(&format!("{line}\n")).into_iter().next() {
+            Some(Event::Message(m)) => m.is_error,
+            other => panic!("{line:?} did not parse as a Message: {other:?}"),
+        }
+    }
+
+    /// Lines captured **verbatim** from ssh during remote-sync verification —
+    /// copied out of a real failing transfer, not transcribed from memory.
+    /// Each is the only statement of why a transfer failed; rsync itself
+    /// reports nothing better than "unexplained error (code 255)".
+    #[test]
+    fn ssh_failure_lines_are_collected_as_errors() {
+        for line in [
+            // Refused key auth (the most likely remote failure of all).
+            "definitive_group@127.0.0.1: Permission denied (password,keyboard-interactive).",
+            "user@nas.local: Permission denied (publickey).",
+            "Permission denied, please try again.",
+            // First contact with strict checking on.
+            "No ED25519 host key is known for [127.0.0.1]:2222 and you have requested strict checking.",
+            // A CHANGED key. Note the padding and the surrounding @ — ssh
+            // prints this inside a banner, so an anchored pattern misses it.
+            "@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @",
+            "Host key for [127.0.0.1]:2222 has changed and you have requested strict checking.",
+            "Host key verification failed.",
+            // Never reached the host at all.
+            "ssh: connect to host nas.local port 22: Connection refused",
+            "ssh: Could not resolve hostname nope.invalid: Name or service not known",
+            "Connection closed by 127.0.0.1 port 2222",
+            "kex_exchange_identification: read: Connection reset by peer",
+        ] {
+            assert!(is_error(line), "should be collected as an error: {line:?}");
+        }
+    }
+
+    /// A changed host key must be distinguishable from an unknown one in what
+    /// the user is shown: the first means "possible man in the middle", the
+    /// second means "you have not been here before".
+    #[test]
+    fn a_changed_host_key_says_so_and_not_merely_that_it_failed() {
+        let changed =
+            "Host key for [127.0.0.1]:2222 has changed and you have requested strict checking.";
+        assert!(is_error(changed));
+        assert!(is_error(
+            "@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @"
+        ));
+    }
+
+    /// ssh is chatty on success too. Promoting its routine lines would bury the
+    /// real cause under noise the next time something actually breaks.
+    #[test]
+    fn routine_ssh_chatter_is_not_an_error() {
+        for line in [
+            "Warning: Permanently added '[127.0.0.1]:2222' (ED25519) to the list of known hosts.",
+            "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@",
+            "Authenticated to 127.0.0.1 ([127.0.0.1]:2222) using \"publickey\".",
+            "debug1: Reading configuration data /etc/ssh/ssh_config",
+        ] {
+            assert!(!is_error(line), "should NOT be an error: {line:?}");
+        }
+    }
+
+    /// The pre-existing rsync classification must be untouched by the addition.
+    #[test]
+    fn rsync_lines_still_classify_as_before() {
+        assert!(is_error(
+            "rsync: [sender] link_stat \"/nope\" failed: No such file"
+        ));
+        assert!(is_error(
+            "rsync error: some files could not be transferred (code 23)"
+        ));
+        assert!(!is_error("sending incremental file list"));
+        assert!(!is_error("total size is 1,234  speedup is 5.67"));
+    }
 }

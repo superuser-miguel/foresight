@@ -228,11 +228,22 @@ roadmap deck; not specced here yet.
 1.0 is not "more features". It is the point where the advertised surface is
 complete and the **formats stop moving**. Three things, and no more:
 
-- [ ] **Remote sync over SSH.** The only gap the README admits to, in its three
-      real parts: agent access (`--socket=ssh-auth`, which is a `finish-args`
-      change and therefore moves §5 with it), an app-managed `known_hosts` with
-      the fingerprint shown for confirmation, and the `user@host:/path` endpoint
-      UI. The old "it's only the UI" sizing was wrong and is not to be revived.
+- **Remote sync over SSH.** The only gap the README admits to, in three real
+      parts. The old "it's only the UI" sizing was wrong — it came from a test
+      that passed an explicit `-i <key>` under a `--filesystem` grant — and is
+      not to be revived.
+      - [x] **Agent access.** `--socket=ssh-auth`; §5 moved with it.
+      - [ ] **Host-key trust.** An app-managed `known_hosts` with the
+            fingerprint shown for confirmation. It cannot ride on ssh's default
+            file: **the sandbox home is ephemeral tmpfs**, so `accept-new`
+            writes `~/.ssh/known_hosts` inside the sandbox and it is gone on the
+            next launch (verified). Point `-o UserKnownHostsFile=` at the
+            persisted app config dir instead.
+      - [ ] **The endpoint UI** — parsing and validating `user@host:/path`.
+            Must survive **IPv6 link-local with a scope id**
+            (`[fe80::1%wlo1]:/path`): brackets and `%scope` have to reach argv
+            intact, and `build_argv` must pass a remote spec verbatim rather
+            than appending the trailing slash it uses for a local mirror dir.
 - [ ] **Freeze the preset format.** It has now churned three times
       (space-joined → `exclude_N` → `filter_N` + `_kind`). 1.0 is the promise
       that it stops. The migration chain already in `profiles.rs` is what makes
@@ -295,9 +306,10 @@ permission without also updating this table and the manifest comment block.
 | finish-arg | Status | Justification |
 |---|---|---|
 | `--socket=wayland`, `--socket=fallback-x11`, `--share=ipc`, `--device=dri` | present | Standard GTK4 display stack |
-| `--share=network` | present | ssh remotes / rsyncd (Phase 3); harmless before then |
+| `--share=network` | present | ssh remotes / rsyncd; the runtime's ssh client and a real transfer verified working from inside the sandbox |
+| `--socket=ssh-auth` | present | Remote sync over SSH (M5). Forwards the **host agent's socket** only — no private key material enters the sandbox, the agent signs on request and never hands over a key. This is why it is the correct grant and `--filesystem=~/.ssh` is not. Without it there is no key here at all: the sandbox inherits a *dead* `SSH_AUTH_SOCK` (`/run/user/1000/gcr/ssh`, unmounted), so ssh reports "Error connecting to agent" while looking configured. With it the socket appears at `/run/flatpak/ssh-auth` and `ssh-add -l` lists the host agent's keys. Inert until the endpoint UI exists — nothing in the app spawns ssh yet |
 | `--filesystem=…` (any) | **absent** | Portals provide file access; revisit only for saved profiles, narrowest scope possible, with written justification |
-| `--talk-name=org.freedesktop.secrets` | absent | Add with Phase 3 if remote credentials are stored in the keyring |
+| `--talk-name=org.freedesktop.secrets` | absent | Add only if a remote *password* or key passphrase is ever stored in the keyring. Key-based auth through the agent needs nothing |
 | `--talk-name=org.freedesktop.Flatpak` / `flatpak-spawn` | **forbidden** | Defeats the sandbox; the engine is bundled precisely to avoid this |
 
 ## 6. Facts learned from real rsync 3.4.4 (do not re-litigate)

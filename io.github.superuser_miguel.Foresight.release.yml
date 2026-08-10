@@ -58,6 +58,14 @@ finish-args:
                                        # runtime's ssh client + a real transfer
                                        # verified working 2026-07-13)
 
+  # Forwards the host's SSH agent socket into the sandbox for remote sync.
+  # NO private key material ever enters the sandbox: the agent stays on the
+  # host and only signs on request, which is why this is the right permission
+  # and `--filesystem=~/.ssh` is not. Without it the sandbox inherits a *dead*
+  # SSH_AUTH_SOCK and no key is reachable at all. See PLAN.md §5, and the dev
+  # manifest for the full note.
+  - --socket=ssh-auth
+
   # NOTE deliberately ABSENT (portals-first — see PLAN.md §5):
   #   --filesystem=home / host        -> file access flows through the
   #                                      FileChooser portal instead

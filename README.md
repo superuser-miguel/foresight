@@ -264,17 +264,23 @@ format, and current screenshots — nothing else.
 
 - [ ] **Remote sync over SSH** — rsync to/from a `user@host:/path` endpoint,
       key-based auth first. Three parts, not one:
-      1. **Agent access.** `--share=network` and the runtime's `ssh` are already
-         there, but `SSH_AUTH_SOCK` does not resolve inside the sandbox and
-         `~/.ssh` is (correctly) invisible, so no key is reachable today. Adding
-         **`--socket=ssh-auth`** fixes it — verified: the agent's keys become
-         usable while no private key material ever enters the sandbox. It is a
-         `finish-args` change, so PLAN.md §5 must move with it.
+      1. ✅ **Agent access — done.** `--share=network` and the runtime's `ssh`
+         were already there, but the sandbox inherited a *dead* `SSH_AUTH_SOCK`
+         and `~/.ssh` is (correctly) invisible, so no key was reachable at all.
+         **`--socket=ssh-auth`** forwards the host agent's socket: your keys
+         become usable while **no private key material ever enters the
+         sandbox** — the agent stays outside and only signs on request, which
+         is exactly why this is the right grant and `--filesystem=~/.ssh` is
+         not. `~/.ssh` remains invisible with it on.
       2. **Host-key trust.** `known_hosts` is not readable either, so first
-         contact has nothing to verify against. Preference is an app-managed
+         contact has nothing to verify against. It will be an app-managed
          `known_hosts` in the config dir with the fingerprint shown for
-         confirmation, rather than granting access to `~/.ssh`.
-      3. **The endpoint UI** — parsing and validating `user@host:/path`.
+         confirmation, rather than granting access to `~/.ssh` — and it cannot
+         use ssh's default file, because the sandbox home is ephemeral: anything
+         written to `~/.ssh` inside it is gone on the next launch.
+      3. **The endpoint UI** — parsing and validating `user@host:/path`,
+         including IPv6 link-local endpoints with a scope id
+         (`[fe80::1%wlo1]:/path`).
 - [ ] **A frozen preset format.** It has churned three times; 1.0 is the promise
       that it stops. Every reader keeps reading all three encodings, so no saved
       rule set is ever lost to an upgrade.

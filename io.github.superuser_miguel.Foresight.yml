@@ -37,9 +37,25 @@ finish-args:
   - --device=dri                      # GPU rendering for GTK4/GSK
 
   # -- capabilities the app actually needs ----------------------------------
-  - --share=network                   # ssh remotes + rsyncd targets (Phase 3;
-                                       # runtime ssh + this transfer verified
-                                       # working 2026-07-13, see openssh note)
+  - --share=network                   # ssh remotes + rsyncd targets (the
+                                       # runtime's ssh client + a real transfer
+                                       # verified working 2026-07-13)
+
+  # Forwards the host's SSH agent socket into the sandbox for remote sync.
+  # NO private key material ever enters the sandbox: the agent stays on the
+  # host and only signs on request, which is exactly why this is the right
+  # permission and `--filesystem=~/.ssh` is not.
+  #
+  # Without it there is no key here at all. The sandbox inherits a *dead*
+  # SSH_AUTH_SOCK (=/run/user/1000/gcr/ssh, whose socket is not mounted), so
+  # ssh fails with "Error connecting to agent" while looking configured, and
+  # ~/.ssh is correctly invisible. With it the socket lands at
+  # /run/flatpak/ssh-auth and `ssh-add -l` lists the host agent's keys —
+  # verified 2026-08-07, and again on the build that added this line.
+  #
+  # See PLAN.md §5. Inert until the endpoint UI lands: nothing in the app
+  # spawns ssh yet.
+  - --socket=ssh-auth
 
   # NOTE deliberately ABSENT (portals-first — see PLAN.md §5):
   #   --filesystem=home / host        -> file access flows through the
@@ -76,8 +92,13 @@ modules:
   # org.gnome.Platform//49 runtime already ships an ssh client at /usr/bin/ssh,
   # and a real rsync-over-ssh transfer from inside this sandbox succeeds
   # end-to-end (auth + data + the %i %n%L / --info=progress2 reporting contract),
-  # given --share=network below. So Phase 3 (remote sync) needs only the UI to
-  # accept a `user@host:/path` endpoint, not an openssh module.
+  # given --share=network above.
+  #
+  # That test passed an explicit `-i <key>` with a --filesystem grant on a
+  # scratch dir, which made remote sync look like "just the endpoint UI". It is
+  # not: with no such grant, no key is reachable at all. Hence --socket=ssh-auth
+  # above, an app-managed known_hosts (the sandbox home is ephemeral tmpfs, so
+  # ssh's default file does not survive a restart), and then the endpoint UI.
   #
   # Only re-add a bundled openssh if a future runtime drops its ssh client, or
   # we need a client feature the runtime's build lacks.

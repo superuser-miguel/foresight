@@ -17,8 +17,10 @@ use gtk::{gdk, gio, glib};
 use std::path::PathBuf;
 
 use crate::change_object::ChangeObject;
+use crate::endpoint::Endpoint;
 use crate::job::{
-    argv_display, spawn_rsync, Completion, FilterKind, FilterRule, Job, Mode, Runner, Source,
+    argv_display, spawn_rsync, Completion, FilterKind, FilterRule, Job, Mode, Remote, Runner,
+    Source,
 };
 use crate::log_object::LogObject;
 use crate::profiles::{self, Profile};
@@ -31,6 +33,15 @@ pub struct SourceEntry {
     path: PathBuf,
     is_dir: bool,
     row: adw::ActionRow,
+}
+
+/// Which side of the transfer the remote endpoint sits on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RemoteSide {
+    /// Pull: the remote is where files come from.
+    Source,
+    /// Push: the remote is where they go.
+    Dest,
 }
 
 mod imp {
@@ -61,7 +72,15 @@ mod imp {
         #[template_child]
         pub add_file_button: TemplateChild<gtk::Button>,
         #[template_child]
+        pub add_remote_source_button: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub clear_remote_source_button: TemplateChild<gtk::Button>,
+        #[template_child]
+        pub remote_dest_button: TemplateChild<gtk::Button>,
+        #[template_child]
         pub dest_row: TemplateChild<adw::ActionRow>,
+        #[template_child]
+        pub dest_icon: TemplateChild<gtk::Image>,
         #[template_child]
         pub contents_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
@@ -110,6 +129,10 @@ mod imp {
         pub filter_rows: RefCell<Vec<adw::ActionRow>>,
         /// The destination directory (never lossy-converted).
         pub dest: RefCell<Option<PathBuf>>,
+        /// The remote endpoint and which side it is on, once confirmed and
+        /// trusted. `None` for a purely local job. Only one side can be remote,
+        /// so this is one field — see [`crate::job::Remote`].
+        pub remote: RefCell<Option<(RemoteSide, Endpoint)>>,
 
         /// Backing model for the preview list (holds `ChangeObject`s).
         pub preview_store: OnceCell<gio::ListStore>,
@@ -192,6 +215,21 @@ impl ForesightWindow {
             #[weak(rename_to = win)]
             self,
             move |_| win.choose_add_files()
+        ));
+        imp.add_remote_source_button.connect_clicked(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_| win.choose_remote(RemoteSide::Source)
+        ));
+        imp.remote_dest_button.connect_clicked(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_| win.choose_remote(RemoteSide::Dest)
+        ));
+        imp.clear_remote_source_button.connect_clicked(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_| win.clear_remote()
         ));
 
         // Drop files/folders onto the Sources group to add them (multi-file
@@ -472,11 +510,12 @@ impl ForesightWindow {
         let imp = self.imp();
 
         // Sources: drop every row and the backing list.
-        for entry in imp.sources.borrow_mut().drain(..) {
-            imp.sources_group.remove(&entry.row);
-        }
-        // Destination.
+        self.clear_sources();
+        // Destination, and any remote endpoint on either side. A new job means
+        // a new job — a leftover remote host is exactly the kind of thing that
+        // would be missed on the Configure page and noticed on the far machine.
         *imp.dest.borrow_mut() = None;
+        *imp.remote.borrow_mut() = None;
         imp.dest_row.set_subtitle("Not selected");
         imp.dest_row.set_tooltip_text(None);
         imp.contents_row.set_active(false);
@@ -618,6 +657,131 @@ impl ForesightWindow {
         imp.sources_group.remove(row);
         imp.sources.borrow_mut().retain(|e| &e.row != row);
         self.refresh_sources_state();
+    }
+
+    // -- remote endpoints (M5 part 3) ---------------------------------------
+
+    /// Open the endpoint form for one side. The dialog only calls back with an
+    /// endpoint whose host key is already trusted or has just been confirmed,
+    /// so nothing here has to re-check.
+    fn choose_remote(&self, side: RemoteSide) {
+        let existing = self
+            .imp()
+            .remote
+            .borrow()
+            .as_ref()
+            .filter(|(s, _)| *s == side)
+            .map(|(_, e)| e.clone());
+        let title = match side {
+            RemoteSide::Source => "Remote source",
+            RemoteSide::Dest => "Remote destination",
+        };
+        crate::remote_dialog::present(
+            self,
+            title,
+            existing,
+            glib::clone!(
+                #[weak(rename_to = win)]
+                self,
+                move |endpoint| win.set_remote(side, endpoint)
+            ),
+        );
+    }
+
+    fn set_remote(&self, side: RemoteSide, endpoint: Endpoint) {
+        let imp = self.imp();
+        // Setting a remote source discards local sources rather than trying to
+        // combine them: rsync takes local paths or one remote operand, never a
+        // mix, so keeping them would only look like they were still in the job.
+        if side == RemoteSide::Source {
+            self.clear_sources();
+        }
+        *imp.remote.borrow_mut() = Some((side, endpoint));
+        self.refresh_remote_state();
+        self.refresh_sources_state();
+    }
+
+    fn clear_remote(&self) {
+        *self.imp().remote.borrow_mut() = None;
+        self.refresh_remote_state();
+        self.refresh_sources_state();
+    }
+
+    /// The remote endpoint on `side`, if that is where it is.
+    fn remote_on(&self, side: RemoteSide) -> Option<Endpoint> {
+        self.imp()
+            .remote
+            .borrow()
+            .as_ref()
+            .filter(|(s, _)| *s == side)
+            .map(|(_, e)| e.clone())
+    }
+
+    /// Repaint the destination row and the source placeholder to match the
+    /// remote state, and keep the two "remote" buttons mutually exclusive —
+    /// rsync refuses a job that is remote at both ends.
+    fn refresh_remote_state(&self) {
+        let imp = self.imp();
+        let remote = imp.remote.borrow().clone();
+
+        match &remote {
+            Some((RemoteSide::Dest, e)) => {
+                imp.dest_row.set_title("Remote folder");
+                imp.dest_row
+                    .set_subtitle(&glib::markup_escape_text(&e.to_string()));
+                imp.dest_row.set_tooltip_text(Some(&e.to_string()));
+                imp.dest_icon.set_icon_name(Some("network-server-symbolic"));
+            }
+            _ => {
+                imp.dest_row.set_title("Folder");
+                imp.dest_icon.set_icon_name(Some("folder-open-symbolic"));
+                match imp.dest.borrow().as_ref() {
+                    Some(path) => {
+                        let (subtitle, tooltip) = describe_path(path);
+                        imp.dest_row.set_subtitle(&subtitle);
+                        imp.dest_row.set_tooltip_text(Some(&tooltip));
+                    }
+                    None => {
+                        imp.dest_row.set_subtitle("Not selected");
+                        imp.dest_row.set_tooltip_text(None);
+                    }
+                }
+            }
+        }
+
+        // One side at a time. The tooltip says why, so a disabled button is an
+        // explanation rather than a dead end.
+        let source_is_remote = matches!(remote, Some((RemoteSide::Source, _)));
+        let dest_is_remote = matches!(remote, Some((RemoteSide::Dest, _)));
+        imp.add_remote_source_button.set_sensitive(!dest_is_remote);
+        imp.remote_dest_button.set_sensitive(!source_is_remote);
+        imp.add_remote_source_button
+            .set_tooltip_text(Some(if dest_is_remote {
+                "The destination is already remote — rsync cannot have both ends on other machines"
+            } else if source_is_remote {
+                "Change the remote source"
+            } else {
+                "Pull from a remote machine over SSH"
+            }));
+        imp.remote_dest_button
+            .set_tooltip_text(Some(if source_is_remote {
+                "The source is already remote — rsync cannot have both ends on other machines"
+            } else if dest_is_remote {
+                "Change the remote destination"
+            } else {
+                "Send to a remote machine over SSH"
+            }));
+
+        self.refresh_action_sensitivity();
+    }
+
+    /// Drop every local source row (used when a remote source takes over, and
+    /// by New Job).
+    fn clear_sources(&self) {
+        let imp = self.imp();
+        for entry in imp.sources.borrow_mut().drain(..) {
+            imp.sources_group.remove(&entry.row);
+        }
     }
 
     // -- filter rules -------------------------------------------------------
@@ -814,12 +978,14 @@ impl ForesightWindow {
         let Some(path) = file.path() else {
             return;
         };
-        let (subtitle, tooltip) = describe_path(&path);
         let imp = self.imp();
-        imp.dest_row.set_subtitle(&subtitle);
-        imp.dest_row.set_tooltip_text(Some(&tooltip));
         *imp.dest.borrow_mut() = Some(path);
-        self.refresh_action_sensitivity();
+        // Picking a local folder replaces a remote destination: there is one
+        // destination, and the row has to say which it is.
+        if self.remote_on(RemoteSide::Dest).is_some() {
+            *imp.remote.borrow_mut() = None;
+        }
+        self.refresh_remote_state();
     }
 
     /// Recompute the placeholder, the availability of the two single-folder
@@ -827,10 +993,35 @@ impl ForesightWindow {
     /// sensitivity.
     fn refresh_sources_state(&self) {
         let imp = self.imp();
+        let remote_source = self.remote_on(RemoteSide::Source);
         let sources = imp.sources.borrow();
-        imp.sources_placeholder.set_visible(sources.is_empty());
 
-        let single_dir = sources.len() == 1 && sources[0].is_dir;
+        // With a remote source the placeholder becomes the row that states it —
+        // there are no local source rows to show, and an empty list with no
+        // explanation would read as "nothing selected".
+        match &remote_source {
+            Some(e) => {
+                imp.sources_placeholder.set_visible(true);
+                imp.sources_placeholder.set_sensitive(true);
+                imp.sources_placeholder.set_title("Remote source");
+                imp.sources_placeholder
+                    .set_subtitle(&glib::markup_escape_text(&e.to_string()));
+                imp.clear_remote_source_button.set_visible(true);
+            }
+            None => {
+                imp.sources_placeholder.set_visible(sources.is_empty());
+                imp.sources_placeholder.set_sensitive(false);
+                imp.sources_placeholder.set_title("No sources yet");
+                imp.sources_placeholder
+                    .set_subtitle("Use the buttons above, or drop files and folders here");
+                imp.clear_remote_source_button.set_visible(false);
+            }
+        }
+
+        // The two single-folder options need a lone directory we can see. A
+        // remote path was typed rather than picked, and nothing has stat'd the
+        // far end, so they stay off for a pull — matching `Job::is_single_dir`.
+        let single_dir = remote_source.is_none() && sources.len() == 1 && sources[0].is_dir;
         for row in [&*imp.contents_row, &*imp.delete_row] {
             row.set_sensitive(single_dir);
             if !single_dir {
@@ -838,6 +1029,12 @@ impl ForesightWindow {
             }
         }
         drop(sources);
+
+        // Local sources and a remote source are alternatives, not a mix.
+        let local_allowed = remote_source.is_none() && !self.is_running();
+        imp.add_folder_button.set_sensitive(local_allowed);
+        imp.add_file_button.set_sensitive(local_allowed);
+
         self.refresh_action_sensitivity();
     }
 
@@ -852,24 +1049,52 @@ impl ForesightWindow {
                 is_dir: e.is_dir,
             })
             .collect();
-        if sources.is_empty() {
+
+        // Each side is satisfied either locally or remotely, never both.
+        let remote_source = self.remote_on(RemoteSide::Source);
+        let remote_dest = self.remote_on(RemoteSide::Dest);
+        if sources.is_empty() && remote_source.is_none() {
             return None;
         }
-        let dest = imp.dest.borrow().clone()?;
+        let dest = match (&remote_dest, imp.dest.borrow().clone()) {
+            (Some(_), local) => local.unwrap_or_default(), // unused; operand wins
+            (None, Some(local)) => local,
+            (None, None) => return None,
+        };
+
+        let (remote, endpoint) = match (remote_source, remote_dest) {
+            (Some(e), _) => (Some(Remote::Source(e.operand())), Some(e)),
+            (_, Some(e)) => (Some(Remote::Dest(e.operand())), Some(e)),
+            _ => (None, None),
+        };
+
+        // A remote job carries our ssh command, so the transfer uses the app's
+        // own known_hosts and strict checking rather than ssh's defaults. If it
+        // cannot be built the job is not runnable: silently falling back to a
+        // bare `ssh` would drop exactly the host-key guarantee this is for.
+        let remote_shell = match &endpoint {
+            Some(e) => match crate::ssh::rsh_command(&crate::ssh::known_hosts_path(), e.port) {
+                Ok(cmd) => Some(cmd),
+                Err(err) => {
+                    self.toast(&err.to_string());
+                    return None;
+                }
+            },
+            None => None,
+        };
+
         let adv = self.read_advanced();
         Some(Job {
             sources,
             dest,
+            remote,
             delete: adv.delete,
             sync_contents: adv.sync_contents,
             verbose: adv.verbose,
             remove_source_files: adv.remove_source_files,
             bwlimit: adv.bwlimit,
             filters: adv.filters,
-            // Local only until the endpoint UI lands (M5 part 3): with no way
-            // to enter a remote host, every job here is local and rsync needs
-            // no remote shell.
-            remote_shell: None,
+            remote_shell,
             extra_args: adv.extra_args,
         })
     }
@@ -1053,9 +1278,14 @@ impl ForesightWindow {
 
     // -- run lifecycle (M3) -------------------------------------------------
 
+    /// Both ends are chosen. A remote endpoint satisfies its own side, so a
+    /// pull needs no local sources and a push needs no local destination.
     fn both_selected(&self) -> bool {
         let imp = self.imp();
-        !imp.sources.borrow().is_empty() && imp.dest.borrow().is_some()
+        let have_source =
+            !imp.sources.borrow().is_empty() || self.remote_on(RemoteSide::Source).is_some();
+        let have_dest = imp.dest.borrow().is_some() || self.remote_on(RemoteSide::Dest).is_some();
+        have_source && have_dest
     }
 
     fn is_running(&self) -> bool {
@@ -1072,8 +1302,15 @@ impl ForesightWindow {
         imp.preview_button.set_sensitive(idle_ready);
         imp.start_button.set_sensitive(idle_ready);
         imp.cancel_button.set_sensitive(running);
-        imp.add_folder_button.set_sensitive(!running);
-        imp.add_file_button.set_sensitive(!running);
+        // The local add buttons also answer to whether a remote source has
+        // taken over, so refresh_sources_state owns them; only the run lock is
+        // applied here.
+        if running {
+            imp.add_folder_button.set_sensitive(false);
+            imp.add_file_button.set_sensitive(false);
+            imp.add_remote_source_button.set_sensitive(false);
+            imp.remote_dest_button.set_sensitive(false);
+        }
     }
 
     fn on_start_clicked(&self) {
@@ -1685,6 +1922,148 @@ impl ForesightWindow {
                     FilterRule::include("My Documents/"),
                 ],
             format!("{stored:?}"),
+        );
+
+        // -- remote endpoints (M5 part 3) -----------------------------------
+        //
+        // rsync refuses a job that is remote at both ends, and refuses to mix
+        // local sources with a remote one. Those rules live entirely in widget
+        // state, so this is the only place they get checked.
+        self.set_filters(&[]);
+        let ep = |host: &str, path: &str| crate::endpoint::Endpoint {
+            user: Some("miguel".into()),
+            host: host.into(),
+            port: None,
+            path: path.into(),
+        };
+        let operands = |w: &ForesightWindow| -> Vec<String> {
+            w.current_job()
+                .map(|j| {
+                    let argv = j.build_argv(crate::job::Mode::Sync);
+                    argv.iter()
+                        .rev()
+                        .take(2)
+                        .rev()
+                        .map(|a| a.to_string_lossy().into_owned())
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+
+        // Push: local source, remote destination.
+        self.clear_job();
+        self.add_source(&gio::File::for_path(dir.join("src")));
+        self.set_remote(RemoteSide::Dest, ep("nas.local", "/srv/backup"));
+        check(
+            "a remote destination satisfies its side",
+            self.both_selected(),
+            "Preview/Start still disabled".into(),
+        );
+        let got = operands(self);
+        check(
+            "the remote operand is the last argument",
+            got.last().map(String::as_str) == Some("miguel@nas.local:/srv/backup"),
+            format!("{got:?}"),
+        );
+        check(
+            "a remote job carries our strict ssh command",
+            self.current_job().is_some_and(|j| {
+                let argv = j.build_argv(crate::job::Mode::Sync);
+                let has = |s: &str| argv.iter().any(|a| a.to_string_lossy() == s);
+                j.remote_shell
+                    .as_deref()
+                    .is_some_and(|c| c.contains("StrictHostKeyChecking=yes"))
+                    && has("-e")
+                    // -s would break rrsync-restricted targets, and rsync's
+                    // default escaping already protects the remote path.
+                    && !has("-s")
+            }),
+            "missing -e or the strict policy, or sending -s".into(),
+        );
+        check(
+            "both ends cannot be remote",
+            !self.imp().add_remote_source_button.is_sensitive(),
+            "the remote-source button is still live".into(),
+        );
+
+        // Picking a local folder must replace the remote destination, not sit
+        // beside it — there is exactly one destination.
+        self.set_dest(&gio::File::for_path(dir.join("dst")));
+        check(
+            "a local folder replaces a remote destination",
+            self.remote_on(RemoteSide::Dest).is_none()
+                && self.imp().add_remote_source_button.is_sensitive(),
+            "the remote destination survived".into(),
+        );
+
+        // Pull: remote source, local destination.
+        self.clear_job();
+        self.set_dest(&gio::File::for_path(dir.join("dst")));
+        self.add_source(&gio::File::for_path(dir.join("src")));
+        self.set_remote(RemoteSide::Source, ep("nas.local", "/srv/photos"));
+        check(
+            "a remote source clears the local ones",
+            rules(self).is_empty() || self.imp().sources.borrow().is_empty(),
+            format!("{} local sources remain", self.imp().sources.borrow().len()),
+        );
+        check(
+            "local source buttons are closed off during a pull",
+            !self.imp().add_folder_button.is_sensitive()
+                && !self.imp().add_file_button.is_sensitive()
+                && !self.imp().remote_dest_button.is_sensitive(),
+            "a local/remote mix is still reachable".into(),
+        );
+        let got = operands(self);
+        check(
+            "the remote source is the first operand",
+            got.first().map(String::as_str) == Some("miguel@nas.local:/srv/photos"),
+            format!("{got:?}"),
+        );
+
+        // A remote path was typed, not picked, so nothing knows it is a folder:
+        // the two single-folder options must not be offered for it.
+        check(
+            "single-folder options are unavailable for a remote source",
+            !self.imp().contents_row.is_sensitive() && !self.imp().delete_row.is_sensitive(),
+            "offered against an unstat'd remote path".into(),
+        );
+
+        // Removing it hands the local controls back.
+        self.clear_remote();
+        check(
+            "clearing the remote source restores local sources",
+            self.imp().add_folder_button.is_sensitive()
+                && self.imp().remote_dest_button.is_sensitive()
+                && !self.imp().clear_remote_source_button.is_visible(),
+            "controls stayed locked".into(),
+        );
+
+        // An IPv6 link-local endpoint has to survive with its scope id — the
+        // phone-over-hotspot case, and the one a naive `host:path` split eats.
+        self.clear_job();
+        self.add_source(&gio::File::for_path(dir.join("src")));
+        let mut v6 = ep("fe80::1%wlo1", "/data");
+        v6.port = Some(2222);
+        self.set_remote(RemoteSide::Dest, v6);
+        let got = operands(self);
+        check(
+            "an IPv6 link-local endpoint keeps its brackets and scope id",
+            got.last().map(String::as_str) == Some("miguel@[fe80::1%wlo1]:/data"),
+            format!("{got:?}"),
+        );
+        check(
+            "a non-default port reaches the ssh command",
+            self.current_job()
+                .and_then(|j| j.remote_shell)
+                .is_some_and(|c| c.ends_with(" -p 2222")),
+            "port missing from -e".into(),
+        );
+
+        self.clear_job();
+        check(
+            "New Job clears the remote endpoint",
+            self.imp().remote.borrow().is_none(),
+            "a remote host survived New Job".into(),
         );
 
         // Regression guard: a name a KeyFile group could never hold used to be

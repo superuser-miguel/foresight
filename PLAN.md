@@ -245,11 +245,20 @@ complete and the **formats stop moving**. Three things, and no more:
             is no terminal, so a prompt is a hang). The confirmation *dialog*
             lands with the endpoint UI below — until a host can be entered there
             is nothing to confirm.
-      - [ ] **The endpoint UI** — parsing and validating `user@host:/path`.
-            Must survive **IPv6 link-local with a scope id**
-            (`[fe80::1%wlo1]:/path`): brackets and `%scope` have to reach argv
-            intact, and `build_argv` must pass a remote spec verbatim rather
-            than appending the trailing slash it uses for a local mirror dir.
+      - [x] **The endpoint UI — done.** `endpoint.rs` holds the four fields the
+            UI collects (user, host, port, path) and renders the operand;
+            `remote_dialog.rs` is the form plus the first-contact fingerprint
+            confirmation, which is the piece part 2 could not build on its own.
+            The port is kept out of the operand deliberately — it is not rsync
+            syntax; it rides in `-e ssh -p N` and keys the `known_hosts` entry.
+            IPv6 link-local survives with brackets and `%scope` intact, and a
+            remote operand is passed verbatim rather than growing the trailing
+            slash used for a local mirror dir.
+
+            `Job::remote` is one `Option<Remote>` rather than two fields so that
+            "remote at both ends" — which rsync refuses — is **unrepresentable**
+            rather than merely checked. The UI enforces the matching rule for
+            sources: local paths or one remote operand, never a mix.
 - [ ] **Freeze the preset format.** It has now churned three times
       (space-joined → `exclude_N` → `filter_N` + `_kind`). 1.0 is the promise
       that it stops. The migration chain already in `profiles.rs` is what makes
@@ -360,6 +369,21 @@ These were discovered by building the pinned rsync and capturing transcripts
 9. **`--info=progress2` and the `%i %n%L` out-format stream identically over
    ssh**, so `rsync-events` parses a remote job with no changes. Verified
    through a real ssh transfer from inside the sandbox.
+10. **Remote args are already protected — do not send `-s`.** Since 3.2.4 rsync
+    backslash-escapes shell-active characters (spaces included) in the args it
+    hands the remote shell; `--old-args` exists to turn that *off*. Confirmed by
+    pushing to a remote `my backups/` with and without `-s` and getting the same
+    correct result, with no word-split directories on the far side.
+
+    `--secluded-args` (`-s`) is **not** the stronger version it looks like. It
+    moves wildcard expansion from the remote shell to the remote *rsync*, which
+    still expands them — so it does not buy literal `*` either. What it does buy
+    is a real cost: restricted shells such as `rrsync`, which is exactly how a
+    careful person locks down a backup target, **refuse** it. Sending it by
+    default would break the best-configured destinations to fix something rsync
+    already fixed. (This entry replaced the opposite conclusion; the flag's
+    "optional secluded-args" line in `--version` says it is compiled in, not
+    that it is needed.)
 
 ## 7. Claude Code operating notes
 

@@ -182,7 +182,7 @@ pub const NOT_EXPOSED: &[(&str, &str)] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::job::{FilterRule, Job, Mode, Source};
+    use crate::job::{FilterRule, Job, Mode, Remote, Source};
     use std::collections::BTreeSet;
     use std::path::PathBuf;
 
@@ -203,6 +203,8 @@ mod tests {
                 is_dir: true,
             }],
             dest: PathBuf::from("/d"),
+            // A remote job, so the flags only remote transfers emit are covered.
+            remote: Some(Remote::Dest("u@h:/p".into())),
             delete: true,
             sync_contents: true,
             verbose: true,

@@ -23,9 +23,10 @@ build plan and the guardrails it holds to.
 > **Status: released and self-hosted.** Multi-source transfers, the grouped
 > dry-run preview, live progress with a structured streaming log, cancel,
 > `--delete` with confirmation, the advanced flag set with saved presets, an
-> ordered include/exclude filter list, and an in-app capability inventory all
-> work today in a sandboxed Flatpak, covered by **63 tests** across the
-> workspace and **25 headless widget checks** — with
+> ordered include/exclude filter list, remote sync over SSH, and an in-app
+> capability inventory all
+> work today in a sandboxed Flatpak, covered by **78 tests** across the
+> workspace and **38 headless widget checks** — with
 > `rsync-events` staying UI-free. Installed from the project's own **GPG-signed
 > repository** so `flatpak update` works, with a standalone bundle on
 > [GitHub Releases](https://github.com/superuser-miguel/foresight/releases) for
@@ -86,6 +87,15 @@ Where Foresight aims to *win*, not just match:
     does. Rules are passed whole, so `My Documents/` is one rule rather than
     two broken ones.
   - **Extra arguments** — a free-text escape hatch for any other rsync switch.
+- **Remote sync over SSH** — push to, or pull from, a `user@host:/path` endpoint.
+  Authentication uses the keys already in your desktop's **SSH agent**: the agent
+  signs on request, so **no private key ever enters the sandbox** and `~/.ssh` is
+  never read. Foresight keeps its **own** `known_hosts` and shows you the host's
+  fingerprint before trusting a machine for the first time; after that, strict
+  host-key checking means an unexpected key is refused rather than accepted
+  quietly. Either side may be remote, but not both — rsync refuses that, so the
+  two controls lock each other out and say why. IPv6 link-local endpoints work,
+  scope id and all.
 - **New Job** — clear the whole form for the next transfer in one click.
 - Ships as a **Flatpak** with rsync **3.4.4** bundled — **portals only, no host
   filesystem access** by design.
@@ -248,6 +258,9 @@ venv with `tomlkit` + `aiohttp`).
 - [x] **Excludes editor** — exclude rules as a managed list with per-rule
       removal, replacing the space-separated field that could not express a
       pattern containing a space.
+- [x] **Remote sync over SSH** — push to or pull from another machine, keys
+      from your desktop's SSH agent, and Foresight's own strict host-key
+      checking. No key ever enters the sandbox.
 - [x] **Include rules** — the exclude list became an **ordered filter list**
       where each rule is an Include or an Exclude and can be moved up or down.
       rsync applies the first rule that matches, so position is the whole
@@ -262,8 +275,8 @@ venv with `tomlkit` + `aiohttp`).
 complete and the saved formats stop moving. That's remote SSH, a frozen preset
 format, and current screenshots — nothing else.
 
-- [ ] **Remote sync over SSH** — rsync to/from a `user@host:/path` endpoint,
-      key-based auth first. Three parts, not one:
+- [x] **Remote sync over SSH — done.** Push to, or pull from, a
+      `user@host:/path` endpoint with key-based auth. All three parts:
       1. ✅ **Agent access — done.** `--share=network` and the runtime's `ssh`
          were already there, but the sandbox inherited a *dead* `SSH_AUTH_SOCK`
          and `~/.ssh` is (correctly) invisible, so no key was reachable at all.
@@ -281,9 +294,13 @@ format, and current screenshots — nothing else.
          not confirmed is refused outright, never silently accepted. The
          confirmation dialog arrives with the endpoint UI, since until then
          there is no host to confirm.
-      3. **The endpoint UI** — parsing and validating `user@host:/path`,
-         including IPv6 link-local endpoints with a scope id
-         (`[fe80::1%wlo1]:/path`).
+      3. ✅ **The endpoint UI — done.** A remote source or a remote
+         destination, entered as user / host / port / path. Either side may be
+         remote, but not both — rsync refuses that, so the two buttons lock
+         each other out and say why. A remote source replaces the local ones
+         rather than mixing with them, for the same reason. IPv6 link-local
+         endpoints work, scope id and all (`fe80::1%wlo1`), which is what
+         syncing to a phone over a hotspot needs.
 - [ ] **A frozen preset format.** It has churned three times; 1.0 is the promise
       that it stops. Every reader keeps reading all three encodings, so no saved
       rule set is ever lost to an upgrade.

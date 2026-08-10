@@ -92,24 +92,58 @@ template $ForesightWindow: Adw.ApplicationWindow {
                       valign: center;
                       styles ["flat"]
                     }
+
+                    // A remote source replaces the local ones: rsync takes
+                    // either local paths or one remote operand, never a mix.
+                    // window.rs desensitises whichever pair does not apply.
+                    Button add_remote_source_button {
+                      icon-name: "network-server-symbolic";
+                      tooltip-text: _("Pull from a remote machine over SSH");
+                      valign: center;
+                      styles ["flat"]
+                    }
                   }
 
+                  // Doubles as the remote-source row: with a remote source
+                  // there are no local rows to list, and an empty group with no
+                  // explanation would read as "nothing selected". window.rs
+                  // retitles it and makes it sensitive in that state.
                   Adw.ActionRow sources_placeholder {
                     title: _("No sources yet");
                     subtitle: _("Use the buttons above, or drop files and folders here");
                     sensitive: false;
+
+                    [suffix]
+                    Button clear_remote_source_button {
+                      icon-name: "edit-delete-symbolic";
+                      tooltip-text: _("Remove the remote source");
+                      valign: center;
+                      visible: false;
+                      styles ["flat"]
+                    }
                   }
                 }
 
                 Adw.PreferencesGroup {
                   title: _("Destination");
 
+                  [header-suffix]
+                  Button remote_dest_button {
+                    icon-name: "network-server-symbolic";
+                    tooltip-text: _("Send to a remote machine over SSH");
+                    valign: center;
+                    styles ["flat"]
+                  }
+
+                  // Activating the row picks a local folder; the button above
+                  // sets a remote one. Either replaces the other — there is one
+                  // destination, and this row always states which it is.
                   Adw.ActionRow dest_row {
                     title: _("Folder");
                     subtitle: _("Not selected");
                     activatable: true;
                     [suffix]
-                    Image { icon-name: "folder-open-symbolic"; }
+                    Image dest_icon { icon-name: "folder-open-symbolic"; }
                   }
                 }
 

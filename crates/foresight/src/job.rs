@@ -129,6 +129,25 @@ impl FilterRule {
     }
 }
 
+/// The remote half of a transfer, if there is one.
+///
+/// rsync refuses a remote source *and* a remote destination in one command
+/// ("The source and destination cannot both be remote"), so at most one side
+/// can be remote. That is why this is a single optional field rather than two:
+/// the illegal combination is not representable, so no check has to remember to
+/// reject it.
+///
+/// Each variant holds a ready-made operand from
+/// [`Endpoint::operand`](crate::endpoint::Endpoint::operand), passed to rsync
+/// verbatim.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Remote {
+    /// Pull: this operand replaces the local sources.
+    Source(String),
+    /// Push: this operand replaces the local destination.
+    Dest(String),
+}
+
 /// A configured sync. The preview and the real run are built from the *same*
 /// `Job`, so the dry run faithfully predicts what the transfer will do —
 /// including deletions when [`delete`](Self::delete) is on.
@@ -138,6 +157,10 @@ pub struct Job {
     /// locations. rsync accepts them as `src1 src2 … dst`.
     pub sources: Vec<Source>,
     pub dest: PathBuf,
+    /// The remote side, if this is a remote job. When it is
+    /// [`Remote::Source`] the local `sources` are unused; when it is
+    /// [`Remote::Dest`], `dest` is.
+    pub remote: Option<Remote>,
     /// Mirror deletions (`--delete`). Off by default; a safety rail in the UI.
     /// Only offered for the single-directory case (see [`is_single_dir`]).
     ///
@@ -206,7 +229,12 @@ impl Job {
     ///
     /// [`sync_contents`]: Self::sync_contents
     pub fn is_single_dir(&self) -> bool {
-        self.sources.len() == 1 && self.sources[0].is_dir
+        // A remote source is never "known to be a single directory": the path
+        // was typed, not picked, and nothing here has stat'd the far end. The
+        // two options this gates would otherwise act on a guess.
+        !matches!(self.remote, Some(Remote::Source(_)))
+            && self.sources.len() == 1
+            && self.sources[0].is_dir
     }
 
     /// The source operands, in argv order.
@@ -266,6 +294,7 @@ impl Job {
             argv.push(OsString::from("-e"));
             argv.push(OsString::from(shell));
         }
+        // Deliberately NO `-s` (--secluded-args) here — see the test below.
         for token in &self.extra_args {
             argv.push(OsString::from(token));
         }
@@ -286,8 +315,17 @@ impl Job {
             argv.push(OsString::from("--delete"));
         }
 
-        argv.extend(self.source_args());
-        argv.push(self.dest.as_os_str().to_os_string());
+        // Operands. A remote operand replaces its side wholesale and is pushed
+        // verbatim — never through `with_trailing_slash`, whose "contents of"
+        // slash would silently change a path the user typed by hand.
+        match &self.remote {
+            Some(Remote::Source(op)) => argv.push(OsString::from(op)),
+            _ => argv.extend(self.source_args()),
+        }
+        match &self.remote {
+            Some(Remote::Dest(op)) => argv.push(OsString::from(op)),
+            _ => argv.push(self.dest.as_os_str().to_os_string()),
+        }
         argv
     }
 }
@@ -831,6 +869,138 @@ mod tests {
             .collect();
         assert_eq!(positions.len(), 2, "both are emitted: {argv:?}");
         assert_eq!(argv[positions[1] + 1].as_bytes(), b"ssh -p 2222");
+    }
+
+    /// A remote destination replaces the local one and is the last operand.
+    #[test]
+    fn a_remote_destination_replaces_the_local_one() {
+        let job = Job {
+            sources: vec![dir_source("/s")],
+            dest: PathBuf::from("/unused"),
+            remote: Some(Remote::Dest("miguel@nas.local:/srv/backup".into())),
+            ..Default::default()
+        };
+        let argv = job.build_argv(Mode::Sync);
+        assert_eq!(
+            argv.last().unwrap().as_bytes(),
+            b"miguel@nas.local:/srv/backup"
+        );
+        assert!(
+            !argv.iter().any(|a| a.as_bytes() == b"/unused"),
+            "the local dest must not also be emitted: {argv:?}"
+        );
+        assert!(argv.iter().any(|a| a.as_bytes() == b"/s"), "{argv:?}");
+    }
+
+    /// A remote source replaces the local sources and comes before the dest.
+    #[test]
+    fn a_remote_source_replaces_the_local_ones() {
+        let job = Job {
+            sources: vec![dir_source("/unused")],
+            dest: PathBuf::from("/local/dest"),
+            remote: Some(Remote::Source("miguel@nas.local:/srv/photos".into())),
+            ..Default::default()
+        };
+        let argv = job.build_argv(Mode::Sync);
+        let src = argv
+            .iter()
+            .position(|a| a.as_bytes() == b"miguel@nas.local:/srv/photos")
+            .expect("remote source emitted");
+        let dst = argv
+            .iter()
+            .position(|a| a.as_bytes() == b"/local/dest")
+            .expect("local dest emitted");
+        assert!(src < dst, "source precedes destination: {argv:?}");
+        assert!(!argv.iter().any(|a| a.as_bytes() == b"/unused"));
+    }
+
+    /// The trailing-slash rule is for folders the user *picked*. A remote path
+    /// was typed, so appending to it would change what they asked for — and
+    /// `sync_contents` must not reach across the network to do that.
+    #[test]
+    fn a_remote_operand_never_grows_a_trailing_slash() {
+        let job = Job {
+            sources: vec![dir_source("/s")],
+            dest: PathBuf::from("/d"),
+            remote: Some(Remote::Dest("u@h:/srv/backup".into())),
+            sync_contents: true,
+            ..Default::default()
+        };
+        let argv = job.build_argv(Mode::Sync);
+        assert_eq!(argv.last().unwrap().as_bytes(), b"u@h:/srv/backup");
+
+        // ...and the same for a remote source, where sync_contents would
+        // otherwise be the one place a slash could sneak in.
+        let job = Job {
+            sources: vec![],
+            dest: PathBuf::from("/d"),
+            remote: Some(Remote::Source("u@h:/srv/photos".into())),
+            sync_contents: true,
+            ..Default::default()
+        };
+        let argv = job.build_argv(Mode::Sync);
+        assert!(argv.iter().any(|a| a.as_bytes() == b"u@h:/srv/photos"));
+        assert!(!argv.iter().any(|a| a.as_bytes() == b"u@h:/srv/photos/"));
+    }
+
+    /// A remote path with a space is safe **without** `--secluded-args`, and we
+    /// deliberately do not send it.
+    ///
+    /// This started as the opposite: `-s` looked like the flag that keeps the
+    /// app's no-shell promise on the far machine. Measuring it said otherwise.
+    /// Since 3.2.4 rsync backslash-escapes shell-active characters in remote
+    /// args **by default**, so spaces are already protected — verified by
+    /// pushing to a remote `my backups/` over ssh with and without `-s` and
+    /// getting the same correct result. And `-s` does not buy literal
+    /// wildcards either: it moves wildcard expansion from the remote shell to
+    /// the remote *rsync*, which still expands them.
+    ///
+    /// What it does cost is real: `-s` is refused by restricted shells like
+    /// `rrsync`, which is exactly how a careful person locks down a backup
+    /// target. Sending it by default would break the best-configured
+    /// destinations to fix a problem rsync already fixed.
+    #[test]
+    fn remote_jobs_do_not_send_secluded_args() {
+        let remote = Job {
+            sources: vec![dir_source("/s")],
+            dest: PathBuf::from("/d"),
+            remote: Some(Remote::Dest("u@h:/srv/my backups".into())),
+            ..Default::default()
+        };
+        assert!(
+            !remote
+                .build_argv(Mode::Sync)
+                .iter()
+                .any(|a| a.as_bytes() == b"-s"),
+            "-s breaks rrsync targets and rsync's default escaping already covers this"
+        );
+    }
+
+    /// `--delete` and *Sync folder contents* are offered only for a lone
+    /// directory. A remote source cannot be known to be one — nothing here
+    /// stat'd the far end — so the options must not be offered for it. A remote
+    /// *destination* is unaffected: the local source is still a folder we
+    /// picked and can see.
+    #[test]
+    fn a_remote_source_is_never_a_known_single_directory() {
+        let pull = Job {
+            sources: vec![],
+            dest: PathBuf::from("/d"),
+            remote: Some(Remote::Source("u@h:/srv/photos".into())),
+            ..Default::default()
+        };
+        assert!(!pull.is_single_dir());
+
+        let push = Job {
+            sources: vec![dir_source("/s")],
+            dest: PathBuf::from("/d"),
+            remote: Some(Remote::Dest("u@h:/srv/backup".into())),
+            ..Default::default()
+        };
+        assert!(
+            push.is_single_dir(),
+            "the local side is still a known folder"
+        );
     }
 
     #[test]

@@ -168,10 +168,6 @@ pub const NOT_EXPOSED: &[(&str, &str)] = &[
         "Keep partially transferred files so a re-run can resume them.",
     ),
     (
-        "host:path (SSH)",
-        "Sync to or from another machine over SSH (planned as a control).",
-    ),
-    (
         "--filter / merge files",
         "rsync's fuller filter syntax: rules read from a file, and per-directory \
          merge rules. Plain include and exclude rules are a control — see Filter \

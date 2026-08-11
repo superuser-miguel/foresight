@@ -90,6 +90,32 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="1.0.0" date="2026-08-10">
+      <description>
+        <p>Remote sync over SSH, and filter rules you can order. This is 1.0:
+        everything Foresight advertises now works, and the formats it saves are
+        stable.</p>
+        <ul>
+          <li>Sync to or from another machine over SSH. Either the source or the
+          destination can be on a remote host — rsync does not allow both.</li>
+          <li>Authentication uses the keys already in your desktop's SSH agent.
+          No private key ever enters Foresight's sandbox, and your ~/.ssh is
+          never read.</li>
+          <li>Foresight keeps its own record of the hosts you trust and shows
+          you a machine's fingerprint before connecting to it the first time.
+          After that, a host key that does not match stops the transfer instead
+          of being accepted quietly.</li>
+          <li>Exclude patterns became an ordered list of Include and Exclude
+          rules. rsync obeys the first rule that matches, so moving a rule up or
+          down decides which one wins: an Include above a broad Exclude carves
+          an exception out of it, and an Exclude above an Include shuts a folder
+          even to that.</li>
+          <li>When a remote transfer fails, the reason SSH gave is now shown
+          with the failure rather than only in the log.</li>
+          <li>Presets saved by any earlier version still load.</li>
+        </ul>
+      </description>
+    </release>
     <release version="0.1.2" date="2026-07-29">
       <description>
         <p>An exclude-rule editor, and a fix for presets that quietly failed to

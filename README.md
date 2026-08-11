@@ -20,12 +20,12 @@ Rust · GTK4 · gtk4-rs · libadwaita · Blueprint · Meson · Flatpak, with rsy
 **3.4.4** bundled and version-pinned. See [`PLAN.md`](PLAN.md) for the phased
 build plan and the guardrails it holds to.
 
-> **Status: released and self-hosted.** Multi-source transfers, the grouped
+> **Status: 1.0 — released and self-hosted.** Multi-source transfers, the grouped
 > dry-run preview, live progress with a structured streaming log, cancel,
 > `--delete` with confirmation, the advanced flag set with saved presets, an
 > ordered include/exclude filter list, remote sync over SSH, and an in-app
 > capability inventory all
-> work today in a sandboxed Flatpak, covered by **78 tests** across the
+> work today in a sandboxed Flatpak, covered by **82 tests** across the
 > workspace and **38 headless widget checks** — with
 > `rsync-events` staying UI-free. Installed from the project's own **GPG-signed
 > repository** so `flatpak update` works, with a standalone bundle on
@@ -269,11 +269,10 @@ venv with `tomlkit` + `aiohttp`).
       rules as one ordered list rather than an includes set plus an excludes set
       is what makes the second of those expressible at all.
 
-### Next — the road to 1.0
+### Shipped in 1.0
 
 1.0 is not "more features"; it's the point where the advertised surface is
-complete and the saved formats stop moving. That's remote SSH, a frozen preset
-format, and current screenshots — nothing else.
+complete and the saved formats stop moving. Both are now true.
 
 - [x] **Remote sync over SSH — done.** Push to, or pull from, a
       `user@host:/path` endpoint with key-based auth. All three parts:
@@ -285,15 +284,14 @@ format, and current screenshots — nothing else.
          sandbox** — the agent stays outside and only signs on request, which
          is exactly why this is the right grant and `--filesystem=~/.ssh` is
          not. `~/.ssh` remains invisible with it on.
-      2. ✅ **Host-key trust — engine done.** Foresight keeps its **own**
+      2. ✅ **Host-key trust — done.** Foresight keeps its **own**
          `known_hosts` beside your presets and never reads or writes `~/.ssh`.
          It can't use ssh's default file, because the sandbox home is
          ephemeral — anything written to `~/.ssh` inside it is gone on the next
          launch, so trust-on-first-use would never actually remember. Transfers
          run with strict host-key checking against that file: a host you have
-         not confirmed is refused outright, never silently accepted. The
-         confirmation dialog arrives with the endpoint UI, since until then
-         there is no host to confirm.
+         not confirmed is refused outright, never silently accepted, and a host
+         key that *changes* stops the transfer and says so.
       3. ✅ **The endpoint UI — done.** A remote source or a remote
          destination, entered as user / host / port / path. Either side may be
          remote, but not both — rsync refuses that, so the two buttons lock
@@ -301,9 +299,10 @@ format, and current screenshots — nothing else.
          rather than mixing with them, for the same reason. IPv6 link-local
          endpoints work, scope id and all (`fe80::1%wlo1`), which is what
          syncing to a phone over a hotspot needs.
-- [ ] **A frozen preset format.** It has churned three times; 1.0 is the promise
-      that it stops. Every reader keeps reading all three encodings, so no saved
-      rule set is ever lost to an upgrade.
+- [x] **A frozen preset format.** It churned three times on the way to 1.0; from
+      1.0 it is a compatibility promise, not an implementation detail. Every
+      reader keeps reading all three encodings, so no saved rule set is ever
+      lost to an upgrade — including ones written by the first release.
 
 ### After 1.0 — from a front-end to a backup app
 

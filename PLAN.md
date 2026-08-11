@@ -259,11 +259,20 @@ complete and the **formats stop moving**. Three things, and no more:
             "remote at both ends" — which rsync refuses — is **unrepresentable**
             rather than merely checked. The UI enforces the matching rule for
             sources: local paths or one remote operand, never a mix.
-- [ ] **Freeze the preset format.** It has now churned three times
-      (space-joined → `exclude_N` → `filter_N` + `_kind`). 1.0 is the promise
-      that it stops. The migration chain already in `profiles.rs` is what makes
-      that promise cheap to keep — every future reader must keep reading all
-      three encodings, and adding a fourth needs a written reason here.
+- [x] **Preset format — FROZEN at 1.0.** It churned three times on the way here
+      (space-joined `excludes` → `exclude_N` → `filter_N` + `filter_N_kind`).
+      As of 1.0 the on-disk shape of `profiles.ini` is a compatibility promise,
+      not an implementation detail:
+      - `filter_N` + `filter_N_kind` is the encoding. It does not change again.
+      - **All three readers stay forever.** Deleting the two legacy paths in
+        `profiles.rs` would silently discard rules a user saved years ago, which
+        is worse than carrying twenty lines of code.
+      - A new *field* may be added (absent = a documented default, as
+        `sync_contents` already does). Changing or removing an existing key is a
+        breaking change and needs a major version, a migration, and a note here.
+      - The tests that pin this — round-trip, `;`/`=`/backslash metacharacters,
+        150-rule ordering, both legacy encodings — are the promise's teeth. They
+        do not get deleted either.
 - [ ] **Current screenshots**, and one pass confirming the Help still cannot
       lie (the registry test covers the flags; the prose is on us).
 

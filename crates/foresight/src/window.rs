@@ -1711,6 +1711,57 @@ impl ForesightWindow {
             format!("{:?}", kinded(self)),
         );
 
+        // The add-rule row must actually appear when the expander is opened.
+        // It is the only way to add a rule, so if it does not render the whole
+        // editor is unreachable while looking perfectly fine — which is exactly
+        // what a screenshot of an open-but-empty expander would show.
+        {
+            let imp = self.imp();
+            // AdwExpanderRow reveals its rows through an animation, so a child
+            // is legitimately unmapped for a few frames after set_expanded.
+            // Turn animations off and then pump the loop for real time, or this
+            // check measures the animation rather than the widget tree.
+            if let Some(settings) = gtk::Settings::default() {
+                settings.set_gtk_enable_animations(false);
+            }
+            // Filter rules lives inside the Advanced expander, which has no id
+            // in the Blueprint — walk up and open every expander above it, or
+            // the child is unmapped because its parent is closed, not because
+            // anything is wrong with it.
+            let mut ancestor = imp.filters_row.parent();
+            while let Some(w) = ancestor {
+                if let Some(exp) = w.downcast_ref::<adw::ExpanderRow>() {
+                    exp.set_expanded(true);
+                }
+                ancestor = w.parent();
+            }
+            imp.filters_row.set_expanded(true);
+
+            let ctx = glib::MainContext::default();
+            let elapsed = std::rc::Rc::new(std::cell::Cell::new(false));
+            glib::timeout_add_local_once(std::time::Duration::from_millis(600), {
+                let elapsed = elapsed.clone();
+                move || elapsed.set(true)
+            });
+            while !elapsed.get() {
+                ctx.iteration(true);
+            }
+            // Compared against a control that is unconditionally on screen, so
+            // "not mapped" cannot be an artefact of the window not being up yet.
+            let control = imp.dest_row.is_mapped();
+            check(
+                "the add-rule entry renders when the expander is open",
+                !control || (imp.filter_entry.is_mapped() && imp.filter_kind.is_mapped()),
+                format!(
+                    "control(dest_row)={control}, filters_row mapped={}, entry mapped={} dropdown mapped={} expanded={}",
+                    imp.filters_row.is_mapped(),
+                    imp.filter_entry.is_mapped(),
+                    imp.filter_kind.is_mapped(),
+                    imp.filters_row.is_expanded()
+                ),
+            );
+        }
+
         // The path a user actually takes: type a pattern, pick a kind, apply.
         // Everything above calls `add_filter` directly, so without this the
         // dropdown could be wired to nothing and every check would still pass.

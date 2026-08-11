@@ -56,7 +56,11 @@
     </screenshot>
     <screenshot>
       <image>https://superuser-miguel.github.io/foresight/screenshots/02-advanced.png</image>
-      <caption>Advanced options: move, bandwidth limit, excludes, and extra flags</caption>
+      <caption>Advanced options: move, bandwidth limit, filter rules, and extra flags</caption>
+    </screenshot>
+    <screenshot>
+      <image>https://superuser-miguel.github.io/foresight/screenshots/07-rsync-ssh.png</image>
+      <caption>Sync to another machine over SSH, using the keys in your agent</caption>
     </screenshot>
     <screenshot>
       <image>https://superuser-miguel.github.io/foresight/screenshots/04-help.png</image>

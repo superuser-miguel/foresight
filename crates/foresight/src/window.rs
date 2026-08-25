@@ -18,7 +18,7 @@ use std::path::PathBuf;
 
 use crate::change_object::ChangeObject;
 use crate::endpoint::Endpoint;
-use crate::i18n::{i18n, i18n_f, i18n_k};
+use crate::i18n::{i18n, i18n_f, i18n_k, ni18n};
 use crate::job::{
     argv_display, spawn_rsync, Completion, FilterKind, FilterRule, Job, Mode, Remote, Runner,
     Source,
@@ -958,14 +958,13 @@ impl ForesightWindow {
     /// that their order decides ties, so neither needs the expander open to see.
     fn refresh_filters_state(&self) {
         let imp = self.imp();
-        let n = imp.filters.borrow().len();
+        let n = imp.filters.borrow().len() as u32;
         imp.filters_row.set_subtitle(&match n {
             0 => i18n("Skip or keep paths by pattern (--exclude / --include)"),
-            1 => i18n("1 rule"),
-            n => i18n_k(
-                "{n} rules · the first one that matches wins",
-                &[("n", &n.to_string())],
-            ),
+            n => {
+                let msg = ni18n("1 rule", "{n} rules · the first one that matches wins", n);
+                msg.replace("{n}", &n.to_string())
+            }
         });
     }
 
@@ -1186,7 +1185,7 @@ impl ForesightWindow {
     fn rebuild_preset_combo(&self, select: u32) {
         let imp = self.imp();
         imp.suppress_combo.set(true);
-        let list = gtk::StringList::new(&["Choose a preset…"]);
+        let list = gtk::StringList::new(&[&i18n("Choose a preset…")]);
         for p in imp.profiles.borrow().iter() {
             list.append(&p.name);
         }
@@ -1411,7 +1410,8 @@ impl ForesightWindow {
             self.confirm_deletions_then_sync();
         } else {
             let n = imp.preview_store.get().map(|s| s.n_items()).unwrap_or(0);
-            self.toast(&i18n_k("Preview: {n} change(s)", &[("n", &n.to_string())]));
+            let msg = ni18n("Preview: {n} change", "Preview: {n} changes", n);
+            self.toast(&msg.replace("{n}", &n.to_string()));
         }
     }
 
@@ -1424,7 +1424,7 @@ impl ForesightWindow {
         imp.result_banner.set_revealed(false);
         imp.run_errors.borrow_mut().clear();
         imp.overall_progress.set_fraction(0.0);
-        imp.overall_progress.set_text(Some("Starting…"));
+        imp.overall_progress.set_text(Some(&i18n("Starting…")));
         imp.current_file_label.set_label("");
         imp.main_stack.set_visible_child_name("transfer");
 
@@ -1465,7 +1465,7 @@ impl ForesightWindow {
                 imp.overall_progress
                     .set_fraction(f64::from(p.percent) / 100.0);
                 let text = if p.scanning() {
-                    "Scanning…".to_string()
+                    i18n("Scanning…")
                 } else {
                     format!("{}%  ·  {}  ·  {}", p.percent, p.rate_human, p.elapsed)
                 };
@@ -1487,7 +1487,7 @@ impl ForesightWindow {
         // Completion is process exit, never percent==100 (rsync can end at 99%).
         if completion.severity == Severity::Success {
             imp.overall_progress.set_fraction(1.0);
-            imp.overall_progress.set_text(Some("Done"));
+            imp.overall_progress.set_text(Some(&i18n("Done")));
         }
         self.show_completion(completion);
     }
@@ -1536,11 +1536,14 @@ impl ForesightWindow {
             lines.join("\n")
         };
 
+        let n = deletions.len() as u32;
+        let msg = ni18n(
+            "Delete {} file in the destination?",
+            "Delete {} files in the destination?",
+            n,
+        );
         let dialog = adw::AlertDialog::builder()
-            .heading(i18n_f(
-                "Delete {} file(s) in the destination?",
-                &[&deletions.len().to_string()],
-            ))
+            .heading(msg.replace("{}", &n.to_string()))
             .body(body)
             .build();
         dialog.add_response("cancel", &i18n("Cancel"));

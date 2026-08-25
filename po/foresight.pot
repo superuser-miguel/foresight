@@ -8,7 +8,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: foresight\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-08-25 19:41+0200\n"
+"POT-Creation-Date: 2026-08-25 20:09+0200\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
@@ -16,6 +16,7 @@ msgstr ""
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=INTEGER; plural=EXPRESSION;\n"
 
 #: src/ui/window.blp:12
 msgid "Foresight"
@@ -57,11 +58,11 @@ msgstr ""
 msgid "Pull from a remote machine over SSH"
 msgstr ""
 
-#: src/ui/window.blp:112 crates/foresight/src/window.rs:1025
+#: src/ui/window.blp:112 crates/foresight/src/window.rs:1024
 msgid "No sources yet"
 msgstr ""
 
-#: src/ui/window.blp:113 crates/foresight/src/window.rs:1027
+#: src/ui/window.blp:113 crates/foresight/src/window.rs:1026
 msgid "Use the buttons above, or drop files and folders here"
 msgstr ""
 
@@ -178,6 +179,14 @@ msgstr ""
 msgid "Whether this rule skips or keeps what it matches"
 msgstr ""
 
+#: src/ui/window.blp:242 crates/foresight/src/job.rs:71
+msgid "Exclude"
+msgstr ""
+
+#: src/ui/window.blp:242 crates/foresight/src/job.rs:70
+msgid "Include"
+msgstr ""
+
 #: src/ui/window.blp:249
 msgid "Extra arguments — e.g. --checksum --partial"
 msgstr ""
@@ -194,8 +203,8 @@ msgstr ""
 msgid "Log"
 msgstr ""
 
-#: src/ui/window.blp:308 crates/foresight/src/window.rs:1225
-#: crates/foresight/src/window.rs:1546 crates/foresight/src/remote_dialog.rs:88
+#: src/ui/window.blp:308 crates/foresight/src/window.rs:1224
+#: crates/foresight/src/window.rs:1549 crates/foresight/src/remote_dialog.rs:88
 #: crates/foresight/src/remote_dialog.rs:227
 msgid "Cancel"
 msgstr ""
@@ -265,48 +274,64 @@ msgstr ""
 msgid "{} ({})"
 msgstr ""
 
-#: crates/foresight/src/window.rs:964
-msgid "1 rule"
-msgstr ""
-
-#: crates/foresight/src/window.rs:966
+#: crates/foresight/src/window.rs:965
 #, rust-format
-msgid "{n} rules · the first one that matches wins"
-msgstr ""
+msgid "1 rule"
+msgid_plural "{n} rules · the first one that matches wins"
+msgstr[0] ""
+msgstr[1] ""
 
-#: crates/foresight/src/window.rs:974
+#: crates/foresight/src/window.rs:973
 msgid "Select destination folder"
 msgstr ""
 
-#: crates/foresight/src/window.rs:1017
+#: crates/foresight/src/window.rs:1016
 msgid "Remote source"
 msgstr ""
 
-#: crates/foresight/src/window.rs:1221
+#: crates/foresight/src/window.rs:1188
+msgid "Choose a preset…"
+msgstr ""
+
+#: crates/foresight/src/window.rs:1220
 msgid "Save preset"
 msgstr ""
 
-#: crates/foresight/src/window.rs:1222
+#: crates/foresight/src/window.rs:1221
 msgid "Save the current Advanced options under a name."
 msgstr ""
 
-#: crates/foresight/src/window.rs:1226
+#: crates/foresight/src/window.rs:1225
 msgid "Save"
 msgstr ""
 
-#: crates/foresight/src/window.rs:1268
+#: crates/foresight/src/window.rs:1267
 #, rust-format
 msgid "Saved preset “{name}”"
 msgstr ""
 
-#: crates/foresight/src/window.rs:1284
+#: crates/foresight/src/window.rs:1283
 #, rust-format
 msgid "Deleted preset “{}”"
 msgstr ""
 
-#: crates/foresight/src/window.rs:1414
+#: crates/foresight/src/window.rs:1413
 #, rust-format
-msgid "Preview: {n} change(s)"
+msgid "Preview: {n} change"
+msgid_plural "Preview: {n} changes"
+msgstr[0] ""
+msgstr[1] ""
+
+#: crates/foresight/src/window.rs:1427
+msgid "Starting…"
+msgstr ""
+
+#: crates/foresight/src/window.rs:1468
+msgid "Scanning…"
+msgstr ""
+
+#: crates/foresight/src/window.rs:1490
+msgid "Done"
 msgstr ""
 
 #: crates/foresight/src/window.rs:1506
@@ -324,14 +349,16 @@ msgstr ""
 
 #: crates/foresight/src/window.rs:1541
 #, rust-format
-msgid "Delete {} file(s) in the destination?"
-msgstr ""
+msgid "Delete {} file in the destination?"
+msgid_plural "Delete {} files in the destination?"
+msgstr[0] ""
+msgstr[1] ""
 
-#: crates/foresight/src/window.rs:1547
+#: crates/foresight/src/window.rs:1550
 msgid "Delete and Sync"
 msgstr ""
 
-#: crates/foresight/src/window.rs:1576
+#: crates/foresight/src/window.rs:1579
 #, rust-format
 msgid ""
 "\n"
@@ -339,15 +366,15 @@ msgid ""
 "rsync exit code {code}."
 msgstr ""
 
-#: crates/foresight/src/window.rs:1585
+#: crates/foresight/src/window.rs:1588
 msgid "Sync failed"
 msgstr ""
 
-#: crates/foresight/src/window.rs:1588
+#: crates/foresight/src/window.rs:1591
 msgid "Close"
 msgstr ""
 
-#: crates/foresight/src/window.rs:1596
+#: crates/foresight/src/window.rs:1599
 #, rust-format
 msgid "Could not start rsync: {}"
 msgstr ""
@@ -719,14 +746,6 @@ msgstr ""
 #: crates/foresight/src/ssh.rs:80
 #, rust-format
 msgid "{} offered no host key"
-msgstr ""
-
-#: crates/foresight/src/job.rs:70
-msgid "Include"
-msgstr ""
-
-#: crates/foresight/src/job.rs:71
-msgid "Exclude"
 msgstr ""
 
 #: crates/rsync-events/src/lib.rs:450

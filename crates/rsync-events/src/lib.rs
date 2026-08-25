@@ -2,6 +2,9 @@
 //!
 //! The pure, UI-free core of a GTK4/libadwaita rsync frontend. No GTK
 //! dependencies here, ever: this crate must stay testable on any host.
+//! User-facing strings (the exit-code classifier) go through gettext via
+//! `gettext-rs` — a plain libc binding, not a GUI dependency — so the
+//! classifier's messages join the same catalogue as the app's.
 //!
 //! The app must invoke the *bundled* rsync with this exact reporting contract:
 //!
@@ -444,44 +447,62 @@ pub enum Severity {
 pub fn classify_exit(code: i32) -> (Severity, String) {
     use Severity::*;
     let (sev, msg) = match code {
-        0 => (Success, "Sync completed."),
+        0 => (Success, gettextrs::gettext("Sync completed.")),
         1 => (
             Error,
-            "Syntax or usage error — the app built a bad command line.",
+            gettextrs::gettext("Syntax or usage error — the app built a bad command line."),
         ),
-        2 => (Error, "Protocol incompatibility between rsync versions."),
+        2 => (
+            Error,
+            gettextrs::gettext("Protocol incompatibility between rsync versions."),
+        ),
         3 => (
             Error,
-            "File selection error — a source or destination is invalid.",
+            gettextrs::gettext("File selection error — a source or destination is invalid."),
         ),
-        5 => (Error, "Error starting the client-server protocol."),
+        5 => (
+            Error,
+            gettextrs::gettext("Error starting the client-server protocol."),
+        ),
         10 => (
             Error,
-            "Socket I/O error — check the network or remote host.",
+            gettextrs::gettext("Socket I/O error — check the network or remote host."),
         ),
-        11 => (Error, "File I/O error — check disk space and permissions."),
-        12 => (Error, "Protocol data stream error."),
-        13 => (Error, "Diagnostics error."),
-        14 => (Error, "IPC error."),
-        20 => (Cancelled, "Sync was interrupted."),
+        11 => (
+            Error,
+            gettextrs::gettext("File I/O error — check disk space and permissions."),
+        ),
+        12 => (Error, gettextrs::gettext("Protocol data stream error.")),
+        13 => (Error, gettextrs::gettext("Diagnostics error.")),
+        14 => (Error, gettextrs::gettext("IPC error.")),
+        20 => (Cancelled, gettextrs::gettext("Sync was interrupted.")),
         23 => (
             Partial,
-            "Completed, but some files could not be transferred.",
+            gettextrs::gettext("Completed, but some files could not be transferred."),
         ),
         24 => (
             Partial,
-            "Completed, but some source files vanished mid-sync.",
+            gettextrs::gettext("Completed, but some source files vanished mid-sync."),
         ),
-        25 => (Partial, "Stopped early: --max-delete limit reached."),
-        30 => (Error, "Timeout waiting for data."),
-        35 => (Error, "Timeout waiting for the remote to connect."),
+        25 => (
+            Partial,
+            gettextrs::gettext("Stopped early: --max-delete limit reached."),
+        ),
+        30 => (Error, gettextrs::gettext("Timeout waiting for data.")),
+        35 => (
+            Error,
+            gettextrs::gettext("Timeout waiting for the remote to connect."),
+        ),
         255 => (
             Error,
-            "The remote shell (ssh) failed — check host and keys.",
+            gettextrs::gettext("The remote shell (ssh) failed — check host and keys."),
         ),
-        other => return (Error, format!("rsync exited with code {other}.")),
+        other => {
+            let msg = format!("rsync exited with code {other}.");
+            return (Error, gettextrs::gettext(&msg));
+        }
     };
-    (sev, msg.to_string())
+    (sev, msg)
 }
 
 #[cfg(test)]

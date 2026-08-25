@@ -18,6 +18,7 @@ use std::path::PathBuf;
 
 use crate::change_object::ChangeObject;
 use crate::endpoint::Endpoint;
+use crate::i18n::{i18n, i18n_f, i18n_k, ni18n};
 use crate::job::{
     argv_display, spawn_rsync, Completion, FilterKind, FilterRule, Job, Mode, Remote, Runner,
     Source,
@@ -516,7 +517,7 @@ impl ForesightWindow {
         // would be missed on the Configure page and noticed on the far machine.
         *imp.dest.borrow_mut() = None;
         *imp.remote.borrow_mut() = None;
-        imp.dest_row.set_subtitle("Not selected");
+        imp.dest_row.set_subtitle(&i18n("Not selected"));
         imp.dest_row.set_tooltip_text(None);
         imp.contents_row.set_active(false);
         imp.delete_row.set_active(false);
@@ -558,7 +559,7 @@ impl ForesightWindow {
     /// Pick one or more folders (portal) and add them as sources.
     fn choose_add_folders(&self) {
         let dialog = gtk::FileDialog::builder()
-            .title("Add source folders")
+            .title(i18n("Add source folders"))
             .modal(true)
             .build();
         glib::spawn_future_local(glib::clone!(
@@ -575,7 +576,7 @@ impl ForesightWindow {
     /// Pick one or more files (portal) and add them as sources.
     fn choose_add_files(&self) {
         let dialog = gtk::FileDialog::builder()
-            .title("Add source files")
+            .title(i18n("Add source files"))
             .modal(true)
             .build();
         glib::spawn_future_local(glib::clone!(
@@ -726,14 +727,14 @@ impl ForesightWindow {
 
         match &remote {
             Some((RemoteSide::Dest, e)) => {
-                imp.dest_row.set_title("Remote folder");
+                imp.dest_row.set_title(&i18n("Remote folder"));
                 imp.dest_row
                     .set_subtitle(&glib::markup_escape_text(&e.to_string()));
                 imp.dest_row.set_tooltip_text(Some(&e.to_string()));
                 imp.dest_icon.set_icon_name(Some("network-server-symbolic"));
             }
             _ => {
-                imp.dest_row.set_title("Folder");
+                imp.dest_row.set_title(&i18n("Folder"));
                 imp.dest_icon.set_icon_name(Some("folder-open-symbolic"));
                 match imp.dest.borrow().as_ref() {
                     Some(path) => {
@@ -742,7 +743,7 @@ impl ForesightWindow {
                         imp.dest_row.set_tooltip_text(Some(&tooltip));
                     }
                     None => {
-                        imp.dest_row.set_subtitle("Not selected");
+                        imp.dest_row.set_subtitle(&i18n("Not selected"));
                         imp.dest_row.set_tooltip_text(None);
                     }
                 }
@@ -755,22 +756,26 @@ impl ForesightWindow {
         let dest_is_remote = matches!(remote, Some((RemoteSide::Dest, _)));
         imp.add_remote_source_button.set_sensitive(!dest_is_remote);
         imp.remote_dest_button.set_sensitive(!source_is_remote);
+        let add_remote_source_tip = if dest_is_remote {
+            i18n(
+                "The destination is already remote — rsync cannot have both ends on other machines",
+            )
+        } else if source_is_remote {
+            i18n("Change the remote source")
+        } else {
+            i18n("Pull from a remote machine over SSH")
+        };
         imp.add_remote_source_button
-            .set_tooltip_text(Some(if dest_is_remote {
-                "The destination is already remote — rsync cannot have both ends on other machines"
-            } else if source_is_remote {
-                "Change the remote source"
-            } else {
-                "Pull from a remote machine over SSH"
-            }));
+            .set_tooltip_text(Some(&add_remote_source_tip));
+        let remote_dest_tip = if source_is_remote {
+            i18n("The source is already remote — rsync cannot have both ends on other machines")
+        } else if dest_is_remote {
+            i18n("Change the remote destination")
+        } else {
+            i18n("Send to a remote machine over SSH")
+        };
         imp.remote_dest_button
-            .set_tooltip_text(Some(if source_is_remote {
-                "The source is already remote — rsync cannot have both ends on other machines"
-            } else if dest_is_remote {
-                "Change the remote destination"
-            } else {
-                "Send to a remote machine over SSH"
-            }));
+            .set_tooltip_text(Some(&remote_dest_tip));
 
         self.refresh_action_sensitivity();
     }
@@ -820,10 +825,13 @@ impl ForesightWindow {
             .any(|r| r.kind == kind && r.pattern == pattern);
         if duplicate {
             let verb = match kind {
-                FilterKind::Include => "included",
-                FilterKind::Exclude => "excluded",
+                FilterKind::Include => i18n("included"),
+                FilterKind::Exclude => i18n("excluded"),
             };
-            self.toast(&format!("“{pattern}” is already {verb}"));
+            self.toast(&i18n_k(
+                "“{pattern}” is already {verb}",
+                &[("pattern", pattern), ("verb", &verb)],
+            ));
             return false;
         }
 
@@ -891,7 +899,7 @@ impl ForesightWindow {
         for (index, rule) in rules.iter().enumerate() {
             let row = adw::ActionRow::builder()
                 .title(glib::markup_escape_text(&rule.pattern))
-                .subtitle(format!("{} ({})", rule.kind.label(), rule.kind.flag()))
+                .subtitle(i18n_f("{} ({})", &[&rule.kind.label(), rule.kind.flag()]))
                 .build();
             row.add_prefix(&gtk::Image::from_icon_name(match rule.kind {
                 FilterKind::Include => "object-select-symbolic",
@@ -950,17 +958,19 @@ impl ForesightWindow {
     /// that their order decides ties, so neither needs the expander open to see.
     fn refresh_filters_state(&self) {
         let imp = self.imp();
-        let n = imp.filters.borrow().len();
+        let n = imp.filters.borrow().len() as u32;
         imp.filters_row.set_subtitle(&match n {
-            0 => "Skip or keep paths by pattern (--exclude / --include)".to_string(),
-            1 => "1 rule".to_string(),
-            n => format!("{n} rules · the first one that matches wins"),
+            0 => i18n("Skip or keep paths by pattern (--exclude / --include)"),
+            n => {
+                let msg = ni18n("1 rule", "{n} rules · the first one that matches wins", n);
+                msg.replace("{n}", &n.to_string())
+            }
         });
     }
 
     fn choose_dest(&self) {
         let dialog = gtk::FileDialog::builder()
-            .title("Select destination folder")
+            .title(i18n("Select destination folder"))
             .modal(true)
             .build();
         glib::spawn_future_local(glib::clone!(
@@ -1003,7 +1013,7 @@ impl ForesightWindow {
             Some(e) => {
                 imp.sources_placeholder.set_visible(true);
                 imp.sources_placeholder.set_sensitive(true);
-                imp.sources_placeholder.set_title("Remote source");
+                imp.sources_placeholder.set_title(&i18n("Remote source"));
                 imp.sources_placeholder
                     .set_subtitle(&glib::markup_escape_text(&e.to_string()));
                 imp.clear_remote_source_button.set_visible(true);
@@ -1011,9 +1021,10 @@ impl ForesightWindow {
             None => {
                 imp.sources_placeholder.set_visible(sources.is_empty());
                 imp.sources_placeholder.set_sensitive(false);
-                imp.sources_placeholder.set_title("No sources yet");
-                imp.sources_placeholder
-                    .set_subtitle("Use the buttons above, or drop files and folders here");
+                imp.sources_placeholder.set_title(&i18n("No sources yet"));
+                imp.sources_placeholder.set_subtitle(&i18n(
+                    "Use the buttons above, or drop files and folders here",
+                ));
                 imp.clear_remote_source_button.set_visible(false);
             }
         }
@@ -1174,7 +1185,7 @@ impl ForesightWindow {
     fn rebuild_preset_combo(&self, select: u32) {
         let imp = self.imp();
         imp.suppress_combo.set(true);
-        let list = gtk::StringList::new(&["Choose a preset…"]);
+        let list = gtk::StringList::new(&[&i18n("Choose a preset…")]);
         for p in imp.profiles.borrow().iter() {
             list.append(&p.name);
         }
@@ -1206,12 +1217,12 @@ impl ForesightWindow {
             .activates_default(true)
             .build();
         let dialog = adw::AlertDialog::builder()
-            .heading("Save preset")
-            .body("Save the current Advanced options under a name.")
+            .heading(i18n("Save preset"))
+            .body(i18n("Save the current Advanced options under a name."))
             .extra_child(&entry)
             .build();
-        dialog.add_response("cancel", "Cancel");
-        dialog.add_response("save", "Save");
+        dialog.add_response("cancel", &i18n("Cancel"));
+        dialog.add_response("save", &i18n("Save"));
         dialog.set_response_appearance("save", adw::ResponseAppearance::Suggested);
         dialog.set_default_response(Some("save"));
         dialog.set_close_response("cancel");
@@ -1253,7 +1264,7 @@ impl ForesightWindow {
 
         let idx = snapshot.iter().position(|p| p.name == name).unwrap() as u32 + 1;
         self.rebuild_preset_combo(idx);
-        self.toast(&format!("Saved preset “{name}”"));
+        self.toast(&i18n_k("Saved preset “{name}”", &[("name", &name)]));
     }
 
     fn delete_selected_preset(&self) {
@@ -1269,7 +1280,7 @@ impl ForesightWindow {
                 return;
             }
             let removed = profiles.remove(i);
-            self.toast(&format!("Deleted preset “{}”", removed.name));
+            self.toast(&i18n_f("Deleted preset “{}”", &[&removed.name]));
             profiles.clone()
         };
         profiles::save_all(&snapshot);
@@ -1399,7 +1410,8 @@ impl ForesightWindow {
             self.confirm_deletions_then_sync();
         } else {
             let n = imp.preview_store.get().map(|s| s.n_items()).unwrap_or(0);
-            self.toast(&format!("Preview: {n} change(s)"));
+            let msg = ni18n("Preview: {n} change", "Preview: {n} changes", n);
+            self.toast(&msg.replace("{n}", &n.to_string()));
         }
     }
 
@@ -1412,7 +1424,7 @@ impl ForesightWindow {
         imp.result_banner.set_revealed(false);
         imp.run_errors.borrow_mut().clear();
         imp.overall_progress.set_fraction(0.0);
-        imp.overall_progress.set_text(Some("Starting…"));
+        imp.overall_progress.set_text(Some(&i18n("Starting…")));
         imp.current_file_label.set_label("");
         imp.main_stack.set_visible_child_name("transfer");
 
@@ -1453,7 +1465,7 @@ impl ForesightWindow {
                 imp.overall_progress
                     .set_fraction(f64::from(p.percent) / 100.0);
                 let text = if p.scanning() {
-                    "Scanning…".to_string()
+                    i18n("Scanning…")
                 } else {
                     format!("{}%  ·  {}  ·  {}", p.percent, p.rate_human, p.elapsed)
                 };
@@ -1475,7 +1487,7 @@ impl ForesightWindow {
         // Completion is process exit, never percent==100 (rsync can end at 99%).
         if completion.severity == Severity::Success {
             imp.overall_progress.set_fraction(1.0);
-            imp.overall_progress.set_text(Some("Done"));
+            imp.overall_progress.set_text(Some(&i18n("Done")));
         }
         self.show_completion(completion);
     }
@@ -1491,12 +1503,12 @@ impl ForesightWindow {
             Severity::Success => {
                 let toast = adw::Toast::builder()
                     .title(&completion.message)
-                    .button_label("New Job")
+                    .button_label(i18n("New Job"))
                     .action_name("win.new-job")
                     .build();
                 self.imp().toast_overlay.add_toast(toast);
             }
-            Severity::Cancelled => self.toast("Sync cancelled."),
+            Severity::Cancelled => self.toast(&i18n("Sync cancelled.")),
             Severity::Partial => self.show_banner(&completion.message),
             Severity::Error => {
                 self.show_error_dialog_with_code(&completion.message, completion.code)
@@ -1516,20 +1528,26 @@ impl ForesightWindow {
             const MAX: usize = 20;
             let mut lines: Vec<String> = deletions.iter().take(MAX).cloned().collect();
             if deletions.len() > MAX {
-                lines.push(format!("…and {} more", deletions.len() - MAX));
+                lines.push(i18n_f(
+                    "…and {} more",
+                    &[&(deletions.len() - MAX).to_string()],
+                ));
             }
             lines.join("\n")
         };
 
+        let n = deletions.len() as u32;
+        let msg = ni18n(
+            "Delete {} file in the destination?",
+            "Delete {} files in the destination?",
+            n,
+        );
         let dialog = adw::AlertDialog::builder()
-            .heading(format!(
-                "Delete {} file(s) in the destination?",
-                deletions.len()
-            ))
+            .heading(msg.replace("{}", &n.to_string()))
             .body(body)
             .build();
-        dialog.add_response("cancel", "Cancel");
-        dialog.add_response("sync", "Delete and Sync");
+        dialog.add_response("cancel", &i18n("Cancel"));
+        dialog.add_response("sync", &i18n("Delete and Sync"));
         dialog.set_response_appearance("sync", adw::ResponseAppearance::Destructive);
         dialog.set_default_response(Some("cancel"));
         dialog.set_close_response("cancel");
@@ -1557,17 +1575,20 @@ impl ForesightWindow {
         let errors = self.imp().run_errors.borrow();
         let mut body = message.to_string();
         if let Some(code) = code {
-            body.push_str(&format!("\n\nrsync exit code {code}."));
+            body.push_str(&i18n_k(
+                "\n\nrsync exit code {code}.",
+                &[("code", &code.to_string())],
+            ));
         }
         if !errors.is_empty() {
             body.push_str("\n\n");
             body.push_str(&errors.join("\n"));
         }
         let dialog = adw::AlertDialog::builder()
-            .heading("Sync failed")
+            .heading(i18n("Sync failed"))
             .body(body)
             .build();
-        dialog.add_response("ok", "Close");
+        dialog.add_response("ok", &i18n("Close"));
         dialog.set_default_response(Some("ok"));
         dialog.present(Some(self));
     }
@@ -1575,7 +1596,7 @@ impl ForesightWindow {
     fn report_spawn_error(&self, error: &glib::Error) {
         *self.imp().runner.borrow_mut() = None;
         self.refresh_action_sensitivity();
-        self.show_error_dialog(&format!("Could not start rsync: {error}"));
+        self.show_error_dialog(&i18n_f("Could not start rsync: {}", &[&error.to_string()]));
     }
 
     fn show_banner(&self, text: &str) {

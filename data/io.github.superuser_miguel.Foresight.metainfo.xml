@@ -77,6 +77,10 @@
     <category>Archiving</category>
   </categories>
 
+  <languages>
+    <lang>es</lang>
+  </languages>
+
   <keywords>
     <keyword>rsync</keyword>
     <keyword>sync</keyword>

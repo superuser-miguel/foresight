@@ -64,10 +64,11 @@ impl FilterKind {
     }
 
     /// Human label for the UI.
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> String {
+        use crate::i18n::i18n;
         match self {
-            Self::Include => "Include",
-            Self::Exclude => "Exclude",
+            Self::Include => i18n("Include"),
+            Self::Exclude => i18n("Exclude"),
         }
     }
 

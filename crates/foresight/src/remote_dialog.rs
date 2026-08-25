@@ -13,6 +13,7 @@ use adw::prelude::*;
 use gtk::glib;
 
 use crate::endpoint::Endpoint;
+use crate::i18n::{i18n, i18n_f};
 use crate::ssh;
 
 /// Show the endpoint form. `on_accept` runs only for a validated endpoint whose
@@ -25,15 +26,17 @@ pub fn present<F: Fn(Endpoint) + 'static>(
 ) {
     let existing = existing.unwrap_or_default();
 
-    let user_row = adw::EntryRow::builder().title("User (optional)").build();
+    let user_row = adw::EntryRow::builder()
+        .title(i18n("User (optional)"))
+        .build();
     user_row.set_text(existing.user.as_deref().unwrap_or(""));
 
-    let host_row = adw::EntryRow::builder().title("Host").build();
+    let host_row = adw::EntryRow::builder().title(i18n("Host")).build();
     host_row.set_text(&existing.host);
 
     let port_row = adw::SpinRow::builder()
-        .title("Port")
-        .subtitle("22 is the default")
+        .title(i18n("Port"))
+        .subtitle(i18n("22 is the default"))
         .adjustment(&gtk::Adjustment::new(
             existing.port.unwrap_or(22) as f64,
             1.0,
@@ -45,15 +48,15 @@ pub fn present<F: Fn(Endpoint) + 'static>(
         .build();
 
     let path_row = adw::EntryRow::builder()
-        .title("Path on that machine")
+        .title(i18n("Path on that machine"))
         .build();
     path_row.set_text(&existing.path);
 
     let group = adw::PreferencesGroup::builder()
-        .description(
+        .description(i18n(
             "Foresight authenticates with the keys already in your desktop's SSH \
              agent. No password is ever asked for, and no key leaves the agent.",
-        )
+        ))
         .build();
     for row in [
         user_row.clone().upcast::<gtk::Widget>(),
@@ -82,9 +85,9 @@ pub fn present<F: Fn(Endpoint) + 'static>(
         .show_end_title_buttons(false)
         .show_start_title_buttons(false)
         .build();
-    let cancel = gtk::Button::with_label("Cancel");
+    let cancel = gtk::Button::with_label(&i18n("Cancel"));
     let connect = gtk::Button::builder()
-        .label("Connect")
+        .label(i18n("Connect"))
         .css_classes(["suggested-action"])
         .build();
     header.pack_start(&cancel);
@@ -154,7 +157,7 @@ pub fn present<F: Fn(Endpoint) + 'static>(
             // run on the main thread — a dead host would freeze the window for
             // the full scan timeout.
             connect.set_sensitive(false);
-            connect.set_label("Checking…");
+            connect.set_label(&i18n("Checking…"));
             let host = endpoint.host.clone();
             let scan_port = endpoint.port;
             glib::spawn_future_local(glib::clone!(
@@ -170,12 +173,14 @@ pub fn present<F: Fn(Endpoint) + 'static>(
                     let scanned =
                         gtk::gio::spawn_blocking(move || ssh::scan_host(&host, scan_port)).await;
                     connect.set_sensitive(true);
-                    connect.set_label("Connect");
+                    connect.set_label(&i18n("Connect"));
 
                     let keys = match scanned {
                         Ok(Ok(keys)) => keys,
                         Ok(Err(e)) => return show_error(&error, &e.to_string()),
-                        Err(_) => return show_error(&error, "the host check did not finish"),
+                        Err(_) => {
+                            return show_error(&error, &i18n("the host check did not finish"))
+                        }
                     };
                     confirm_host_key(&dialog, endpoint, keys, on_accept);
                 }
@@ -210,16 +215,17 @@ fn confirm_host_key<F: Fn(Endpoint) + 'static>(
         .join("\n");
 
     let alert = adw::AlertDialog::builder()
-        .heading(format!("Trust {}?", endpoint.host))
-        .body(format!(
+        .heading(i18n_f("Trust {}?", &[&endpoint.host]))
+        .body(i18n_f(
             "Foresight has not connected to this machine before. Check that the \
              fingerprint matches what the machine's owner told you — if it does \
-             not, someone else may be answering.\n\n{fingerprints}\n\nTrusting it \
-             records the key so this is asked once."
+             not, someone else may be answering.\n\n{}\n\nTrusting it \
+             records the key so this is asked once.",
+            &[&fingerprints],
         ))
         .build();
-    alert.add_response("cancel", "Cancel");
-    alert.add_response("trust", "Trust");
+    alert.add_response("cancel", &i18n("Cancel"));
+    alert.add_response("trust", &i18n("Trust"));
     alert.set_response_appearance("trust", adw::ResponseAppearance::Suggested);
     alert.set_default_response(Some("cancel"));
     alert.set_close_response("cancel");
@@ -238,10 +244,10 @@ fn confirm_host_key<F: Fn(Endpoint) + 'static>(
                     // the only honest option: proceeding would mean the next
                     // run asks again, or worse, appears trusted and is not.
                     let oops = adw::AlertDialog::builder()
-                        .heading("Could not record the host key")
-                        .body(format!("{e}"))
+                        .heading(i18n("Could not record the host key"))
+                        .body(e.to_string())
                         .build();
-                    oops.add_response("ok", "OK");
+                    oops.add_response("ok", &i18n("OK"));
                     oops.present(Some(&parent));
                     return;
                 }

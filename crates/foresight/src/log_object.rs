@@ -81,7 +81,7 @@ impl LogObject {
         }
         let (icon, tag) = kind_meta(change.kind());
         let danger = change.kind() == ChangeKind::Deleted;
-        Self::build(icon, primary, tag, danger, false, false)
+        Self::build(icon, primary, &tag, danger, false, false)
     }
 
     /// A verbatim rsync message (informational or an error/warning).
@@ -128,12 +128,13 @@ impl LogObject {
 }
 
 /// `(icon name, right-aligned tag)` for each change kind.
-fn kind_meta(kind: ChangeKind) -> (&'static str, &'static str) {
+fn kind_meta(kind: ChangeKind) -> (&'static str, String) {
+    use crate::i18n::i18n;
     match kind {
-        ChangeKind::Created => ("list-add-symbolic", "New"),
-        ChangeKind::Updated => ("emblem-synchronizing-symbolic", "Updated"),
-        ChangeKind::Attrs => ("document-properties-symbolic", "Attributes"),
-        ChangeKind::Deleted => ("user-trash-symbolic", "Deleted"),
-        ChangeKind::Unchanged => ("object-select-symbolic", "Unchanged"),
+        ChangeKind::Created => ("list-add-symbolic", i18n("New")),
+        ChangeKind::Updated => ("emblem-synchronizing-symbolic", i18n("Updated")),
+        ChangeKind::Attrs => ("document-properties-symbolic", i18n("Attributes")),
+        ChangeKind::Deleted => ("user-trash-symbolic", i18n("Deleted")),
+        ChangeKind::Unchanged => ("object-select-symbolic", i18n("Unchanged")),
     }
 }

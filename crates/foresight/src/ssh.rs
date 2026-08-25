@@ -61,16 +61,23 @@ pub enum TrustError {
 
 impl std::fmt::Display for TrustError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use crate::i18n::{i18n, i18n_f};
         match self {
             Self::UnquotablePath(p) => write!(
                 f,
-                "the path “{p}” contains both a single and a double quote, which \
-                 rsync's -e option cannot express"
+                "{}",
+                i18n_f(
+                    "the path “{}” contains both a single and a double quote, which \
+                     rsync's -e option cannot express",
+                    &[p]
+                )
             ),
-            Self::NonUtf8Path => write!(f, "the configuration path is not valid UTF-8"),
-            Self::InvalidHost(h) => write!(f, "“{h}” is not a valid host name"),
-            Self::ScanFailed(e) => write!(f, "could not read the host key: {e}"),
-            Self::NoKeys(h) => write!(f, "{h} offered no host key"),
+            Self::NonUtf8Path => write!(f, "{}", i18n("the configuration path is not valid UTF-8")),
+            Self::InvalidHost(h) => {
+                write!(f, "{}", i18n_f("“{}” is not a valid host name", &[h]))
+            }
+            Self::ScanFailed(e) => write!(f, "{}", i18n_f("could not read the host key: {}", &[e])),
+            Self::NoKeys(h) => write!(f, "{}", i18n_f("{} offered no host key", &[h])),
         }
     }
 }

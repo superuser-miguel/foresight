@@ -1,0 +1,817 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) YEAR The Foresight contributors
+# This file is distributed under the same license as the foresight package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, YEAR.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: foresight\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-08-25 20:09+0200\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: LANGUAGE <LL@li.org>\n"
+"Language: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=INTEGER; plural=EXPRESSION;\n"
+
+#: src/ui/window.blp:12
+msgid "Foresight"
+msgstr ""
+
+#: src/ui/window.blp:22
+msgid "Dry Run"
+msgstr ""
+
+#: src/ui/window.blp:23
+msgid "Preview the changes without transferring anything"
+msgstr ""
+
+#: src/ui/window.blp:29
+msgid "Start Sync"
+msgstr ""
+
+#: src/ui/window.blp:57
+msgid "Configure"
+msgstr ""
+
+#: src/ui/window.blp:75
+msgid "Sources"
+msgstr ""
+
+#: src/ui/window.blp:76
+msgid "Files and folders to copy into the destination"
+msgstr ""
+
+#: src/ui/window.blp:84
+msgid "Add a folder"
+msgstr ""
+
+#: src/ui/window.blp:91
+msgid "Add a file"
+msgstr ""
+
+#: src/ui/window.blp:101 crates/foresight/src/window.rs:766
+msgid "Pull from a remote machine over SSH"
+msgstr ""
+
+#: src/ui/window.blp:112 crates/foresight/src/window.rs:1024
+msgid "No sources yet"
+msgstr ""
+
+#: src/ui/window.blp:113 crates/foresight/src/window.rs:1026
+msgid "Use the buttons above, or drop files and folders here"
+msgstr ""
+
+#: src/ui/window.blp:119
+msgid "Remove the remote source"
+msgstr ""
+
+#: src/ui/window.blp:128
+msgid "Destination"
+msgstr ""
+
+#: src/ui/window.blp:133 crates/foresight/src/window.rs:775
+msgid "Send to a remote machine over SSH"
+msgstr ""
+
+#: src/ui/window.blp:142 crates/foresight/src/window.rs:737
+msgid "Folder"
+msgstr ""
+
+#: src/ui/window.blp:143 crates/foresight/src/window.rs:520
+#: crates/foresight/src/window.rs:746
+msgid "Not selected"
+msgstr ""
+
+#: src/ui/window.blp:151
+msgid "Presets"
+msgstr ""
+
+#: src/ui/window.blp:152
+msgid "Reusable Advanced-option sets (not the source or destination)"
+msgstr ""
+
+#: src/ui/window.blp:157
+msgid "Save the current Advanced options as a preset"
+msgstr ""
+
+#: src/ui/window.blp:163
+msgid "Apply a preset"
+msgstr ""
+
+#: src/ui/window.blp:168
+msgid "Delete the selected preset"
+msgstr ""
+
+#: src/ui/window.blp:178
+msgid "Advanced"
+msgstr ""
+
+#: src/ui/window.blp:179
+msgid "Extra rsync options"
+msgstr ""
+
+#: src/ui/window.blp:182
+msgid "Sync folder contents"
+msgstr ""
+
+#: src/ui/window.blp:183
+msgid ""
+"Copy what's inside the folder instead of the folder itself (a trailing / for "
+"rsync). Only for a single-folder sync."
+msgstr ""
+
+#: src/ui/window.blp:188 crates/foresight/src/capabilities.rs:92
+msgid "Mirror deletions"
+msgstr ""
+
+#: src/ui/window.blp:189
+msgid ""
+"Remove destination files not in the source (--delete). Only for a single-"
+"folder sync."
+msgstr ""
+
+#: src/ui/window.blp:194 crates/foresight/src/capabilities.rs:104
+msgid "Verbose output"
+msgstr ""
+
+#: src/ui/window.blp:195
+msgid "Log every file and rsync's messages during the transfer (-v)"
+msgstr ""
+
+#: src/ui/window.blp:199 crates/foresight/src/capabilities.rs:114
+msgid "Move files"
+msgstr ""
+
+#: src/ui/window.blp:200
+msgid "Remove each source file after it transfers (--remove-source-files)"
+msgstr ""
+
+#: src/ui/window.blp:204 crates/foresight/src/capabilities.rs:125
+msgid "Bandwidth limit"
+msgstr ""
+
+#: src/ui/window.blp:205
+msgid "0 is unlimited (--bwlimit)"
+msgstr ""
+
+#: src/ui/window.blp:215
+msgid "Rate unit"
+msgstr ""
+
+#: src/ui/window.blp:223 crates/foresight/src/capabilities.rs:133
+msgid "Filter rules"
+msgstr ""
+
+#: src/ui/window.blp:224 crates/foresight/src/window.rs:963
+msgid "Skip or keep paths by pattern (--exclude / --include)"
+msgstr ""
+
+#: src/ui/window.blp:234
+msgid "Add a rule — e.g. *.tmp, .git, node_modules/"
+msgstr ""
+
+#: src/ui/window.blp:240
+msgid "Whether this rule skips or keeps what it matches"
+msgstr ""
+
+#: src/ui/window.blp:242 crates/foresight/src/job.rs:71
+msgid "Exclude"
+msgstr ""
+
+#: src/ui/window.blp:242 crates/foresight/src/job.rs:70
+msgid "Include"
+msgstr ""
+
+#: src/ui/window.blp:249
+msgid "Extra arguments — e.g. --checksum --partial"
+msgstr ""
+
+#: src/ui/window.blp:260
+msgid "Preview"
+msgstr ""
+
+#: src/ui/window.blp:273
+msgid "Transfer"
+msgstr ""
+
+#: src/ui/window.blp:297
+msgid "Log"
+msgstr ""
+
+#: src/ui/window.blp:308 crates/foresight/src/window.rs:1224
+#: crates/foresight/src/window.rs:1549 crates/foresight/src/remote_dialog.rs:88
+#: crates/foresight/src/remote_dialog.rs:227
+msgid "Cancel"
+msgstr ""
+
+#: src/ui/window.blp:323
+msgid "_New Job"
+msgstr ""
+
+#: src/ui/window.blp:329
+msgid "_What Foresight Can Do"
+msgstr ""
+
+#: src/ui/window.blp:333
+msgid "_Keyboard Shortcuts"
+msgstr ""
+
+#: src/ui/window.blp:337
+msgid "_About Foresight"
+msgstr ""
+
+#: crates/foresight/src/window.rs:562
+msgid "Add source folders"
+msgstr ""
+
+#: crates/foresight/src/window.rs:579
+msgid "Add source files"
+msgstr ""
+
+#: crates/foresight/src/window.rs:730
+msgid "Remote folder"
+msgstr ""
+
+#: crates/foresight/src/window.rs:761
+msgid ""
+"The destination is already remote — rsync cannot have both ends on other "
+"machines"
+msgstr ""
+
+#: crates/foresight/src/window.rs:764
+msgid "Change the remote source"
+msgstr ""
+
+#: crates/foresight/src/window.rs:771
+msgid ""
+"The source is already remote — rsync cannot have both ends on other machines"
+msgstr ""
+
+#: crates/foresight/src/window.rs:773
+msgid "Change the remote destination"
+msgstr ""
+
+#: crates/foresight/src/window.rs:828
+msgid "included"
+msgstr ""
+
+#: crates/foresight/src/window.rs:829
+msgid "excluded"
+msgstr ""
+
+#: crates/foresight/src/window.rs:832
+#, rust-format
+msgid "“{pattern}” is already {verb}"
+msgstr ""
+
+#: crates/foresight/src/window.rs:902
+#, rust-format
+msgid "{} ({})"
+msgstr ""
+
+#: crates/foresight/src/window.rs:965
+#, rust-format
+msgid "1 rule"
+msgid_plural "{n} rules · the first one that matches wins"
+msgstr[0] ""
+msgstr[1] ""
+
+#: crates/foresight/src/window.rs:973
+msgid "Select destination folder"
+msgstr ""
+
+#: crates/foresight/src/window.rs:1016
+msgid "Remote source"
+msgstr ""
+
+#: crates/foresight/src/window.rs:1188
+msgid "Choose a preset…"
+msgstr ""
+
+#: crates/foresight/src/window.rs:1220
+msgid "Save preset"
+msgstr ""
+
+#: crates/foresight/src/window.rs:1221
+msgid "Save the current Advanced options under a name."
+msgstr ""
+
+#: crates/foresight/src/window.rs:1225
+msgid "Save"
+msgstr ""
+
+#: crates/foresight/src/window.rs:1267
+#, rust-format
+msgid "Saved preset “{name}”"
+msgstr ""
+
+#: crates/foresight/src/window.rs:1283
+#, rust-format
+msgid "Deleted preset “{}”"
+msgstr ""
+
+#: crates/foresight/src/window.rs:1413
+#, rust-format
+msgid "Preview: {n} change"
+msgid_plural "Preview: {n} changes"
+msgstr[0] ""
+msgstr[1] ""
+
+#: crates/foresight/src/window.rs:1427
+msgid "Starting…"
+msgstr ""
+
+#: crates/foresight/src/window.rs:1468
+msgid "Scanning…"
+msgstr ""
+
+#: crates/foresight/src/window.rs:1490
+msgid "Done"
+msgstr ""
+
+#: crates/foresight/src/window.rs:1506
+msgid "New Job"
+msgstr ""
+
+#: crates/foresight/src/window.rs:1511
+msgid "Sync cancelled."
+msgstr ""
+
+#: crates/foresight/src/window.rs:1532
+#, rust-format
+msgid "…and {} more"
+msgstr ""
+
+#: crates/foresight/src/window.rs:1541
+#, rust-format
+msgid "Delete {} file in the destination?"
+msgid_plural "Delete {} files in the destination?"
+msgstr[0] ""
+msgstr[1] ""
+
+#: crates/foresight/src/window.rs:1550
+msgid "Delete and Sync"
+msgstr ""
+
+#: crates/foresight/src/window.rs:1579
+#, rust-format
+msgid ""
+"\n"
+"\n"
+"rsync exit code {code}."
+msgstr ""
+
+#: crates/foresight/src/window.rs:1588
+msgid "Sync failed"
+msgstr ""
+
+#: crates/foresight/src/window.rs:1591
+msgid "Close"
+msgstr ""
+
+#: crates/foresight/src/window.rs:1599
+#, rust-format
+msgid "Could not start rsync: {}"
+msgstr ""
+
+#: crates/foresight/src/help.rs:22
+msgid "What Foresight Can Do"
+msgstr ""
+
+#: crates/foresight/src/help.rs:26
+msgid "Capabilities"
+msgstr ""
+
+#: crates/foresight/src/help.rs:39
+#, rust-format
+msgid ""
+"{}\n"
+"via {} · man {}"
+msgstr ""
+
+#: crates/foresight/src/help.rs:58
+msgid "Good to know"
+msgstr ""
+
+#: crates/foresight/src/help.rs:62
+msgid "Dry Run is always safe"
+msgstr ""
+
+#: crates/foresight/src/help.rs:64
+msgid ""
+"Dry Run really runs rsync, but with --dry-run: nothing is written, moved, or "
+"deleted — even Move files and Mirror deletions are inert. It just lists the "
+"plan and records any deletions for the confirmation step."
+msgstr ""
+
+#: crates/foresight/src/help.rs:70
+msgid "How Mirror deletions stays safe"
+msgstr ""
+
+#: crates/foresight/src/help.rs:72
+msgid ""
+"Mirror deletions (--delete) removes destination files that aren't in the "
+"source. It's off by default, offered only for a single-folder sync, and "
+"starting a sync with it on always re-runs a fresh dry run so the "
+"confirmation lists exactly what this transfer would remove. It only ever "
+"prunes the folders this transfer actually writes."
+msgstr ""
+
+#: crates/foresight/src/help.rs:83
+msgid "Not yet a dedicated control"
+msgstr ""
+
+#: crates/foresight/src/help.rs:85
+msgid ""
+"Type any of these in Advanced → Extra arguments; Foresight passes them "
+"straight through to rsync."
+msgstr ""
+
+#: crates/foresight/src/help.rs:102
+msgid "This release"
+msgstr ""
+
+#: crates/foresight/src/help.rs:104
+msgid ""
+"The pinned rsync version is the behavior contract — these capabilities "
+"describe exactly this build."
+msgstr ""
+
+#: crates/foresight/src/help.rs:117
+msgid "Bundled rsync"
+msgstr ""
+
+#: crates/foresight/src/help.rs:124 crates/foresight/src/help.rs:202
+msgid "Full rsync options"
+msgstr ""
+
+#: crates/foresight/src/help.rs:125
+msgid "Show `rsync --help` from the bundled engine"
+msgstr ""
+
+#: crates/foresight/src/help.rs:175
+#, rust-format
+msgid "Could not run the bundled rsync: {}"
+msgstr ""
+
+#: crates/foresight/src/remote_dialog.rs:30
+msgid "User (optional)"
+msgstr ""
+
+#: crates/foresight/src/remote_dialog.rs:34
+msgid "Host"
+msgstr ""
+
+#: crates/foresight/src/remote_dialog.rs:38
+msgid "Port"
+msgstr ""
+
+#: crates/foresight/src/remote_dialog.rs:39
+msgid "22 is the default"
+msgstr ""
+
+#: crates/foresight/src/remote_dialog.rs:51
+msgid "Path on that machine"
+msgstr ""
+
+#: crates/foresight/src/remote_dialog.rs:57
+msgid ""
+"Foresight authenticates with the keys already in your desktop's SSH agent. "
+"No password is ever asked for, and no key leaves the agent."
+msgstr ""
+
+#: crates/foresight/src/remote_dialog.rs:90
+msgid "Connect"
+msgstr ""
+
+#: crates/foresight/src/remote_dialog.rs:218
+#, rust-format
+msgid "Trust {}?"
+msgstr ""
+
+#: crates/foresight/src/remote_dialog.rs:220
+#, rust-format
+msgid ""
+"Foresight has not connected to this machine before. Check that the "
+"fingerprint matches what the machine's owner told you — if it does not, "
+"someone else may be answering.\n"
+"\n"
+"{}\n"
+"\n"
+"Trusting it records the key so this is asked once."
+msgstr ""
+
+#: crates/foresight/src/remote_dialog.rs:228
+msgid "Trust"
+msgstr ""
+
+#: crates/foresight/src/capabilities.rs:59
+msgid "Archive mode"
+msgstr ""
+
+#: crates/foresight/src/capabilities.rs:61
+msgid "Always on"
+msgstr ""
+
+#: crates/foresight/src/capabilities.rs:63
+msgid ""
+"Recurse and preserve permissions, timestamps, symlinks, and ownership. (-a "
+"expands to -rlptgoD.)"
+msgstr ""
+
+#: crates/foresight/src/capabilities.rs:70
+msgid "Dry-run itemize"
+msgstr ""
+
+#: crates/foresight/src/capabilities.rs:72
+msgid "Dry Run button"
+msgstr ""
+
+#: crates/foresight/src/capabilities.rs:74
+msgid ""
+"Preview a job without writing anything: rsync lists exactly what it would "
+"create, update, or delete."
+msgstr ""
+
+#: crates/foresight/src/capabilities.rs:81
+msgid "Live progress & per-file output"
+msgstr ""
+
+#: crates/foresight/src/capabilities.rs:83
+msgid "Transfer page (every sync)"
+msgstr ""
+
+#: crates/foresight/src/capabilities.rs:85
+msgid ""
+"Drives the progress bar and the streaming activity log during a real "
+"transfer."
+msgstr ""
+
+#: crates/foresight/src/capabilities.rs:94
+msgid "Advanced → Mirror deletions"
+msgstr ""
+
+#: crates/foresight/src/capabilities.rs:96
+msgid ""
+"Remove destination files that no longer exist in the source. Off by default; "
+"offered only for a single-folder sync, and always confirmed against a fresh "
+"dry run."
+msgstr ""
+
+#: crates/foresight/src/capabilities.rs:106
+msgid "Advanced → Verbose output"
+msgstr ""
+
+#: crates/foresight/src/capabilities.rs:108
+msgid "Add rsync's own messages (file list, transfer stats) to the log."
+msgstr ""
+
+#: crates/foresight/src/capabilities.rs:116
+msgid "Advanced → Move files"
+msgstr ""
+
+#: crates/foresight/src/capabilities.rs:118
+msgid ""
+"Delete each source file after it transfers, turning a copy into a move. Has "
+"no effect during a dry run."
+msgstr ""
+
+#: crates/foresight/src/capabilities.rs:127
+msgid "Advanced → Bandwidth limit + Rate unit"
+msgstr ""
+
+#: crates/foresight/src/capabilities.rs:128
+msgid "Cap the transfer rate, in KB/s, MB/s, or GB/s."
+msgstr ""
+
+#: crates/foresight/src/capabilities.rs:135
+msgid "Advanced → Filter rules"
+msgstr ""
+
+#: crates/foresight/src/capabilities.rs:137
+msgid ""
+"Skip or keep paths by pattern (e.g. *.tmp, .git). The list is ordered and "
+"rsync obeys the first rule that matches, so an Include above a broader "
+"Exclude carves an exception out of it — use the arrows on a rule to change "
+"which one wins. Each rule is passed whole, so it may contain spaces."
+msgstr ""
+
+#: crates/foresight/src/capabilities.rs:147
+msgid "Remote shell for SSH transfers"
+msgstr ""
+
+#: crates/foresight/src/capabilities.rs:149
+msgid "Set automatically for a remote endpoint"
+msgstr ""
+
+#: crates/foresight/src/capabilities.rs:151
+msgid ""
+"Runs ssh with Foresight's own known_hosts, strict host-key checking, and no "
+"interactive prompts. Your keys come from the desktop's SSH agent — no "
+"private key ever enters the sandbox, and ~/.ssh is never read."
+msgstr ""
+
+#: crates/foresight/src/capabilities.rs:166
+msgid "Where your files land"
+msgstr ""
+
+#: crates/foresight/src/capabilities.rs:168
+msgid ""
+"Everything you add lands inside the destination: a folder named Photos "
+"becomes destination/Photos/, a file becomes destination/file. Turn on "
+"Advanced → Sync folder contents to get rsync's other form instead, where a "
+"single folder's children are copied straight into the destination and the "
+"folder itself is not recreated."
+msgstr ""
+
+#: crates/foresight/src/capabilities.rs:181
+msgid "--checksum (-c)"
+msgstr ""
+
+#: crates/foresight/src/capabilities.rs:182
+msgid "Compare by checksum instead of size and modification time."
+msgstr ""
+
+#: crates/foresight/src/capabilities.rs:185
+msgid "--compress (-z)"
+msgstr ""
+
+#: crates/foresight/src/capabilities.rs:186
+msgid "Compress file data during the transfer."
+msgstr ""
+
+#: crates/foresight/src/capabilities.rs:189
+msgid "--backup (-b)"
+msgstr ""
+
+#: crates/foresight/src/capabilities.rs:190
+msgid "Keep backups of files that get replaced or deleted."
+msgstr ""
+
+#: crates/foresight/src/capabilities.rs:193
+msgid "--partial"
+msgstr ""
+
+#: crates/foresight/src/capabilities.rs:194
+msgid "Keep partially transferred files so a re-run can resume them."
+msgstr ""
+
+#: crates/foresight/src/capabilities.rs:197
+msgid "--filter / merge files"
+msgstr ""
+
+#: crates/foresight/src/capabilities.rs:199
+msgid ""
+"rsync's fuller filter syntax: rules read from a file, and per-directory "
+"merge rules. Plain include and exclude rules are a control — see Filter "
+"rules above."
+msgstr ""
+
+#: crates/foresight/src/change_object.rs:78
+#: crates/foresight/src/log_object.rs:134
+msgid "New"
+msgstr ""
+
+#: crates/foresight/src/change_object.rs:79
+#: crates/foresight/src/log_object.rs:135
+msgid "Updated"
+msgstr ""
+
+#: crates/foresight/src/change_object.rs:80
+msgid "Attributes only"
+msgstr ""
+
+#: crates/foresight/src/change_object.rs:81
+#: crates/foresight/src/log_object.rs:137
+msgid "Deleted"
+msgstr ""
+
+#: crates/foresight/src/change_object.rs:82
+#: crates/foresight/src/log_object.rs:138
+msgid "Unchanged"
+msgstr ""
+
+#: crates/foresight/src/log_object.rs:136
+msgid "Attributes"
+msgstr ""
+
+#: crates/foresight/src/endpoint.rs:53
+msgid "no host given"
+msgstr ""
+
+#: crates/foresight/src/endpoint.rs:58
+msgid "a remote location needs a colon before the path, as in user@host:/path"
+msgstr ""
+
+#: crates/foresight/src/endpoint.rs:63 crates/foresight/src/ssh.rs:77
+#, rust-format
+msgid "“{}” is not a valid host name"
+msgstr ""
+
+#: crates/foresight/src/endpoint.rs:66
+#, rust-format
+msgid "“{}” is not a valid user name"
+msgstr ""
+
+#: crates/foresight/src/endpoint.rs:71
+msgid "the [ before an IPv6 address is never closed"
+msgstr ""
+
+#: crates/foresight/src/endpoint.rs:74
+#, rust-format
+msgid "“{}” is not a port number"
+msgstr ""
+
+#: crates/foresight/src/ssh.rs:70
+#, rust-format
+msgid ""
+"the path “{}” contains both a single and a double quote, which rsync's -e "
+"option cannot express"
+msgstr ""
+
+#: crates/foresight/src/ssh.rs:75
+msgid "the configuration path is not valid UTF-8"
+msgstr ""
+
+#: crates/foresight/src/ssh.rs:79
+#, rust-format
+msgid "could not read the host key: {}"
+msgstr ""
+
+#: crates/foresight/src/ssh.rs:80
+#, rust-format
+msgid "{} offered no host key"
+msgstr ""
+
+#: crates/rsync-events/src/lib.rs:450
+msgid "Sync completed."
+msgstr ""
+
+#: crates/rsync-events/src/lib.rs:453
+msgid "Syntax or usage error — the app built a bad command line."
+msgstr ""
+
+#: crates/rsync-events/src/lib.rs:457
+msgid "Protocol incompatibility between rsync versions."
+msgstr ""
+
+#: crates/rsync-events/src/lib.rs:461
+msgid "File selection error — a source or destination is invalid."
+msgstr ""
+
+#: crates/rsync-events/src/lib.rs:465
+msgid "Error starting the client-server protocol."
+msgstr ""
+
+#: crates/rsync-events/src/lib.rs:469
+msgid "Socket I/O error — check the network or remote host."
+msgstr ""
+
+#: crates/rsync-events/src/lib.rs:473
+msgid "File I/O error — check disk space and permissions."
+msgstr ""
+
+#: crates/rsync-events/src/lib.rs:475
+msgid "Protocol data stream error."
+msgstr ""
+
+#: crates/rsync-events/src/lib.rs:476
+msgid "Diagnostics error."
+msgstr ""
+
+#: crates/rsync-events/src/lib.rs:477
+msgid "IPC error."
+msgstr ""
+
+#: crates/rsync-events/src/lib.rs:478
+msgid "Sync was interrupted."
+msgstr ""
+
+#: crates/rsync-events/src/lib.rs:481
+msgid "Completed, but some files could not be transferred."
+msgstr ""
+
+#: crates/rsync-events/src/lib.rs:485
+msgid "Completed, but some source files vanished mid-sync."
+msgstr ""
+
+#: crates/rsync-events/src/lib.rs:489
+msgid "Stopped early: --max-delete limit reached."
+msgstr ""
+
+#: crates/rsync-events/src/lib.rs:491
+msgid "Timeout waiting for data."
+msgstr ""
+
+#: crates/rsync-events/src/lib.rs:494
+msgid "Timeout waiting for the remote to connect."
+msgstr ""
+
+#: crates/rsync-events/src/lib.rs:498
+msgid "The remote shell (ssh) failed — check host and keys."
+msgstr ""

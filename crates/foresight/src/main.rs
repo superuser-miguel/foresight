@@ -8,6 +8,7 @@ mod capabilities;
 mod change_object;
 mod endpoint;
 mod help;
+mod i18n;
 mod job;
 mod log_object;
 mod profiles;
@@ -26,6 +27,18 @@ use std::path::PathBuf;
 use window::ForesightWindow;
 
 fn main() -> glib::ExitCode {
+    // Set up gettext before anything builds widgets: GtkBuilder resolves the
+    // `translatable="yes"` strings in the compiled .ui through this domain, and
+    // the i18n!() helpers resolve through the same one.
+    gettextrs::setlocale(gettextrs::LocaleCategory::LcAll, "");
+    if !config::LOCALEDIR.is_empty() {
+        gettextrs::bindtextdomain(config::GETTEXT_PACKAGE, config::LOCALEDIR)
+            .expect("failed to bind text domain");
+    }
+    gettextrs::bind_textdomain_codeset(config::GETTEXT_PACKAGE, "UTF-8")
+        .expect("failed to set text domain codeset");
+    gettextrs::textdomain(config::GETTEXT_PACKAGE).expect("failed to set text domain");
+
     register_resources();
 
     let app = adw::Application::builder()

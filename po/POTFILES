@@ -1,0 +1,12 @@
+src/ui/window.blp
+crates/foresight/src/window.rs
+crates/foresight/src/help.rs
+crates/foresight/src/remote_dialog.rs
+crates/foresight/src/capabilities.rs
+crates/foresight/src/change_object.rs
+crates/foresight/src/log_object.rs
+crates/foresight/src/profiles.rs
+crates/foresight/src/endpoint.rs
+crates/foresight/src/ssh.rs
+crates/foresight/src/job.rs
+crates/rsync-events/src/lib.rs

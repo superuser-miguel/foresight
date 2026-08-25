@@ -10,12 +10,14 @@ dependency('gtk4', version: '>= 4.10')
 dependency('libadwaita-1', version: '>= 1.4')
 
 gnome = import('gnome')
+i18n = import('i18n')
 
 application_id = 'io.github.superuser_miguel.Foresight'
 prefix = get_option('prefix')
 bindir = prefix / get_option('bindir')
 datadir = prefix / get_option('datadir')
 pkgdatadir = datadir / meson.project_name()
+localedir = prefix / get_option('localedir')
 
 # ---------------------------------------------------------------- Blueprint
 # .blp is the source of truth; compile to .ui in the build tree (never commit
@@ -103,8 +105,12 @@ custom_target(
     application_id,
     pkgdatadir,
     meson.project_version(),
+    meson.project_name(),
+    localedir,
   ],
 )
+
+subdir('po')
 
 gnome.post_install(
   gtk_update_icon_cache: true,

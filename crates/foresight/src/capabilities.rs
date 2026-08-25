@@ -49,89 +49,110 @@ pub struct Capability {
 
 /// The registry. Keep in sync with [`crate::job::Job::build_argv`] — the test
 /// below enforces it.
+///
+/// The display strings (`name`, `control`, `description`, and the pairs in
+/// [`PATH_BEHAVIOR`] / [`NOT_EXPOSED`]) are wrapped in [`crate::i18n::gettext_noop`]
+/// so `xgettext` registers them as msgids; `help` translates them at render
+/// time with [`crate::i18n::i18n`].
 pub const CAPABILITIES: &[Capability] = &[
     Capability {
-        name: "Archive mode",
+        name: crate::i18n::gettext_noop("Archive mode"),
         flags: &["-a"],
-        control: "Always on",
-        description: "Recurse and preserve permissions, timestamps, symlinks, and \
-                      ownership. (-a expands to -rlptgoD.)",
+        control: crate::i18n::gettext_noop("Always on"),
+        description: crate::i18n::gettext_noop(
+            "Recurse and preserve permissions, timestamps, symlinks, and \
+             ownership. (-a expands to -rlptgoD.)",
+        ),
         man_option: "--archive, -a",
         group: Group::Core,
     },
     Capability {
-        name: "Dry-run itemize",
+        name: crate::i18n::gettext_noop("Dry-run itemize"),
         flags: &["-n", "-i"],
-        control: "Dry Run button",
-        description: "Preview a job without writing anything: rsync lists exactly \
-                      what it would create, update, or delete.",
+        control: crate::i18n::gettext_noop("Dry Run button"),
+        description: crate::i18n::gettext_noop(
+            "Preview a job without writing anything: rsync lists exactly \
+             what it would create, update, or delete.",
+        ),
         man_option: "--dry-run (-n), --itemize-changes (-i)",
         group: Group::Reporting,
     },
     Capability {
-        name: "Live progress & per-file output",
+        name: crate::i18n::gettext_noop("Live progress & per-file output"),
         flags: &["--info", "--out-format"],
-        control: "Transfer page (every sync)",
-        description: "Drives the progress bar and the streaming activity log \
-                      during a real transfer.",
+        control: crate::i18n::gettext_noop("Transfer page (every sync)"),
+        description: crate::i18n::gettext_noop(
+            "Drives the progress bar and the streaming activity log \
+             during a real transfer.",
+        ),
         man_option: "--info=progress2, --out-format",
         group: Group::Reporting,
     },
     Capability {
-        name: "Mirror deletions",
+        name: crate::i18n::gettext_noop("Mirror deletions"),
         flags: &["--delete"],
-        control: "Advanced → Mirror deletions",
-        description: "Remove destination files that no longer exist in the source. \
-                      Off by default; offered only for a single-folder sync, and \
-                      always confirmed against a fresh dry run.",
+        control: crate::i18n::gettext_noop("Advanced → Mirror deletions"),
+        description: crate::i18n::gettext_noop(
+            "Remove destination files that no longer exist in the source. \
+             Off by default; offered only for a single-folder sync, and \
+             always confirmed against a fresh dry run.",
+        ),
         man_option: "--delete",
         group: Group::Options,
     },
     Capability {
-        name: "Verbose output",
+        name: crate::i18n::gettext_noop("Verbose output"),
         flags: &["-v"],
-        control: "Advanced → Verbose output",
-        description: "Add rsync's own messages (file list, transfer stats) to the log.",
+        control: crate::i18n::gettext_noop("Advanced → Verbose output"),
+        description: crate::i18n::gettext_noop(
+            "Add rsync's own messages (file list, transfer stats) to the log.",
+        ),
         man_option: "--verbose, -v",
         group: Group::Options,
     },
     Capability {
-        name: "Move files",
+        name: crate::i18n::gettext_noop("Move files"),
         flags: &["--remove-source-files"],
-        control: "Advanced → Move files",
-        description: "Delete each source file after it transfers, turning a copy \
-                      into a move. Has no effect during a dry run.",
+        control: crate::i18n::gettext_noop("Advanced → Move files"),
+        description: crate::i18n::gettext_noop(
+            "Delete each source file after it transfers, turning a copy \
+             into a move. Has no effect during a dry run.",
+        ),
         man_option: "--remove-source-files",
         group: Group::Options,
     },
     Capability {
-        name: "Bandwidth limit",
+        name: crate::i18n::gettext_noop("Bandwidth limit"),
         flags: &["--bwlimit"],
-        control: "Advanced → Bandwidth limit + Rate unit",
-        description: "Cap the transfer rate, in KB/s, MB/s, or GB/s.",
+        control: crate::i18n::gettext_noop("Advanced → Bandwidth limit + Rate unit"),
+        description: crate::i18n::gettext_noop("Cap the transfer rate, in KB/s, MB/s, or GB/s."),
         man_option: "--bwlimit",
         group: Group::Options,
     },
     Capability {
-        name: "Filter rules",
+        name: crate::i18n::gettext_noop("Filter rules"),
         flags: &["--exclude", "--include"],
-        control: "Advanced → Filter rules",
-        description: "Skip or keep paths by pattern (e.g. *.tmp, .git). The list is \
-                      ordered and rsync obeys the first rule that matches, so an \
-                      Include above a broader Exclude carves an exception out of it \
-                      — use the arrows on a rule to change which one wins. Each rule \
-                      is passed whole, so it may contain spaces.",
+        control: crate::i18n::gettext_noop("Advanced → Filter rules"),
+        description: crate::i18n::gettext_noop(
+            "Skip or keep paths by pattern (e.g. *.tmp, .git). The list is \
+             ordered and rsync obeys the first rule that matches, so an \
+             Include above a broader Exclude carves an exception out of it \
+             — use the arrows on a rule to change which one wins. Each rule \
+             is passed whole, so it may contain spaces.",
+        ),
         man_option: "--exclude, --include",
         group: Group::Options,
     },
     Capability {
-        name: "Remote shell for SSH transfers",
+        name: crate::i18n::gettext_noop("Remote shell for SSH transfers"),
         flags: &["-e"],
-        control: "Set automatically for a remote endpoint",
-        description: "Runs ssh with Foresight's own known_hosts, strict host-key \
-                      checking, and no interactive prompts. Your keys come from \
-                      the desktop's SSH agent — no private key ever enters the \
-                      sandbox, and ~/.ssh is never read.",
+        control: crate::i18n::gettext_noop("Set automatically for a remote endpoint"),
+        description: crate::i18n::gettext_noop(
+            "Runs ssh with Foresight's own known_hosts, strict host-key \
+             checking, and no interactive prompts. Your keys come from \
+             the desktop's SSH agent — no private key ever enters the \
+             sandbox, and ~/.ssh is never read.",
+        ),
         man_option: "--rsh, -e",
         group: Group::Options,
     },
@@ -142,12 +163,14 @@ pub const CAPABILITIES: &[Capability] = &[
 /// changes where files land, so the Help states it outright rather than leaving
 /// users to rediscover rsync's trailing-slash rule the hard way.
 pub const PATH_BEHAVIOR: (&str, &str) = (
-    "Where your files land",
-    "Everything you add lands inside the destination: a folder named Photos becomes \
-     destination/Photos/, a file becomes destination/file. Turn on Advanced → Sync \
-     folder contents to get rsync's other form instead, where a single folder's \
-     children are copied straight into the destination and the folder itself is not \
-     recreated.",
+    crate::i18n::gettext_noop("Where your files land"),
+    crate::i18n::gettext_noop(
+        "Everything you add lands inside the destination: a folder named Photos becomes \
+         destination/Photos/, a file becomes destination/file. Turn on Advanced → Sync \
+         folder contents to get rsync's other form instead, where a single folder's \
+         children are copied straight into the destination and the folder itself is not \
+         recreated.",
+    ),
 );
 
 /// Common rsync capabilities Foresight does **not** yet expose as a dedicated
@@ -155,23 +178,28 @@ pub const PATH_BEHAVIOR: (&str, &str) = (
 /// arguments* field, which passes them through verbatim.
 pub const NOT_EXPOSED: &[(&str, &str)] = &[
     (
-        "--checksum (-c)",
-        "Compare by checksum instead of size and modification time.",
-    ),
-    ("--compress (-z)", "Compress file data during the transfer."),
-    (
-        "--backup (-b)",
-        "Keep backups of files that get replaced or deleted.",
+        crate::i18n::gettext_noop("--checksum (-c)"),
+        crate::i18n::gettext_noop("Compare by checksum instead of size and modification time."),
     ),
     (
-        "--partial",
-        "Keep partially transferred files so a re-run can resume them.",
+        crate::i18n::gettext_noop("--compress (-z)"),
+        crate::i18n::gettext_noop("Compress file data during the transfer."),
     ),
     (
-        "--filter / merge files",
-        "rsync's fuller filter syntax: rules read from a file, and per-directory \
-         merge rules. Plain include and exclude rules are a control — see Filter \
-         rules above.",
+        crate::i18n::gettext_noop("--backup (-b)"),
+        crate::i18n::gettext_noop("Keep backups of files that get replaced or deleted."),
+    ),
+    (
+        crate::i18n::gettext_noop("--partial"),
+        crate::i18n::gettext_noop("Keep partially transferred files so a re-run can resume them."),
+    ),
+    (
+        crate::i18n::gettext_noop("--filter / merge files"),
+        crate::i18n::gettext_noop(
+            "rsync's fuller filter syntax: rules read from a file, and per-directory \
+             merge rules. Plain include and exclude rules are a control — see Filter \
+             rules above.",
+        ),
     ),
 ];
 

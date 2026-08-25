@@ -48,7 +48,7 @@ impl ChangeObject {
         let (order, name) = kind_meta(change.kind());
         *imp.display.borrow_mut() = display;
         imp.kind_order.set(order);
-        *imp.kind_name.borrow_mut() = name.to_string();
+        *imp.kind_name.borrow_mut() = name;
         imp.destructive.set(change.kind() == ChangeKind::Deleted);
         obj
     }
@@ -72,12 +72,13 @@ impl ChangeObject {
 }
 
 /// `(sort order, section heading)` for each change kind.
-fn kind_meta(kind: ChangeKind) -> (i32, &'static str) {
+fn kind_meta(kind: ChangeKind) -> (i32, String) {
+    use crate::i18n::i18n;
     match kind {
-        ChangeKind::Created => (0, "New"),
-        ChangeKind::Updated => (1, "Updated"),
-        ChangeKind::Attrs => (2, "Attributes only"),
-        ChangeKind::Deleted => (3, "Deleted"),
-        ChangeKind::Unchanged => (4, "Unchanged"),
+        ChangeKind::Created => (0, i18n("New")),
+        ChangeKind::Updated => (1, i18n("Updated")),
+        ChangeKind::Attrs => (2, i18n("Attributes only")),
+        ChangeKind::Deleted => (3, i18n("Deleted")),
+        ChangeKind::Unchanged => (4, i18n("Unchanged")),
     }
 }

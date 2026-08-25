@@ -14,29 +14,30 @@ use adw::prelude::*;
 use gtk::glib;
 
 use crate::capabilities::{Group, CAPABILITIES, NOT_EXPOSED, PATH_BEHAVIOR};
+use crate::i18n::{i18n, i18n_f};
 
 /// Build and present the capabilities dialog over `parent`.
 pub fn present(parent: &impl IsA<gtk::Widget>) {
     let dialog = adw::PreferencesDialog::builder()
-        .title("What Foresight Can Do")
+        .title(i18n("What Foresight Can Do"))
         .build();
 
     let page = adw::PreferencesPage::builder()
-        .title("Capabilities")
+        .title(i18n("Capabilities"))
         .icon_name("dialog-information-symbolic")
         .build();
 
     // One group per registry category, capability rows rendered from the table.
     for group in Group::ORDER {
         let pg = adw::PreferencesGroup::builder()
-            .title(group.title())
+            .title(i18n(group.title()))
             .build();
         for cap in CAPABILITIES.iter().filter(|c| c.group == group) {
             let row = adw::ActionRow::builder()
-                .title(cap.name)
-                .subtitle(format!(
+                .title(i18n(cap.name))
+                .subtitle(i18n_f(
                     "{}\nvia {} · man {}",
-                    cap.description, cap.control, cap.man_option
+                    &[&i18n(cap.description), &i18n(cap.control), cap.man_option],
                 ))
                 .subtitle_lines(0)
                 .build();
@@ -54,37 +55,41 @@ pub fn present(parent: &impl IsA<gtk::Widget>) {
 
     // The two concepts worth a plain-language explanation (folded in per plan).
     let concepts = adw::PreferencesGroup::builder()
-        .title("Good to know")
+        .title(i18n("Good to know"))
         .build();
-    concepts.add(&concept_row(PATH_BEHAVIOR.0, PATH_BEHAVIOR.1));
+    concepts.add(&concept_row(&i18n(PATH_BEHAVIOR.0), &i18n(PATH_BEHAVIOR.1)));
     concepts.add(&concept_row(
-        "Dry Run is always safe",
-        "Dry Run really runs rsync, but with --dry-run: nothing is written, moved, \
-         or deleted — even Move files and Mirror deletions are inert. It just lists \
-         the plan and records any deletions for the confirmation step.",
+        &i18n("Dry Run is always safe"),
+        &i18n(
+            "Dry Run really runs rsync, but with --dry-run: nothing is written, moved, \
+             or deleted — even Move files and Mirror deletions are inert. It just lists \
+             the plan and records any deletions for the confirmation step.",
+        ),
     ));
     concepts.add(&concept_row(
-        "How Mirror deletions stays safe",
-        "Mirror deletions (--delete) removes destination files that aren't in the \
-         source. It's off by default, offered only for a single-folder sync, and \
-         starting a sync with it on always re-runs a fresh dry run so the \
-         confirmation lists exactly what this transfer would remove. It only ever \
-         prunes the folders this transfer actually writes.",
+        &i18n("How Mirror deletions stays safe"),
+        &i18n(
+            "Mirror deletions (--delete) removes destination files that aren't in the \
+             source. It's off by default, offered only for a single-folder sync, and \
+             starting a sync with it on always re-runs a fresh dry run so the \
+             confirmation lists exactly what this transfer would remove. It only ever \
+             prunes the folders this transfer actually writes.",
+        ),
     ));
     page.add(&concepts);
 
     // The honest boundary: what isn't a dedicated control yet.
     let boundary = adw::PreferencesGroup::builder()
-        .title("Not yet a dedicated control")
-        .description(
+        .title(i18n("Not yet a dedicated control"))
+        .description(i18n(
             "Type any of these in Advanced → Extra arguments; Foresight \
-                      passes them straight through to rsync.",
-        )
+             passes them straight through to rsync.",
+        ))
         .build();
     for (flag, desc) in NOT_EXPOSED {
         let row = adw::ActionRow::builder()
-            .title(*flag)
-            .subtitle(*desc)
+            .title(i18n(flag))
+            .subtitle(i18n(desc))
             .subtitle_lines(0)
             .build();
         row.add_css_class("property");
@@ -94,11 +99,11 @@ pub fn present(parent: &impl IsA<gtk::Widget>) {
 
     // Version stamp + the bundled-engine reference action.
     let about = adw::PreferencesGroup::builder()
-        .title("This release")
-        .description(
+        .title(i18n("This release"))
+        .description(i18n(
             "The pinned rsync version is the behavior contract — these \
-                      capabilities describe exactly this build.",
-        )
+             capabilities describe exactly this build.",
+        ))
         .build();
 
     let app_row = adw::ActionRow::builder()
@@ -109,15 +114,15 @@ pub fn present(parent: &impl IsA<gtk::Widget>) {
     about.add(&app_row);
 
     let rsync_row = adw::ActionRow::builder()
-        .title("Bundled rsync")
+        .title(i18n("Bundled rsync"))
         .subtitle(bundled_rsync_version())
         .subtitle_selectable(true)
         .build();
     about.add(&rsync_row);
 
     let full = adw::ActionRow::builder()
-        .title("Full rsync options")
-        .subtitle("Show `rsync --help` from the bundled engine")
+        .title(i18n("Full rsync options"))
+        .subtitle(i18n("Show `rsync --help` from the bundled engine"))
         .activatable(true)
         .build();
     full.add_suffix(&gtk::Image::from_icon_name("go-next-symbolic"));
@@ -167,7 +172,7 @@ fn run_rsync(arg: &str) -> String {
                 stdout.into_owned()
             }
         }
-        Err(e) => format!("Could not run the bundled rsync: {e}"),
+        Err(e) => i18n_f("Could not run the bundled rsync: {}", &[&e.to_string()]),
     }
 }
 
@@ -194,7 +199,7 @@ fn present_full_options(parent: &impl IsA<gtk::Widget>) {
     toolbar.set_content(Some(&scroll));
 
     let dialog = adw::Dialog::builder()
-        .title("Full rsync options")
+        .title(i18n("Full rsync options"))
         .content_width(720)
         .content_height(600)
         .child(&toolbar)

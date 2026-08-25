@@ -48,17 +48,31 @@ pub enum EndpointError {
 
 impl fmt::Display for EndpointError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        use crate::i18n::{i18n, i18n_f};
         match self {
-            Self::MissingHost => write!(f, "no host given"),
+            Self::MissingHost => write!(f, "{}", i18n("no host given")),
             Self::MissingPathSeparator => write!(
                 f,
-                "a remote location needs a colon before the path, as in \
-                 user@host:/path"
+                "{}",
+                i18n(
+                    "a remote location needs a colon before the path, as in \
+                     user@host:/path"
+                )
             ),
-            Self::InvalidHost(h) => write!(f, "“{h}” is not a valid host name"),
-            Self::InvalidUser(u) => write!(f, "“{u}” is not a valid user name"),
-            Self::UnclosedBracket => write!(f, "the [ before an IPv6 address is never closed"),
-            Self::InvalidPort(p) => write!(f, "“{p}” is not a port number"),
+            Self::InvalidHost(h) => {
+                write!(f, "{}", i18n_f("“{}” is not a valid host name", &[h]))
+            }
+            Self::InvalidUser(u) => {
+                write!(f, "{}", i18n_f("“{}” is not a valid user name", &[u]))
+            }
+            Self::UnclosedBracket => write!(
+                f,
+                "{}",
+                i18n("the [ before an IPv6 address is never closed")
+            ),
+            Self::InvalidPort(p) => {
+                write!(f, "{}", i18n_f("“{}” is not a port number", &[p]))
+            }
         }
     }
 }

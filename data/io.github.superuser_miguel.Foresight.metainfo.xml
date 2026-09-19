@@ -94,6 +94,29 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="1.0.1" date="2026-09-18">
+      <description>
+        <p>Two fixes from a month of daily use, and a newer rsync.</p>
+        <ul>
+          <li>After a transfer to or from a remote machine, New Job left both
+          remote buttons greyed out, so no further job could be started without
+          restarting Foresight. Fixed.</li>
+          <li>An exclude rule that can never match is now pointed out. A rule
+          beginning with / is matched from the top of the transfer, not the top
+          of the disk, so a full path pasted as an exclude matched nothing — and
+          said nothing. With Move on, the folder it was meant to keep back was
+          moved along with everything else. Nothing was lost, but it was not
+          where you expected. Such a rule now shows a warning, and a Fix button
+          with the rule that was meant.</li>
+          <li>A dry run now reports what each filter rule matched, and names any
+          that matched nothing.</li>
+          <li>With Move on, Foresight checks first and asks before starting if
+          an exclude rule is not holding anything back.</li>
+          <li>The bundled rsync is now 3.5.0, which fixes a large number of
+          security issues.</li>
+        </ul>
+      </description>
+    </release>
     <release version="1.0.0" date="2026-08-10">
       <description>
         <p>Remote sync over SSH, and filter rules you can order. This is 1.0:

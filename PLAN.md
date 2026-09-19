@@ -6,6 +6,40 @@
 > behavior. When this plan and an ad-hoc idea conflict, this plan wins until
 > the plan itself is amended.
 
+## 0. Where things stand — read this first
+
+*Updated 2026-09-18. Keep this section current; it is the one place that says
+"now" — everything below it is either a decision, a record, or a fact.*
+
+**Released: v1.0.1** (signed tag `v1.0.1` = `56697fc`). Bundle on GitHub
+Releases; signed OSTree repo live at `superuser-miguel.github.io/foresight-repo`
+and verified with `flatpak remote-info`. Engine: rsync **3.5.0**. `main` is
+clean, pushed, CI green. **90 tests** (`cargo test --all`) + **53 headless
+widget checks** (`--features selftest`).
+
+**Nothing is in flight.** 1.0.1 is back in daily use; the next work comes from
+what that turns up. Known-open, in the order they'd be picked up:
+
+1. **The 1.0.1 UI has never been looked at.** Filter-rule warning rows, the Fix
+   button, the "matched nothing" banner and the Move confirmation are verified
+   headlessly and against real rsync, not by eye. Expect copy/layout changes.
+   None of that touches a format, so it needs no more than a patch release.
+2. **Screenshots** (the last open box in Milestone 5). Still the pre-1.0 set;
+   nothing shows remote sync's fingerprint dialog or the new rule warnings.
+   **No release needed** — metainfo references them by URL, so replacing the
+   files in `docs/screenshots/` and pushing updates the site and the listing.
+   `scripts/test-remote.sh start` gives real values for the remote shots.
+3. **Help body copy** — the group structure is settled, the prose still reads
+   like a first draft.
+4. Then the 2.0 thesis ("Beyond 1.0"), gated on portal-path persistence.
+
+**How to work here** (details in §7): dev builds run with
+`build-aux/run-dev.sh` and are **never installed** — the installed copy is the
+published one. Bumping rsync follows the three steps in the 1.0.1 milestone; the
+portal-path test is the one that matters. A release moves version numbers *and*
+prose: README status + roadmap, `docs/index.html`, the metainfo release note,
+and this section.
+
 ## 1. Charter
 
 A thin, modern GTK4/libadwaita frontend for rsync, distributed exclusively as
@@ -35,37 +69,55 @@ algorithm, Qt/other-desktop theming.
 App id is `io.github.superuser_miguel.Foresight` (named 2026-07-12; the
 `io.github.CHANGEME.RsyncGUI` working id was renamed everywhere in one commit).
 
-## 3. Repository layout (target)
+## 3. Repository layout
 
 ```
 .
 ├── PLAN.md
-├── io.github.superuser_miguel.Foresight.yml     # Flatpak manifest (in repo root)
+├── io.github.superuser_miguel.Foresight.yml          # DEV manifest: type:dir source,
+│                                                     #   --share=network build-arg
+├── io.github.superuser_miguel.Foresight.release.yml  # RELEASE manifest: git source pinned
+│                                                     #   tag+commit, offline, branch: stable
+├── cargo-sources.json                  # vendored crates for the offline release build
 ├── Cargo.toml                          # workspace root
-├── meson.build                         # drives blueprint + cargo + install
+├── meson.build                         # drives blueprint + cargo + install; owns the version
+├── build-aux/
+│   ├── cargo-build.sh                  # Meson → cargo bridge
+│   └── run-dev.sh                      # build + run the dev manifest WITHOUT installing (§7)
 ├── data/
-│   ├── io.github.superuser_miguel.Foresight.desktop.in
-│   ├── io.github.superuser_miguel.Foresight.metainfo.xml.in   # appstream (Phase 4)
+│   ├── …Foresight.desktop.in
+│   ├── …Foresight.metainfo.xml         # appstream; one <release> per version
+│   ├── foresight.gresource.xml
 │   └── icons/
 ├── crates/
-│   ├── rsync-events/           # ← pure parser crate, ALREADY WRITTEN
-│   │   ├── src/lib.rs          #    7/7 tests passing (cargo test)
-│   │   └── tests/fixtures_test.rs
-│   └── foresight/               # the GTK app crate (Milestone 1)
-│       └── src/
-│           ├── main.rs         # adw::Application entry point
-│           ├── window.rs       # #[template] composite for window.blp
-│           └── job.rs          # SyncJob: argv builder + gio::Subprocess
-├── src/ui/
-│   ├── window.blp              # ← starter skeleton ALREADY WRITTEN
-│   └── preview_row.blp
-├── reference/
-│   └── rsync_events.py         # executable spec of the parser (kept in sync)
+│   ├── rsync-events/                   # pure parser crate — NO gtk, ever
+│   │   ├── src/lib.rs                  #   itemize / progress2 / stats / filter-debug / ssh errors
+│   │   └── tests/fixtures_test.rs      #   9 fixture tests + 4 unit tests
+│   └── foresight/src/                  # the GTK app crate
+│       ├── main.rs                     # adw::Application entry; selftest hook
+│       ├── window.rs                   # composite template + ALL widget state + selftest checks
+│       ├── job.rs                      # Job → argv (build_argv), spawn_rsync, FilterRule,
+│       │                               #   TransferTop / dead_anchor
+│       ├── capabilities.rs, help.rs    # flag registry (test-enforced vs build_argv) + Help dialog
+│       ├── profiles.rs                 # presets — FROZEN format (Milestone 5)
+│       ├── endpoint.rs, ssh.rs, remote_dialog.rs   # remote sync: parsing, -e command, trust
+│       └── change_object.rs, log_object.rs         # list-model row objects
+├── src/ui/window.blp                   # all layout lives here
+├── reference/rsync_events.py           # executable spec of the parser — change both or neither
 ├── scripts/
-│   └── capture_fixtures.sh     # ← ALREADY WRITTEN
-└── tests/
-    └── fixtures/               # ← captured from real rsync 3.4.4 (shared)
+│   ├── capture_fixtures.sh             # regenerate tests/fixtures (read §7 before committing output)
+│   ├── publish-repo.sh                 # signed OSTree repo → foresight-repo (squashed force-push)
+│   └── test-remote.sh                  # throwaway sshd for driving remote sync by hand
+├── docs/                               # GitHub Pages site (index.html, screenshots/)
+├── .github/workflows/ci.yml            # fmt + clippy + test; Meson build; headless widget checks
+└── tests/fixtures/                     # captured from real rsync (3.4.4; filter-debug from 3.5.0)
 ```
+
+Git-ignored and regenerable: `target/` and `builddir/cargo-target/` (compiler
+output — these are what make the directory multi-GB; `cargo clean` is always
+safe), `build-dir*/`, `repo-release/`, `Foresight.flatpak`. Keep
+`.flatpak-builder/`: it is the module cache that makes a dev build one minute
+instead of ten.
 
 ## 4. Milestones
 
@@ -75,7 +127,7 @@ App id is `io.github.superuser_miguel.Foresight` (named 2026-07-12; the
 itemized changes (`%i %n%L`, including `*deleting` and symlink targets),
 `--info=progress2` updates (including `\r` framing and `ir-chk` scanning
 phase), `--stats` blocks, error lines, and exit codes via `classify_exit()`.
-All 7 integration tests pass (`cargo test`). `reference/rsync_events.py` is
+All 7 integration tests passed at M0 (9 as of 1.0.1). `reference/rsync_events.py` is
 a line-for-line Python spec of the same semantics — update both or neither.
 
 Remaining tasks:
@@ -363,7 +415,10 @@ permission without also updating this table and the manifest comment block.
 | `--talk-name=org.freedesktop.secrets` | absent | Add only if a remote *password* or key passphrase is ever stored in the keyring. Key-based auth through the agent needs nothing |
 | `--talk-name=org.freedesktop.Flatpak` / `flatpak-spawn` | **forbidden** | Defeats the sandbox; the engine is bundled precisely to avoid this |
 
-## 6. Facts learned from real rsync 3.4.4 (do not re-litigate)
+## 6. Facts learned from real rsync (do not re-litigate)
+
+*Items 1–10 were measured on 3.4.4 and nothing in the 3.5.0 release notes or a
+fresh fixture capture contradicts them; 11–12 were measured on 3.5.0.*
 
 These were discovered by building the pinned rsync and capturing transcripts
 (`tests/fixtures/`). The tests encode them.
@@ -463,8 +518,18 @@ cargo clippy -- -D warnings && cargo fmt --check
 # check a .blp compiles without building everything
 blueprint-compiler compile src/ui/window.blp > /dev/null
 
-# regenerate parser fixtures after bumping the rsync pin
-./scripts/capture_fixtures.sh /path/to/new/rsync && cargo test
+# re-capture parser fixtures after bumping the rsync pin — as a DRIFT CHECK.
+# The capture is not deterministic (mtimes, byte counts, temp paths), so two
+# value-asserting tests fail on any fresh capture. That is expected: diff the
+# output for FORMAT changes, then `git checkout tests/fixtures` unless a format
+# really moved. Commit only fixtures that are new or genuinely changed.
+./scripts/capture_fixtures.sh /path/to/new/rsync && git diff tests/fixtures
+
+# headless widget checks (what CI runs; needs the Meson-built gresource)
+cargo build --bin foresight --features selftest
+dbus-run-session -- env GDK_BACKEND=x11 XDG_CONFIG_HOME=<tmp> \
+    FORESIGHT_SELFTEST_DIR=<tmp> FORESIGHT_GRESOURCE=$PWD/builddir/foresight.gresource \
+    ./target/debug/foresight
 
 # regenerate vendored crates for offline/reproducible release builds after Cargo.lock changes
 python3 flatpak-cargo-generator.py Cargo.lock -o cargo-sources.json
@@ -491,3 +556,14 @@ Conventions and guardrails:
    `cargo-sources.json` vendoring before any public release build.
 6. Commit style: conventional-ish, imperative, one concern per commit;
    the manifest, PLAN.md table, and code change together atomically.
+7. `flatpak-builder` keeps its cache in the **current directory**. Any script
+   that calls it passes `--state-dir` (run-dev.sh pins the repo's;
+   publish-repo.sh uses a temp one on the same filesystem). The dev and release
+   manifests share that cache and prune each other, so the first dev build
+   after a release build is slow once.
+8. Widget sensitivity that answers to more than one thing (a run being live
+   *and* which side is remote) is **derived in one function from all of them**,
+   never set on entry and restored on exit. The 1.0.1 dead-window bug was a
+   lock with no unlock.
+9. A release is not done when the tag is pushed: §0 lists the prose that has
+   to move with the version numbers.

@@ -38,7 +38,11 @@ if [ "$build" = 1 ]; then
     echo "build-dir is emptied first. Full log: builddir-flatpak.log" >&2
     # --disable-rofiles-fuse: works whether or not FUSE is usable here.
     # Only the stage lines reach the terminal; everything goes to the log.
+    # --state-dir: flatpak-builder keeps its cache in the *current* directory
+    # by default, so running this from anywhere but the repo root would start a
+    # second, cold cache there (a full rsync rebuild) and leave it behind.
     if ! flatpak-builder --user --force-clean --disable-rofiles-fuse \
+        --state-dir="$HERE/.flatpak-builder" \
         "$BUILD_DIR" "$MANIFEST" 2>&1 | tee "$HERE/builddir-flatpak.log" \
         | grep --line-buffered -E '^(Building module|Cache hit|Starting build|Committing stage|Finishing|Pruning)' >&2
     then

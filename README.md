@@ -20,13 +20,13 @@ Rust · GTK4 · gtk4-rs · libadwaita · Blueprint · Meson · Flatpak, with rsy
 **3.5.0** bundled and version-pinned. See [`PLAN.md`](PLAN.md) for the phased
 build plan and the guardrails it holds to.
 
-> **Status: 1.0 — released and self-hosted.** Multi-source transfers, the grouped
+> **Status: 1.0.1 — released and self-hosted.** Multi-source transfers, the grouped
 > dry-run preview, live progress with a structured streaming log, cancel,
 > `--delete` with confirmation, the advanced flag set with saved presets, an
 > ordered include/exclude filter list, remote sync over SSH, and an in-app
 > capability inventory all
-> work today in a sandboxed Flatpak, covered by **82 tests** across the
-> workspace and **38 headless widget checks** — with
+> work today in a sandboxed Flatpak, covered by **90 tests** across the
+> workspace and **53 headless widget checks** — with
 > `rsync-events` staying UI-free. Installed from the project's own **GPG-signed
 > repository** so `flatpak update` works, with a standalone bundle on
 > [GitHub Releases](https://github.com/superuser-miguel/foresight/releases) for
@@ -86,6 +86,12 @@ Where Foresight aims to *win*, not just match:
     only JPEGs come across; put `build/` above `*.jpg` and nothing in `build/`
     does. Rules are passed whole, so `My Documents/` is one rule rather than
     two broken ones.
+    A rule that **cannot match** is pointed out before anything runs. A leading
+    `/` means the top of the *transfer*, not of the disk, so a full path pasted
+    as an exclude matches nothing — and rsync says nothing. The row says why and
+    offers the rule that was meant. After a **Dry Run** every rule shows what it
+    matched, and any that matched nothing is named. With **Move** on, Foresight
+    checks first and asks before starting if an exclude is holding nothing back.
   - **Extra arguments** — a free-text escape hatch for any other rsync switch.
 - **Remote sync over SSH** — push to, or pull from, a `user@host:/path` endpoint.
   Authentication uses the keys already in your desktop's **SSH agent**: the agent
@@ -311,6 +317,27 @@ complete and the saved formats stop moving. Both are now true.
       1.0 it is a compatibility promise, not an implementation detail. Every
       reader keeps reading all three encodings, so no saved rule set is ever
       lost to an upgrade — including ones written by the first release.
+
+### Shipped in 1.0.1
+
+Two findings from a month of daily use, and a newer engine.
+
+- [x] **New Job after a remote transfer** no longer leaves the remote buttons
+      greyed out with nothing to do but restart. The lock that guards the
+      endpoints *during* a run was never lifted after it.
+- [x] **Rules that match nothing are no longer silent.** rsync anchors a leading
+      `/` to the top of the transfer, so `/home/me/Photos/private` as an exclude
+      matches nothing, without a warning — and with Move on, the folder it was
+      meant to keep back moved with everything else. (Nothing was lost; it was
+      at the destination.) Two checks now, because they catch different things:
+      one by construction, before any run, with a **Fix** button; one by
+      evidence, from the dry run's `--debug=FILTER` report, which also catches a
+      valid rule that simply matches nothing *here*. A move whose exclude held
+      nothing back stops and asks. With a remote *source* only the first
+      applies — the far end does the filtering and reports nothing back.
+- [x] **rsync 3.5.0** bundled (was 3.4.4): 33 security fixes. Its output formats
+      are unchanged, and because it reworked path resolution it was run inside
+      the sandbox against real document-portal folders before shipping.
 
 ### After 1.0 — from a front-end to a backup app
 

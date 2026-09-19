@@ -223,7 +223,7 @@
     </div>
     <div class="card">
       <h3>Filter rules &amp; an escape hatch</h3>
-      <p>An ordered list of Include and Exclude patterns — rsync obeys the first rule that matches, so moving one up changes which wins. The Extra arguments field forwards any other rsync switch, tokenised — never through a shell.</p>
+      <p>An ordered list of Include and Exclude patterns — rsync obeys the first rule that matches, so moving one up changes which wins. A rule that can never match is flagged before you run, and a Dry Run shows what each one matched. The Extra arguments field forwards any other rsync switch, tokenised — never through a shell.</p>
     </div>
   </div>
 </section>
@@ -243,7 +243,8 @@
     <li class="done"><b>Excludes editor</b> — exclude rules as a managed list with per-rule removal, replacing the space-separated field that could not express a pattern containing a space.</li>
     <li class="done"><b>Include rules</b> — the exclude list became an <b>ordered filter list</b>: each rule is an Include or an Exclude and can be moved up or down. rsync applies the first rule that matches, so position is the meaning — an Include above a broader Exclude carves an exception out of it, and an Exclude above an Include shuts a subtree even to it.</li>
     <li class="done"><b>Remote sync over SSH</b> — push to or pull from a <code>user@host:/path</code> endpoint. Your keys come from the desktop's SSH agent, so none ever enters the sandbox and <code>~/.ssh</code> is never read; Foresight keeps its own <code>known_hosts</code> and shows you the fingerprint before trusting a machine for the first time. Either side may be remote, but not both — rsync refuses that. IPv6 link-local endpoints work, scope id and all.</li>
-    <li><b>A frozen preset format</b> — it has churned three times; 1.0 is the promise that it stops. Every reader keeps reading all three encodings, so no saved rule set is lost to an upgrade.</li>
+    <li class="done"><b>A frozen preset format</b> — it churned three times on the way; 1.0 is the promise that it stops. Every reader keeps reading all three encodings, so no saved rule set is lost to an upgrade.</li>
+    <li class="done"><b>1.0.1 — rules that match nothing are no longer silent</b> — a leading <code>/</code> in a filter rule means the top of the <em>transfer</em>, not of the disk, so a full path pasted as an exclude matches nothing and rsync says nothing. With Move on, the folder it was meant to keep back moved too. Foresight now flags such a rule before anything runs and offers the fix; a Dry Run shows what every rule matched; and a move whose exclude held nothing back stops and asks. Also: New Job after a remote transfer no longer leaves a dead window, and the bundled rsync is now 3.5.0 (33 security fixes).</li>
     <li><b>After 1.0 — durable jobs</b> — a named job that remembers its source <em>and</em> destination across restarts. The gate on everything below it: portal paths are handles rather than locations, so this gets solved through the documents portal, never by asking for your whole home directory.</li>
     <li><b>After 1.0 — scheduling &amp; run history</b> — &ldquo;every night&rdquo;, or &ldquo;when this drive appears&rdquo;, as generated systemd <em>user</em> timers and mount units, with a record of what ran, when, what changed and what failed. No daemon of Foresight&rsquo;s own, and scheduled runs keep the same dry-run-first discipline as interactive ones.</li>
     <li><b>After 1.0 — snapshot backups</b> (<code>--link-dest</code>) — hardlinked incremental trees, the thing that turns copies into backups. Still pure rsync.</li>

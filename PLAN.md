@@ -276,6 +276,33 @@ complete and the **formats stop moving**. Three things, and no more:
 - [ ] **Current screenshots**, and one pass confirming the Help still cannot
       lie (the registry test covers the flags; the prose is on us).
 
+### 1.0.1 — what the soak found  ✅ (2026-09-18)
+
+A month of daily use on 1.0. Patch-level: nothing advertised changed and the
+preset freeze held.
+
+- [x] **New Job after a remote run left a dead window.** The run lock set the
+      endpoint buttons insensitive and nothing lifted it. One owner now
+      (`refresh_action_sensitivity`) computes all four from (running, which side
+      is remote); the widget checks hold a real `Runner` to pin it.
+- [x] **Filter rules that silently match nothing** — §6 items 11–12 are the
+      measured facts. Defence by construction (`FilterRule::dead_anchor` +
+      `TransferTop`, a Fix button) and by evidence (`--debug=FILTER` →
+      `Event::Filter`, per-rule hit counts, a gate in front of Move). Remote
+      *source*: construction only, because a pull reports no hits.
+- [x] **rsync 3.5.0.** A version bump here is never just a pin: the procedure
+      that was followed, and should be again, is (1) read NEWS for the reporting
+      formats and BEHAVIOR CHANGES, (2) recapture fixtures and confirm only
+      values differ, (3) run the **bundled** binary in the sandbox against real
+      document-portal handles — `flatpak document-export` + `flatpak build
+      --filesystem=/run/user/$UID/doc` — since that FUSE mount is the only way
+      Foresight ever reaches a file.
+- [x] **`build-aux/run-dev.sh`** — dev builds run from build-dir, never
+      installed beside the published one (§7).
+
+Still open from that soak: nobody has yet *looked* at the new rows, banner and
+dialog — they are verified headlessly and against real rsync only.
+
 ### Beyond 1.0 — what a 2.0 would be
 
 A 2.0 is a change in what the app **is**, not a longer flag list. Today a job is

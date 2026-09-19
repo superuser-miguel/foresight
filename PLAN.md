@@ -421,9 +421,13 @@ These were discovered by building the pinned rsync and capturing transcripts
 Build, run, test:
 
 ```bash
-# full build + install (from repo root)
-flatpak-builder --user --install --force-clean build-dir io.github.superuser_miguel.Foresight.yml
-flatpak run io.github.superuser_miguel.Foresight
+# full build + run, NOT installed (from repo root). The installed Foresight is
+# the published one on `stable`; a dev build installed beside it lands on
+# `master`, steals the desktop icon, and makes the document portal fail with
+# "Multiple branches available". run-dev.sh is flatpak-builder --run plus the
+# document-portal mount, which --run leaves out.
+build-aux/run-dev.sh
+build-aux/run-dev.sh --no-build        # rerun the last build
 
 # parser tests + lint (host, no flatpak needed — the crate is pure)
 cargo test

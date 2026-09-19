@@ -189,10 +189,18 @@ the output-parsing contract is testable on its own — and
 ```sh
 flatpak install flathub org.gnome.Platform//49 org.gnome.Sdk//49 \
     org.freedesktop.Sdk.Extension.rust-stable//25.08
-flatpak-builder --user --install --force-clean build-dir \
-    io.github.superuser_miguel.Foresight.yml
-flatpak run io.github.superuser_miguel.Foresight
+build-aux/run-dev.sh                 # build the dev manifest and run it
+build-aux/run-dev.sh --no-build      # run the last build again
+build-aux/run-dev.sh rsync --version # the bundled engine
 ```
+
+`run-dev.sh` runs the build straight out of `build-dir`, in the sandbox the
+manifest describes, **without installing it**. That is deliberate. Installing a
+dev build (`flatpak-builder --install`) puts it on the `master` branch next to a
+published install on `stable`, where it takes over the desktop icon — and two
+branches of one app id make `xdg-document-portal` and a bare
+`flatpak run <id>` fail with "Multiple branches available". If you have no
+published install, `--install` is fine.
 
 ### Host (fast dev iteration)
 

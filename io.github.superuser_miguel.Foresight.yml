@@ -84,8 +84,8 @@ modules:
     sources:
       - type: git
         url: https://github.com/RsyncProject/rsync.git
-        tag: v3.4.4
-        commit: f26f747b8017b321d3776becc69f330dd889fa21
+        tag: v3.5.0
+        commit: 471e17dc0d68233db84db11be82c9f62f4661214
 
   # ---------------------------------------------------------------- openssh
   # NOT bundled — and it turns out we don't need to. Verified 2026-07-13: the

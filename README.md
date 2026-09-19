@@ -17,7 +17,7 @@ No shell strings are ever constructed, and the engine version is pinned — the
 version pin *is* the behaviour contract.
 
 Rust · GTK4 · gtk4-rs · libadwaita · Blueprint · Meson · Flatpak, with rsync
-**3.4.4** bundled and version-pinned. See [`PLAN.md`](PLAN.md) for the phased
+**3.5.0** bundled and version-pinned. See [`PLAN.md`](PLAN.md) for the phased
 build plan and the guardrails it holds to.
 
 > **Status: 1.0 — released and self-hosted.** Multi-source transfers, the grouped
@@ -97,7 +97,7 @@ Where Foresight aims to *win*, not just match:
   two controls lock each other out and say why. IPv6 link-local endpoints work,
   scope id and all.
 - **New Job** — clear the whole form for the next transfer in one click.
-- Ships as a **Flatpak** with rsync **3.4.4** bundled — **portals only, no host
+- Ships as a **Flatpak** with rsync **3.5.0** bundled — **portals only, no host
   filesystem access** by design.
 
 ## Power-user switches

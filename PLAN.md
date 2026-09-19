@@ -27,7 +27,7 @@ algorithm, Qt/other-desktop theming.
 | UI | GTK4 + libadwaita, **Blueprint** (`.blp`) files | Declarative, diff-friendly, the modern GNOME way; gtk-rs consumes them via composite templates |
 | Build | Meson driving cargo (GNOME Builder Rust-template pattern) + blueprint-compiler | Standard GNOME app pipeline |
 | Distribution | Flatpak only; dev happens inside the Flatpak | Environment = ship environment |
-| Engine | rsync pinned in the manifest (currently `v3.4.4`, commit `f26f747b…`) | The version pin **is** the output-format contract |
+| Engine | rsync pinned in the manifest (currently `v3.5.0`, commit `471e17dc…`) | The version pin **is** the output-format contract |
 | File access | Portals first (see §5); no blanket `--filesystem` holes | Sandbox integrity + user trust |
 | License | GPL-3.0-or-later | Matches rsync; project convention |
 | Parser | `crates/rsync-events` — lib crate, deps: `regex` + `once_cell` only, **no GTK** | Testable anywhere; the app crate depends on it, never the reverse |

@@ -200,6 +200,25 @@ _FILTER_RE = re.compile(
 
 _ERROR_RE = re.compile(r"^rsync(:| error:)")
 
+# ssh's own diagnostics, which share the stream on a remote transfer and carry
+# the *reason* it failed (rsync itself only says "unexplained error (code
+# 255)"). A short list of known-fatal lines, not "anything scary": routine
+# chatter such as `Warning: Permanently added …` must NOT be promoted.
+_SSH_ERROR_RE = re.compile(
+    r"^(Host key verification failed"
+    r"|Host key for .+ has changed"
+    r"|No .+ host key is known for"
+    r"|Permission denied"
+    r"|ssh:"
+    r"|Connection closed by"
+    r"|Connection timed out"
+    r"|kex_exchange_identification:"
+    r"|Bad configuration option:)"
+    # Unanchored on purpose: ssh pads this inside its @-banner.
+    r"|WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED"
+    # `user@host: Permission denied (publickey).`
+    r"|: Permission denied \(")
+
 
 def _int(s: str) -> int:
     return int(s.replace(",", ""))
@@ -318,7 +337,8 @@ class StreamParser:
         if ev is not None:
             return ev
         return Message(text=line.rstrip(),
-                       is_error=bool(_ERROR_RE.match(line)))
+                       is_error=bool(_ERROR_RE.match(line)
+                                     or _SSH_ERROR_RE.search(line)))
 
 # --------------------------------------------------------------------------
 # Exit-code translation for the UI

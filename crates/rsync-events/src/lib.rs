@@ -1,4 +1,4 @@
-//! rsync-events — parse rsync 3.4.x output into structured events.
+//! rsync-events — parse rsync 3.4.x / 3.5.x output into structured events.
 //!
 //! The pure, UI-free core of a GTK4/libadwaita rsync frontend. No GTK
 //! dependencies here, ever: this crate must stay testable on any host.
@@ -9,6 +9,11 @@
 //! rsync -a --info=progress2 --out-format='%i %n%L' SRC DST   # real run
 //! rsync -a -n -i --delete SRC DST                            # dry-run preview
 //! ```
+//!
+//! A preview that carries filter rules also gets `--debug=FILTER`, whose
+//! `[sender] hiding …` lines become [`Event::Filter`] — the evidence of which
+//! rules matched anything. They are extra lines, never a change to the two
+//! formats above.
 //!
 //! Whether `SRC` carries a trailing `/` is the app's choice and does not affect
 //! this contract — it only shifts where the paths in [`ItemizedChange`] are
@@ -25,8 +30,10 @@
 //! input can't override the contract. See `foresight::job::Job::build_argv`.
 //!
 //! Pinning the bundled rsync version pins these formats; this crate is tested
-//! against transcripts captured from rsync 3.4.4 (see `tests/fixtures/` at
-//! the workspace root). A Python reference implementation with identical
+//! against transcripts captured from rsync 3.4.4, plus a filter-debug one from
+//! 3.5.0, the version now bundled (see `tests/fixtures/` at the workspace
+//! root). The 3.4.4 → 3.5.0 bump changed none of these formats: a fresh 3.5.0
+//! capture differs only in timestamps, byte counts and temp paths. A Python reference implementation with identical
 //! semantics lives in `reference/rsync_events.py`.
 //!
 //! Typical wiring (gtk-rs): read stdout chunks from `gio::Subprocess` on the
@@ -189,11 +196,48 @@ pub struct Message {
     pub is_error: bool,
 }
 
+/// What a filter rule did to one path, as `--debug=FILTER` reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilterAction {
+    /// An exclude kept the sender from seeing the path — it will not transfer.
+    Hiding,
+    /// An include let the sender see it.
+    Showing,
+    /// An exclude shielded a destination path from `--delete`.
+    Protecting,
+    /// An include exposed a destination path to `--delete`.
+    Risking,
+}
+
+impl FilterAction {
+    /// Whether the rule behind this was an exclude (as opposed to an include).
+    pub fn is_exclude(self) -> bool {
+        matches!(self, Self::Hiding | Self::Protecting)
+    }
+}
+
+/// One `--debug=FILTER` line: a rule matched a path.
+///
+/// rsync stops at the first rule that matches a path, so these lines are the
+/// only evidence of which rules *did* anything — and a rule that never appears
+/// matched nothing, which is the whole reason to collect them. `pattern` is
+/// the rule exactly as it was given on the command line (rsync echoes it
+/// verbatim, leading `/` and trailing `/` included), so it can be compared
+/// with the argv that produced it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FilterMatch {
+    pub action: FilterAction,
+    pub is_dir: bool,
+    pub path: String,
+    pub pattern: String,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     Change(ItemizedChange),
     Progress(Progress),
     Message(Message),
+    Filter(FilterMatch),
 }
 
 // ---------------------------------------------------------------------------
@@ -212,6 +256,18 @@ static DELETING_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\*deleting\s+(?P<pa
 static PROGRESS_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
         r"^\s*(?P<bytes>[\d,]+)\s+(?P<pct>\d+)%\s+(?P<rate>[\d.,]+\S+/s)\s+(?P<elapsed>[\d:]+)(?:\s+\(xfr#(?P<xfr>\d+),\s+(?P<phase>to-chk|ir-chk)=(?P<rem>\d+)/(?P<tot>\d+)\))?\s*$",
+    )
+    .unwrap()
+});
+
+/// `[sender] hiding directory Photos/private because of pattern private`.
+///
+/// `path` is greedy so the split lands on the *last* " because of pattern ":
+/// a path may contain anything, and of the two a pattern holding that phrase
+/// is the less likely.
+static FILTER_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"^\[(?:sender|generator|receiver|server|client)\] (?P<action>hiding|showing|protecting|risking) (?P<kind>file|directory) (?P<path>.*) because of pattern (?P<pattern>.*)$",
     )
     .unwrap()
 });
@@ -280,6 +336,20 @@ pub fn parse_itemize_line(line: &str) -> Option<ItemizedChange> {
         path: c["path"].to_string(),
         link_target: c.name("target").map(|m| m.as_str().to_string()),
         deleted: false,
+    })
+}
+
+pub fn parse_filter_line(line: &str) -> Option<FilterMatch> {
+    FILTER_RE.captures(line).map(|c| FilterMatch {
+        action: match &c["action"] {
+            "hiding" => FilterAction::Hiding,
+            "showing" => FilterAction::Showing,
+            "protecting" => FilterAction::Protecting,
+            _ => FilterAction::Risking,
+        },
+        is_dir: &c["kind"] == "directory",
+        path: c["path"].to_string(),
+        pattern: c["pattern"].to_string(),
     })
 }
 
@@ -415,6 +485,9 @@ impl StreamParser {
         }
         if let Some(c) = parse_itemize_line(line) {
             return Some(Event::Change(c));
+        }
+        if let Some(f) = parse_filter_line(line) {
+            return Some(Event::Filter(f));
         }
         Some(Event::Message(Message {
             text: line.trim_end().to_string(),

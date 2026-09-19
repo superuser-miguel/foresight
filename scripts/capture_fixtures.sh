@@ -50,8 +50,21 @@ head -c 600000 /dev/urandom > "$LAB/src/media/bonus.bin"
 $R -a --stats "$LAB/src/" "$LAB/dst/" > "$FIX/stats_run.txt" 2>&1
 
 # 5. error transcript + exit code (missing source)
+#    `|| rc=$?`, not `|| true`: the latter records true's exit status, 0.
+rc=0
 $R -a "$LAB/nope-does-not-exist/" "$LAB/dst/" \
-    > "$FIX/error_missing_source.txt" 2>&1 || true
-echo "exit=$?" >> "$FIX/error_missing_source.txt"
+    > "$FIX/error_missing_source.txt" 2>&1 || rc=$?
+echo "exit=$rc" >> "$FIX/error_missing_source.txt"
+
+# 6. filter debug — which rule matched which path (the dead-rule check).
+#    Covers an exclude that hides a directory, one that hides a file, an
+#    include, a pattern with a space, and `/nomatch`: an anchored rule that
+#    matches nothing and must therefore leave NO line behind.
+mkdir -p "$LAB/f/Photos/keep" "$LAB/f/Photos/private" "$LAB/f/Photos/my cache" "$LAB/fdst"
+echo a > "$LAB/f/Photos/keep/a.jpg"; echo r > "$LAB/f/Photos/keep/r.raw"
+echo b > "$LAB/f/Photos/private/b.jpg"; echo z > "$LAB/f/Photos/my cache/z.tmp"
+$R -a --exclude=private --exclude=/nomatch '--exclude=my cache/' \
+    '--include=*.jpg' '--exclude=*.raw' --debug=FILTER -n -i \
+    "$LAB/f/Photos" "$LAB/fdst/" > "$FIX/dry_run_filter_debug.txt" 2>&1
 
 echo "fixtures written to $FIX — now run: python3 -m pytest tests/"

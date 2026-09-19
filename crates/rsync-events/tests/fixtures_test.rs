@@ -179,3 +179,63 @@ fn error_transcript_and_exit_code() {
     assert_eq!(classify_exit(0).0, Severity::Success);
     assert_eq!(classify_exit(255).0, Severity::Error);
 }
+
+#[test]
+fn filter_debug_lines_name_the_rule_that_matched() {
+    use rsync_events::{FilterAction, FilterMatch};
+
+    // Chunked at an awkward size: these lines are long, and a split must not
+    // turn half of one into a Message.
+    let evs = events_of(&load("dry_run_filter_debug.txt"), 7);
+    let hits: Vec<&FilterMatch> = evs
+        .iter()
+        .filter_map(|e| match e {
+            Event::Filter(f) => Some(f),
+            _ => None,
+        })
+        .collect();
+
+    let find = |pattern: &str| hits.iter().find(|f| f.pattern == pattern);
+
+    let private = find("private").expect("the bare-name exclude matched");
+    assert_eq!(private.action, FilterAction::Hiding);
+    assert!(private.is_dir);
+    assert_eq!(private.path, "Photos/private");
+
+    // The pattern comes back verbatim — trailing slash and interior space —
+    // because the app matches it against the rule it put in argv.
+    let cache = find("my cache/").expect("the spaced pattern matched");
+    assert_eq!(cache.path, "Photos/my cache");
+
+    let raw = find("*.raw").expect("the file exclude matched");
+    assert!(!raw.is_dir);
+    assert!(raw.action.is_exclude());
+
+    let jpg = find("*.jpg").expect("the include matched");
+    assert_eq!(jpg.action, FilterAction::Showing);
+    assert!(!jpg.action.is_exclude());
+
+    // The point of the exercise: a rule that matched nothing leaves no line.
+    assert!(find("/nomatch").is_none());
+
+    // And the debug lines displace nothing: the itemized changes still parse.
+    assert_eq!(changes(&evs).len(), 3);
+    assert!(!evs.iter().any(|e| matches!(e, Event::Message(_))));
+}
+
+#[test]
+fn filter_line_splits_on_the_last_because_of_pattern() {
+    use rsync_events::{parse_filter_line, FilterAction};
+
+    let f = parse_filter_line(
+        "[generator] protecting directory a because of pattern b/x because of pattern x",
+    )
+    .unwrap();
+    assert_eq!(f.action, FilterAction::Protecting);
+    assert_eq!(f.path, "a because of pattern b/x");
+    assert_eq!(f.pattern, "x");
+
+    // Near-misses stay Messages rather than becoming phantom rule hits.
+    assert!(parse_filter_line("[sender] pushing local filters for /tmp/x/").is_none());
+    assert!(parse_filter_line("hiding file a because of pattern b").is_none());
+}

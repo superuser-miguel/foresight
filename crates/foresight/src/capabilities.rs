@@ -69,6 +69,20 @@ pub const CAPABILITIES: &[Capability] = &[
         group: Group::Reporting,
     },
     Capability {
+        name: "Which filter rule matched what",
+        flags: &["--debug"],
+        control: "Dry Run, when the job has filter rules and a local source",
+        description: "The dry run asks rsync to report every path a filter rule \
+                      matched (--debug=FILTER), so a rule that matched nothing can \
+                      be flagged. A mistyped exclude is otherwise silent, and with \
+                      Move on, silent means the folder it was meant to hold back \
+                      leaves the source — so that case asks before it starts. Not \
+                      available when the source is remote: the far end does the \
+                      hiding and reports nothing back.",
+        man_option: "--debug",
+        group: Group::Reporting,
+    },
+    Capability {
         name: "Live progress & per-file output",
         flags: &["--info", "--out-format"],
         control: "Transfer page (every sync)",

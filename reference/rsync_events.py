@@ -1,4 +1,4 @@
-"""rsync_events — parse rsync 3.4.x output into structured events.
+"""rsync_events — parse rsync 3.4.x / 3.5.x output into structured events.
 
 Designed as the pure, UI-free core of a GTK4/libadwaita rsync frontend.
 
@@ -153,7 +153,26 @@ class Message:
     is_error: bool = False
 
 
-Event = Union[ItemizedChange, Progress, Stats, Message]
+@dataclass(frozen=True)
+class FilterMatch:
+    """One ``--debug=FILTER`` line: a filter rule matched a path.
+
+    rsync stops at the first rule that matches, so these lines are the only
+    evidence of which rules did anything; a rule that never appears matched
+    nothing. ``pattern`` is the rule verbatim as given on the command line.
+    ``action`` is one of hiding / showing / protecting / risking — hiding and
+    protecting come from an exclude, the other two from an include."""
+    action: str
+    is_dir: bool
+    path: str
+    pattern: str
+
+    @property
+    def is_exclude(self) -> bool:
+        return self.action in ("hiding", "protecting")
+
+
+Event = Union[ItemizedChange, Progress, Stats, Message, FilterMatch]
 
 # --------------------------------------------------------------------------
 # Line parsers
@@ -171,6 +190,13 @@ _PROGRESS_RE = re.compile(
     r"(?:\s+\(xfr#(?P<xfr>\d+),\s+(?P<phase>to-chk|ir-chk)="
     r"(?P<rem>\d+)/(?P<tot>\d+)\))?\s*$"
 )
+
+# `[sender] hiding directory Photos/private because of pattern private`.
+# `path` is greedy so the split lands on the LAST " because of pattern ".
+_FILTER_RE = re.compile(
+    r"^\[(?:sender|generator|receiver|server|client)\] "
+    r"(?P<action>hiding|showing|protecting|risking) (?P<kind>file|directory) "
+    r"(?P<path>.*) because of pattern (?P<pattern>.*)$")
 
 _ERROR_RE = re.compile(r"^rsync(:| error:)")
 
@@ -190,6 +216,14 @@ def parse_itemize_line(line: str) -> Optional[ItemizedChange]:
                               path=m.group("path"),
                               link_target=m.group("target"))
     return None
+
+
+def parse_filter_line(line: str) -> Optional[FilterMatch]:
+    m = _FILTER_RE.match(line)
+    if not m:
+        return None
+    return FilterMatch(action=m["action"], is_dir=m["kind"] == "directory",
+                       path=m["path"], pattern=m["pattern"])
 
 
 def parse_progress_line(line: str) -> Optional[Progress]:
@@ -278,6 +312,9 @@ class StreamParser:
         if ev is not None:
             return ev
         ev = parse_itemize_line(line)
+        if ev is not None:
+            return ev
+        ev = parse_filter_line(line)
         if ev is not None:
             return ev
         return Message(text=line.rstrip(),

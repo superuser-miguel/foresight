@@ -20,7 +20,7 @@ use crate::change_object::ChangeObject;
 use crate::endpoint::Endpoint;
 use crate::job::{
     argv_display, spawn_rsync, Completion, FilterKind, FilterRule, Job, Mode, Remote, Runner,
-    Source,
+    Source, TransferTop,
 };
 use crate::log_object::LogObject;
 use crate::profiles::{self, Profile};
@@ -33,6 +33,23 @@ pub struct SourceEntry {
     path: PathBuf,
     is_dir: bool,
     row: adw::ActionRow,
+}
+
+/// How many paths one filter rule matched in a dry run, by side. The sides are
+/// kept apart because they answer different questions: only a *source* match
+/// holds a file back from the transfer, and so from `--remove-source-files`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RuleHits {
+    /// Paths the sender hid or showed — what the rule did to the transfer.
+    source: u64,
+    /// Destination paths it protected from, or exposed to, `--delete`.
+    dest: u64,
+}
+
+impl RuleHits {
+    fn total(self) -> u64 {
+        self.source + self.dest
+    }
 }
 
 /// Which side of the transfer the remote endpoint sits on.
@@ -144,6 +161,14 @@ mod imp {
         pub run_errors: RefCell<Vec<String>>,
         /// Deletions itemized by the most recent dry run (for confirmation).
         pub deletions: RefCell<Vec<String>>,
+        /// What each filter rule matched in the most recent dry run, beside the
+        /// rules it ran with. Evidence about *those* rules only: it is shown
+        /// while the list still equals that snapshot, and dropped when the
+        /// sources change, since either makes it a claim about some other job.
+        pub filter_hits: RefCell<Option<(Vec<FilterRule>, Vec<RuleHits>)>>,
+        /// The banner is currently the matched-nothing notice (as opposed to a
+        /// run result), so editing the rules may take it down.
+        pub filter_banner: Cell<bool>,
 
         /// Saved Advanced-option presets, in combo order.
         pub profiles: RefCell<Vec<Profile>>,
@@ -292,6 +317,17 @@ impl ForesightWindow {
             }
         ));
         imp.dest_row.add_controller(dest_drop);
+
+        // "Copy contents" moves what a leading `/` is anchored to, so a rule
+        // can go from matching to dead (or back) on this switch alone.
+        imp.contents_row.connect_active_notify(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_| {
+                win.imp().filter_hits.replace(None);
+                win.rebuild_filter_rows();
+            }
+        ));
 
         self.refresh_sources_state();
     }
@@ -516,8 +552,9 @@ impl ForesightWindow {
         // would be missed on the Configure page and noticed on the far machine.
         *imp.dest.borrow_mut() = None;
         *imp.remote.borrow_mut() = None;
-        imp.dest_row.set_subtitle("Not selected");
-        imp.dest_row.set_tooltip_text(None);
+        // Repaint from the cleared state: the row title, its icon and the two
+        // remote buttons' tooltips all still describe the old endpoint.
+        self.refresh_remote_state();
         imp.contents_row.set_active(false);
         imp.delete_row.set_active(false);
 
@@ -749,12 +786,11 @@ impl ForesightWindow {
             }
         }
 
-        // One side at a time. The tooltip says why, so a disabled button is an
-        // explanation rather than a dead end.
+        // One side at a time (refresh_action_sensitivity enforces it). The
+        // tooltip says why, so a disabled button is an explanation rather than
+        // a dead end.
         let source_is_remote = matches!(remote, Some((RemoteSide::Source, _)));
         let dest_is_remote = matches!(remote, Some((RemoteSide::Dest, _)));
-        imp.add_remote_source_button.set_sensitive(!dest_is_remote);
-        imp.remote_dest_button.set_sensitive(!source_is_remote);
         imp.add_remote_source_button
             .set_tooltip_text(Some(if dest_is_remote {
                 "The destination is already remote — rsync cannot have both ends on other machines"
@@ -827,12 +863,69 @@ impl ForesightWindow {
             return false;
         }
 
-        imp.filters.borrow_mut().push(FilterRule {
+        let rule = FilterRule {
             kind,
             pattern: pattern.to_string(),
-        });
+        };
+        let dead = rule.dead_anchor(&self.transfer_top()).is_some();
+        imp.filters.borrow_mut().push(rule);
         self.rebuild_filter_rows();
+        if dead {
+            // Added anyway — the row carries the explanation and the fix — but
+            // said out loud, because the list may be scrolled out of view.
+            self.toast(&format!("“{pattern}” can never match — see the rule"));
+        }
         true
+    }
+
+    /// What a leading `/` in a pattern is anchored to, for the job as it stands.
+    fn transfer_top(&self) -> TransferTop {
+        let imp = self.imp();
+        let sources: Vec<Source> = imp
+            .sources
+            .borrow()
+            .iter()
+            .map(|s| Source {
+                path: s.path.clone(),
+                is_dir: s.is_dir,
+            })
+            .collect();
+        let remote = self.remote_on(RemoteSide::Source);
+        TransferTop::new(
+            &sources,
+            remote.as_ref().map(|e| e.path.as_str()),
+            imp.contents_row.is_active(),
+        )
+    }
+
+    /// Replace the rule at `index` with the pattern that was evidently meant.
+    fn apply_filter_fix(&self, index: usize, pattern: &str) {
+        let imp = self.imp();
+        {
+            let mut filters = imp.filters.borrow_mut();
+            let Some(kind) = filters.get(index).map(|r| r.kind) else {
+                return;
+            };
+            // The corrected rule may already be in the list; then the dead one
+            // is simply surplus.
+            if filters
+                .iter()
+                .any(|r| r.kind == kind && r.pattern == pattern)
+            {
+                filters.remove(index);
+            } else {
+                filters[index].pattern = pattern.to_string();
+            }
+        }
+        self.rebuild_filter_rows();
+    }
+
+    /// The last dry run's hit counts, if they still describe the current rules.
+    fn current_filter_hits(&self) -> Option<Vec<RuleHits>> {
+        let imp = self.imp();
+        let hits = imp.filter_hits.borrow();
+        let (rules, counts) = hits.as_ref()?;
+        (*rules == *imp.filters.borrow()).then(|| counts.clone())
     }
 
     fn remove_filter(&self, index: usize) {
@@ -888,15 +981,70 @@ impl ForesightWindow {
         // borrow if any of it reaches back into these handlers.
         let rules = imp.filters.borrow().clone();
         let last = rules.len().saturating_sub(1);
+        let top = self.transfer_top();
+        let hits = self.current_filter_hits();
+        // The rules changed under a matched-nothing notice: it no longer
+        // describes them.
+        if hits.is_none() && imp.filter_banner.replace(false) {
+            imp.result_banner.set_revealed(false);
+        }
         for (index, rule) in rules.iter().enumerate() {
+            // Two ways to know a rule does nothing: by construction (its anchor
+            // cannot exist in this transfer), or by evidence (a dry run ran
+            // with it and it matched no path). The first needs no run at all.
+            let dead_anchor = rule.dead_anchor(&top);
+            let verdict = match (&dead_anchor, hits.as_ref().and_then(|h| h.get(index))) {
+                (Some(_), _) => Some((
+                    true,
+                    "can never match: a leading / is the top of the transfer, not of the disk"
+                        .to_string(),
+                )),
+                (None, Some(h)) if h.total() == 0 => {
+                    Some((true, "matched nothing in the last dry run".to_string()))
+                }
+                (None, Some(h)) => Some((
+                    false,
+                    match h.total() {
+                        1 => "matched 1 path in the last dry run".to_string(),
+                        n => format!("matched {n} paths in the last dry run"),
+                    },
+                )),
+                (None, None) => None,
+            };
+            let warn = verdict.as_ref().is_some_and(|(warn, _)| *warn);
+
+            let mut subtitle = format!("{} ({})", rule.kind.label(), rule.kind.flag());
+            if let Some((_, note)) = &verdict {
+                subtitle.push_str(" · ");
+                subtitle.push_str(note);
+            }
             let row = adw::ActionRow::builder()
                 .title(glib::markup_escape_text(&rule.pattern))
-                .subtitle(format!("{} ({})", rule.kind.label(), rule.kind.flag()))
+                .subtitle(glib::markup_escape_text(&subtitle))
                 .build();
-            row.add_prefix(&gtk::Image::from_icon_name(match rule.kind {
-                FilterKind::Include => "object-select-symbolic",
-                FilterKind::Exclude => "action-unavailable-symbolic",
-            }));
+            let icon = gtk::Image::from_icon_name(match (warn, rule.kind) {
+                (true, _) => "dialog-warning-symbolic",
+                (false, FilterKind::Include) => "object-select-symbolic",
+                (false, FilterKind::Exclude) => "action-unavailable-symbolic",
+            });
+            if warn {
+                icon.add_css_class("warning");
+            }
+            row.add_prefix(&icon);
+
+            if let Some(suggestion) = dead_anchor.and_then(|d| d.suggestion) {
+                let fix = gtk::Button::builder()
+                    .label("Fix")
+                    .tooltip_text(format!("Change to {suggestion}"))
+                    .valign(gtk::Align::Center)
+                    .build();
+                fix.connect_clicked(glib::clone!(
+                    #[weak(rename_to = win)]
+                    self,
+                    move |_| win.apply_filter_fix(index, &suggestion)
+                ));
+                row.add_suffix(&fix);
+            }
 
             let up = gtk::Button::builder()
                 .icon_name("go-up-symbolic")
@@ -951,11 +1099,42 @@ impl ForesightWindow {
     fn refresh_filters_state(&self) {
         let imp = self.imp();
         let n = imp.filters.borrow().len();
-        imp.filters_row.set_subtitle(&match n {
+        let mut subtitle = match n {
             0 => "Skip or keep paths by pattern (--exclude / --include)".to_string(),
             1 => "1 rule".to_string(),
             n => format!("{n} rules · the first one that matches wins"),
-        });
+        };
+        // Visible with the expander shut: a rule that does nothing is the one
+        // thing about this list that must not need opening it to find out.
+        let idle = self.idle_rules().len();
+        if idle > 0 {
+            subtitle.push_str(&match idle {
+                1 => " · 1 matches nothing".to_string(),
+                k => format!(" · {k} match nothing"),
+            });
+        }
+        imp.filters_row.set_subtitle(&subtitle);
+    }
+
+    /// Indices of the rules known to do nothing — dead by construction, or
+    /// shown to match no path by a dry run that still describes this job.
+    fn idle_rules(&self) -> Vec<usize> {
+        let top = self.transfer_top();
+        let hits = self.current_filter_hits();
+        self.imp()
+            .filters
+            .borrow()
+            .iter()
+            .enumerate()
+            .filter(|(i, rule)| {
+                rule.dead_anchor(&top).is_some()
+                    || hits
+                        .as_ref()
+                        .and_then(|h| h.get(*i))
+                        .is_some_and(|h| h.total() == 0)
+            })
+            .map(|(i, _)| i)
+            .collect()
     }
 
     fn choose_dest(&self) {
@@ -1030,11 +1209,12 @@ impl ForesightWindow {
         }
         drop(sources);
 
-        // Local sources and a remote source are alternatives, not a mix.
-        let local_allowed = remote_source.is_none() && !self.is_running();
-        imp.add_folder_button.set_sensitive(local_allowed);
-        imp.add_file_button.set_sensitive(local_allowed);
+        // A different set of sources re-anchors every `/pattern`, and makes the
+        // last dry run's hit counts evidence about some other job.
+        imp.filter_hits.replace(None);
+        self.rebuild_filter_rows();
 
+        // The add buttons are refresh_action_sensitivity's to set.
         self.refresh_action_sensitivity();
     }
 
@@ -1302,22 +1482,34 @@ impl ForesightWindow {
         imp.preview_button.set_sensitive(idle_ready);
         imp.start_button.set_sensitive(idle_ready);
         imp.cancel_button.set_sensitive(running);
-        // The local add buttons also answer to whether a remote source has
-        // taken over, so refresh_sources_state owns them; only the run lock is
-        // applied here.
-        if running {
-            imp.add_folder_button.set_sensitive(false);
-            imp.add_file_button.set_sensitive(false);
-            imp.add_remote_source_button.set_sensitive(false);
-            imp.remote_dest_button.set_sensitive(false);
-        }
+        // The four endpoint buttons answer to two things at once — the run lock
+        // and which side, if any, is remote — so they are computed here from
+        // both, every time. Setting only the lock would leave nothing to lift
+        // it when the run ends.
+        let source_is_remote = self.remote_on(RemoteSide::Source).is_some();
+        let dest_is_remote = self.remote_on(RemoteSide::Dest).is_some();
+        // Local sources and a remote source are alternatives, not a mix.
+        let local_allowed = !source_is_remote && !running;
+        imp.add_folder_button.set_sensitive(local_allowed);
+        imp.add_file_button.set_sensitive(local_allowed);
+        // One remote side at a time: rsync refuses a job remote at both ends.
+        imp.add_remote_source_button
+            .set_sensitive(!dest_is_remote && !running);
+        imp.remote_dest_button
+            .set_sensitive(!source_is_remote && !running);
     }
 
     fn on_start_clicked(&self) {
         let Some(job) = self.current_job() else {
             return;
         };
-        if job.delete {
+        // A move deletes from the source whatever transfers, so an exclude that
+        // silently matches nothing is how a folder meant to stay put leaves.
+        // The dry run is what can tell, so such a job always gets one first.
+        let move_with_excludes = job.remove_source_files
+            && job.reports_filter_hits()
+            && job.filters.iter().any(|r| r.kind == FilterKind::Exclude);
+        if job.delete || move_with_excludes {
             // Always run a fresh dry run so the confirmation lists exactly the
             // deletions this sync will perform.
             self.run_preview(true);
@@ -1338,6 +1530,13 @@ impl ForesightWindow {
         imp.result_banner.set_revealed(false);
         imp.run_errors.borrow_mut().clear();
         imp.deletions.borrow_mut().clear();
+        imp.filter_banner.set(false);
+        imp.filter_hits.replace(job.reports_filter_hits().then(|| {
+            (
+                job.filters.clone(),
+                vec![RuleHits::default(); job.filters.len()],
+            )
+        }));
         if let Some(store) = imp.preview_store.get() {
             store.remove_all();
         }
@@ -1375,6 +1574,24 @@ impl ForesightWindow {
                     store.append(&ChangeObject::new(&change));
                 }
             }
+            Event::Filter(f) => {
+                if let Some((rules, counts)) = imp.filter_hits.borrow_mut().as_mut() {
+                    // rsync echoes the pattern verbatim, and the list refuses an
+                    // exact (kind, pattern) repeat, so this finds one rule.
+                    let hit = rules.iter().position(|r| {
+                        (r.kind == FilterKind::Exclude) == f.action.is_exclude()
+                            && r.pattern == f.pattern
+                    });
+                    if let Some(i) = hit {
+                        use rsync_events::FilterAction::{Hiding, Showing};
+                        if matches!(f.action, Hiding | Showing) {
+                            counts[i].source += 1;
+                        } else {
+                            counts[i].dest += 1;
+                        }
+                    }
+                }
+            }
             Event::Message(m) if m.is_error => imp.run_errors.borrow_mut().push(m.text),
             Event::Message(_) | Event::Progress(_) => {}
         }
@@ -1395,12 +1612,102 @@ impl ForesightWindow {
             self.show_banner(&completion.message);
         }
 
+        // The hit counts are complete now; let the rule rows show them.
+        self.rebuild_filter_rows();
+
         if then_confirm_start {
-            self.confirm_deletions_then_sync();
+            self.confirm_idle_excludes_then_sync();
         } else {
             let n = imp.preview_store.get().map(|s| s.n_items()).unwrap_or(0);
             self.toast(&format!("Preview: {n} change(s)"));
+            let idle = self.idle_rules();
+            if !idle.is_empty() {
+                let filters = imp.filters.borrow();
+                let names: Vec<&str> = idle.iter().map(|&i| filters[i].pattern.as_str()).collect();
+                let banner = imp.result_banner.get();
+                banner.set_title(&match names.len() {
+                    1 => format!("A filter rule matched nothing: {}", names[0]),
+                    n => format!("{n} filter rules matched nothing: {}", names.join(", ")),
+                });
+                banner.set_button_label(None);
+                banner.set_revealed(true);
+                imp.filter_banner.set(true);
+            }
         }
+    }
+
+    /// Excludes that held nothing back in the source. `dest` hits do not count:
+    /// protecting a destination path keeps no file out of the transfer.
+    fn idle_source_excludes(&self) -> Vec<String> {
+        let Some(hits) = self.current_filter_hits() else {
+            return Vec::new();
+        };
+        self.imp()
+            .filters
+            .borrow()
+            .iter()
+            .zip(hits)
+            .filter(|(rule, h)| rule.kind == FilterKind::Exclude && h.source == 0)
+            .map(|(rule, _)| rule.pattern.clone())
+            .collect()
+    }
+
+    /// The gate in front of a move: if an exclude matched nothing, say so and
+    /// make going on a decision. Then the deletion confirmation, as before.
+    fn confirm_idle_excludes_then_sync(&self) {
+        let idle = if self.imp().remove_source_row.is_active() {
+            self.idle_source_excludes()
+        } else {
+            Vec::new()
+        };
+        if idle.is_empty() {
+            self.confirm_deletions_then_sync();
+            return;
+        }
+
+        let heading = match idle.len() {
+            1 => "An exclude rule matched nothing".to_string(),
+            n => format!("{n} exclude rules matched nothing"),
+        };
+        let body = format!(
+            "{}\n\nNothing is being held back by {}, so whatever {} meant to keep \
+             in the source will be moved with everything else — and a move deletes \
+             each file from the source once it has transferred.\n\nThe Preview \
+             lists exactly what will move.",
+            idle.join("\n"),
+            if idle.len() == 1 {
+                "this rule"
+            } else {
+                "these rules"
+            },
+            if idle.len() == 1 {
+                "it was"
+            } else {
+                "they were"
+            },
+        );
+        let dialog = adw::AlertDialog::builder()
+            .heading(heading)
+            .body(body)
+            .build();
+        dialog.add_response("cancel", "Cancel");
+        dialog.add_response("move", "Move Anyway");
+        dialog.set_response_appearance("move", adw::ResponseAppearance::Destructive);
+        dialog.set_default_response(Some("cancel"));
+        dialog.set_close_response("cancel");
+        dialog.connect_response(
+            None,
+            glib::clone!(
+                #[weak(rename_to = win)]
+                self,
+                move |_, response| {
+                    if response == "move" {
+                        win.confirm_deletions_then_sync();
+                    }
+                }
+            ),
+        );
+        dialog.present(Some(self));
     }
 
     fn run_sync(&self) {
@@ -1465,6 +1772,8 @@ impl ForesightWindow {
                 }
                 self.log_push(LogObject::message(&m));
             }
+            // Only the dry run asks for these.
+            Event::Filter(_) => {}
         }
     }
 
@@ -1581,6 +1890,9 @@ impl ForesightWindow {
     fn show_banner(&self, text: &str) {
         let banner = self.imp().result_banner.get();
         banner.set_title(text);
+        // The matched-nothing notice borrows this banner without the button.
+        banner.set_button_label(Some("New Job"));
+        self.imp().filter_banner.set(false);
         banner.set_revealed(true);
     }
 
@@ -2089,6 +2401,53 @@ impl ForesightWindow {
             "controls stayed locked".into(),
         );
 
+        // A finished remote run must hand everything back. The run lock used to
+        // be set and never lifted, and New Job never repainted the remote
+        // state, so after one SSH transfer both remote buttons stayed grey and
+        // the destination row still read "Remote folder" — a dead window. Hold
+        // a real Runner the way a live transfer does, then let it go.
+        self.clear_job();
+        self.add_source(&gio::File::for_path(dir.join("src")));
+        self.set_remote(RemoteSide::Dest, ep("nas.local", "/srv/backup"));
+        match spawn_rsync(vec!["--version".into()], |_| {}, |_| {}) {
+            Ok(runner) => {
+                *self.imp().runner.borrow_mut() = Some(runner);
+                self.refresh_action_sensitivity();
+                check(
+                    "a live run locks every endpoint button",
+                    !self.imp().add_folder_button.is_sensitive()
+                        && !self.imp().add_file_button.is_sensitive()
+                        && !self.imp().add_remote_source_button.is_sensitive()
+                        && !self.imp().remote_dest_button.is_sensitive(),
+                    "an endpoint can change mid-transfer".into(),
+                );
+                *self.imp().runner.borrow_mut() = None;
+                self.refresh_action_sensitivity();
+                check(
+                    "the run lock lifts when the run ends",
+                    self.imp().add_folder_button.is_sensitive()
+                        && self.imp().remote_dest_button.is_sensitive()
+                        // Still a push, so the other side stays closed.
+                        && !self.imp().add_remote_source_button.is_sensitive(),
+                    "buttons stayed locked after the run".into(),
+                );
+            }
+            Err(e) => check("rsync spawns for the run-lock check", false, e.to_string()),
+        }
+        self.clear_job();
+        check(
+            "New Job after a remote run restores both remote buttons",
+            self.imp().add_remote_source_button.is_sensitive()
+                && self.imp().remote_dest_button.is_sensitive(),
+            "a remote button is still grey".into(),
+        );
+        check(
+            "New Job repaints the destination row as local",
+            self.imp().dest_row.title() == "Folder"
+                && self.imp().dest_row.subtitle().as_deref() == Some("Not selected"),
+            format!("row still reads {:?}", self.imp().dest_row.title()),
+        );
+
         // An IPv6 link-local endpoint has to survive with its scope id — the
         // phone-over-hotspot case, and the one a naive `host:path` split eats.
         self.clear_job();
@@ -2116,6 +2475,127 @@ impl ForesightWindow {
             self.imp().remote.borrow().is_none(),
             "a remote host survived New Job".into(),
         );
+
+        // -- rules that do nothing -------------------------------------------
+        //
+        // The soak-found failure: an exclude pasted as a full disk path matches
+        // nothing, rsync says nothing, and with Move on the folder it was meant
+        // to hold back leaves the source. Two defences, checked separately.
+        self.clear_job();
+        let _ = std::fs::create_dir_all(dir.join("src/private"));
+        self.add_source(&gio::File::for_path(dir.join("src")));
+        self.set_dest(&gio::File::for_path(dir.join("dst")));
+        let pasted = dir.join("src/private").display().to_string();
+        self.add_filter(FilterKind::Exclude, &pasted);
+        self.add_filter(FilterKind::Exclude, "*.tmp");
+        let subtitle_of = |w: &ForesightWindow, i: usize| {
+            w.imp().filter_rows.borrow()[i]
+                .subtitle()
+                .map(|s| s.to_string())
+                .unwrap_or_default()
+        };
+        check(
+            "a full-path exclude is flagged without running anything",
+            self.idle_rules() == [0] && subtitle_of(self, 0).contains("can never match"),
+            format!(
+                "idle={:?} subtitle={:?}",
+                self.idle_rules(),
+                subtitle_of(self, 0)
+            ),
+        );
+        check(
+            "the collapsed expander still says a rule matches nothing",
+            self.imp()
+                .filters_row
+                .subtitle()
+                .contains("1 matches nothing"),
+            self.imp().filters_row.subtitle().to_string(),
+        );
+        let fix = self.imp().filters.borrow()[0]
+            .dead_anchor(&self.transfer_top())
+            .and_then(|d| d.suggestion);
+        check(
+            "the offered fix is the path relative to the transfer",
+            fix.as_deref() == Some("/src/private"),
+            format!("{fix:?}"),
+        );
+        self.apply_filter_fix(0, "/src/private");
+        check(
+            "applying the fix clears the warning",
+            rules(self) == ["/src/private", "*.tmp"] && self.idle_rules().is_empty(),
+            format!("{:?} idle={:?}", rules(self), self.idle_rules()),
+        );
+
+        // "Copy contents" re-anchors `/`: the rule that was right is now dead,
+        // with no edit to the list at all.
+        self.imp().contents_row.set_active(true);
+        let fix = self.imp().filters.borrow()[0]
+            .dead_anchor(&self.transfer_top())
+            .and_then(|d| d.suggestion);
+        check(
+            "Copy contents re-anchors an existing rule",
+            self.idle_rules() == [0] && fix.as_deref() == Some("/private"),
+            format!("idle={:?} fix={fix:?}", self.idle_rules()),
+        );
+        self.imp().contents_row.set_active(false);
+
+        // Evidence from a dry run, fed through the real event handler. `*.tmp`
+        // is a perfectly valid rule that simply matches nothing here — only the
+        // run can know that.
+        self.imp().remove_source_row.set_active(true);
+        let job = self.current_job().expect("sources + dest are set");
+        check(
+            "the dry run asks rsync which rules matched",
+            job.build_argv(Mode::Preview)
+                .iter()
+                .any(|a| a == "--debug=FILTER"),
+            "--debug=FILTER missing".into(),
+        );
+        self.imp().filter_hits.replace(Some((
+            job.filters.clone(),
+            vec![RuleHits::default(); job.filters.len()],
+        )));
+        self.on_preview_event(Event::Filter(rsync_events::FilterMatch {
+            action: rsync_events::FilterAction::Hiding,
+            is_dir: true,
+            path: "src/private".into(),
+            pattern: "/src/private".into(),
+        }));
+        self.rebuild_filter_rows();
+        check(
+            "a rule the dry run saw match is credited, the other is flagged",
+            subtitle_of(self, 0).contains("matched 1 path")
+                && subtitle_of(self, 1).contains("matched nothing")
+                && self.idle_rules() == [1],
+            format!("{:?} / {:?}", subtitle_of(self, 0), subtitle_of(self, 1)),
+        );
+        check(
+            "a move is gated on excludes that held nothing back",
+            self.idle_source_excludes() == ["*.tmp"],
+            format!("{:?}", self.idle_source_excludes()),
+        );
+
+        // A destination-side hit is not something held back from a move.
+        self.on_preview_event(Event::Filter(rsync_events::FilterMatch {
+            action: rsync_events::FilterAction::Protecting,
+            is_dir: false,
+            path: "src/old.tmp".into(),
+            pattern: "*.tmp".into(),
+        }));
+        check(
+            "protecting a destination path does not satisfy the move gate",
+            self.idle_source_excludes() == ["*.tmp"] && self.idle_rules().is_empty(),
+            format!("{:?}", self.idle_source_excludes()),
+        );
+
+        // Stale evidence must not outlive the job it described.
+        self.add_filter(FilterKind::Exclude, "later");
+        check(
+            "editing the rules drops the last run's verdicts",
+            self.current_filter_hits().is_none() && !subtitle_of(self, 0).contains("matched"),
+            subtitle_of(self, 0),
+        );
+        self.clear_job();
 
         // Regression guard: a name a KeyFile group could never hold used to be
         // dropped on save while the UI reported success.

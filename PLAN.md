@@ -393,6 +393,28 @@ These were discovered by building the pinned rsync and capturing transcripts
     already fixed. (This entry replaced the opposite conclusion; the flag's
     "optional secluded-args" line in `--version` says it is compiled in, not
     that it is needed.)
+11. **A leading `/` in a filter pattern is the top of the *transfer*, not of
+    the disk** — and where that is depends on the trailing slash. With source
+    `Photos`, `/Photos/private` matches and `/private` is dead; with `Photos/`
+    ("Copy contents") it is exactly the other way round. A pasted full path
+    (`/home/me/Photos/private`) therefore matches nothing, and rsync says
+    nothing: no warning, exit 0. Found in the 1.0 soak, where it was combined
+    with `--remove-source-files` and the "excluded" folder left the source. No
+    file is ever destroyed — rsync unlinks a source file only after that file
+    arrived — but it is not where the user believes it is. Measured over seven
+    spellings; the ones that work from either mode are the unanchored ones
+    (`private`, `private/`, `private/**`). `FilterRule::dead_anchor` encodes
+    this and a test runs it against the real binary.
+12. **`--debug=FILTER` is how to learn which rule matched what.** One line per
+    match, on stdout, pattern echoed verbatim (leading and trailing `/`
+    intact): `[sender] hiding directory Photos/private because of pattern
+    private`. `hiding`/`showing` come from the sender, `protecting`/`risking`
+    from the generator under `--delete`. A rule that matched nothing leaves no
+    line — that absence is the signal. Two limits, both measured on 3.5.0:
+    rsync does **not** forward `--debug` to the far end (the server argv has no
+    trace of it), so a **pull** reports no `hiding` lines at all and must not be
+    judged by them; and that same fact is why this is safe for `rrsync`, which
+    as of 3.5.0 refuses a peer-sent `--debug` outright.
 
 ## 7. Claude Code operating notes
 

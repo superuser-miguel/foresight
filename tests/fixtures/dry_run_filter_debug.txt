@@ -1,0 +1,7 @@
+[sender] hiding directory Photos/my cache because of pattern my cache/
+[sender] hiding directory Photos/private because of pattern private
+[sender] hiding file Photos/keep/r.raw because of pattern *.raw
+[sender] showing file Photos/keep/a.jpg because of pattern *.jpg
+cd+++++++++ Photos/
+cd+++++++++ Photos/keep/
+>f+++++++++ Photos/keep/a.jpg

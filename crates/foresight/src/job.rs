@@ -129,6 +129,115 @@ impl FilterRule {
     }
 }
 
+/// What sits at the top of the transfer — the thing a leading `/` in a filter
+/// pattern is anchored to.
+///
+/// That `/` is **not** the filesystem root. rsync anchors it to the root of the
+/// transfer, and what that is depends on how the sources were given: `Photos`
+/// puts a single entry named `Photos` there, while `Photos/` puts the folder's
+/// children there instead. So the same rule can hold in one mode and be dead in
+/// the other, which is why this is modelled rather than left to the reader.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TransferTop {
+    /// Each source arrives under its own name; these are those names.
+    Names(Vec<String>),
+    /// A lone folder's *contents* are the top. `dir` is where to look to see
+    /// what they are — `None` for a remote folder, which nothing here can list.
+    Inside { dir: Option<PathBuf>, name: String },
+}
+
+impl TransferTop {
+    /// `remote_source_path` is the path half of a remote source endpoint, which
+    /// replaces the local sources when present. A typed trailing `/` on it
+    /// means "contents of", exactly as it does to rsync.
+    pub fn new(sources: &[Source], remote_source_path: Option<&str>, sync_contents: bool) -> Self {
+        let base = |p: &Path| {
+            p.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        };
+        if let Some(path) = remote_source_path {
+            let name = base(Path::new(path.trim_end_matches('/')));
+            return if path.ends_with('/') {
+                Self::Inside { dir: None, name }
+            } else {
+                Self::Names(vec![name])
+            };
+        }
+        if sync_contents && sources.len() == 1 && sources[0].is_dir {
+            return Self::Inside {
+                dir: Some(sources[0].path.clone()),
+                name: base(&sources[0].path),
+            };
+        }
+        Self::Names(sources.iter().map(|s| base(&s.path)).collect())
+    }
+}
+
+/// A rule whose leading `/` anchors it somewhere it can never match.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeadAnchor {
+    /// The pattern that says what was evidently meant, when one can be worked
+    /// out — a full disk path rewritten relative to the transfer.
+    pub suggestion: Option<String>,
+}
+
+impl FilterRule {
+    /// Whether this rule is anchored (`/…`) to something that is not at the top
+    /// of the transfer, and so cannot match anything at all.
+    ///
+    /// The classic way in is pasting a full path — `/home/me/Photos/private` —
+    /// as an exclude. rsync accepts it, matches nothing, and says nothing; the
+    /// folder then transfers like any other. Deliberately conservative: only a
+    /// literal first component is judged (a wildcard there could match
+    /// anything), and with no sources chosen yet there is nothing to judge by.
+    pub fn dead_anchor(&self, top: &TransferTop) -> Option<DeadAnchor> {
+        if !self.pattern.starts_with('/') {
+            return None;
+        }
+        let comps: Vec<&str> = self.pattern.split('/').filter(|c| !c.is_empty()).collect();
+        let first = *comps.first()?;
+        if first.contains(['*', '?', '[']) {
+            return None;
+        }
+        let tail = if self.pattern.ends_with('/') { "/" } else { "" };
+        let rebuild =
+            |rest: &[&str]| (!rest.is_empty()).then(|| format!("/{}{tail}", rest.join("/")));
+
+        match top {
+            TransferTop::Names(names) => {
+                if names.is_empty() || names.iter().any(|n| n == first) {
+                    return None;
+                }
+                // The last component that names a source is where the transfer
+                // really starts: keep from there. (A sandboxed source path is a
+                // portal handle, so a prefix test against it would never hit;
+                // the folder's name is the part both spellings share.)
+                let suggestion = comps
+                    .iter()
+                    .rposition(|c| names.iter().any(|n| n == c))
+                    .and_then(|i| rebuild(&comps[i..]));
+                Some(DeadAnchor { suggestion })
+            }
+            TransferTop::Inside { dir, name } => {
+                // Here the folder's own name is *not* part of any path, so what
+                // follows its last mention is what was meant.
+                let suggestion = comps
+                    .iter()
+                    .rposition(|c| c == name)
+                    .and_then(|i| rebuild(&comps[i + 1..]));
+                let dead = match dir {
+                    Some(dir) => dir.join(first).symlink_metadata().is_err(),
+                    // Nothing can list a remote folder, so only the one
+                    // recognisable mistake is called out.
+                    None => suggestion.is_some(),
+                };
+                dead.then_some(DeadAnchor { suggestion })
+            }
+        }
+    }
+}
+
 /// The remote half of a transfer, if there is one.
 ///
 /// rsync refuses a remote source *and* a remote destination in one command
@@ -237,6 +346,19 @@ impl Job {
             && self.sources[0].is_dir
     }
 
+    /// Whether a dry run of this job can say which filter rules matched.
+    ///
+    /// It needs rules to report on, and a **local** sender. rsync does not
+    /// forward `--debug` to the far end (checked against 3.5.0: the server
+    /// argv carries no trace of it — which also keeps this clear of `rrsync`,
+    /// which refuses the option outright as of that release). So on a pull the
+    /// remote sender hides paths in silence, no line comes back, and every
+    /// exclude would look as if it had matched nothing. No evidence is better
+    /// than evidence that is wrong in the alarming direction.
+    pub fn reports_filter_hits(&self) -> bool {
+        !self.filters.is_empty() && !matches!(self.remote, Some(Remote::Source(_)))
+    }
+
     /// The source operands, in argv order.
     ///
     /// Every source is passed verbatim — a folder therefore nests as
@@ -304,6 +426,13 @@ impl Job {
             Mode::Preview => {
                 argv.push(OsString::from("-n"));
                 argv.push(OsString::from("-i"));
+                // Ask rsync which rule matched which path, so the preview can
+                // name the rules that matched nothing. A mistyped exclude is
+                // otherwise silent — and with --remove-source-files, silent
+                // means the folder it was meant to hold back gets moved.
+                if self.reports_filter_hits() {
+                    argv.push(OsString::from("--debug=FILTER"));
+                }
             }
             Mode::Sync => {
                 argv.push(OsString::from("--info=progress2"));
@@ -1136,7 +1265,7 @@ mod tests {
                 let on_event = move |ev: Event| match ev {
                     Event::Change(c) => changes.borrow_mut().push(c.path),
                     Event::Progress(_) => saw_progress.set(true),
-                    Event::Message(_) => {}
+                    Event::Message(_) | Event::Filter(_) => {}
                 };
                 let on_done = move |c: Completion| {
                     *completion.borrow_mut() = Some(c);
@@ -1519,6 +1648,180 @@ mod tests {
         let completion = completion.borrow().clone().expect("on_done fired");
         assert_eq!(completion.severity, Severity::Cancelled, "{completion:?}");
 
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // -- filter debugging & dead anchors ------------------------------------
+
+    #[test]
+    fn the_dry_run_asks_which_rules_matched_only_when_there_are_rules() {
+        let mut job = Job::new("/s", "/d");
+        let has_debug = |j: &Job, m| j.build_argv(m).iter().any(|a| a == "--debug=FILTER");
+        assert!(
+            !has_debug(&job, Mode::Preview),
+            "no rules, nothing to report"
+        );
+
+        job.filters = vec![FilterRule::exclude("private")];
+        assert!(has_debug(&job, Mode::Preview));
+        // Never on the real run: its lines would land in the transfer log.
+        assert!(!has_debug(&job, Mode::Sync));
+
+        // A push hides paths locally, so it can report. A pull cannot: the
+        // sender is remote, stays silent, and would make every rule look dead.
+        job.remote = Some(Remote::Dest("nas:/srv".into()));
+        assert!(has_debug(&job, Mode::Preview));
+        job.remote = Some(Remote::Source("nas:/srv/photos".into()));
+        assert!(!has_debug(&job, Mode::Preview));
+    }
+
+    fn top_of(names: &[&str]) -> TransferTop {
+        TransferTop::Names(names.iter().map(|n| n.to_string()).collect())
+    }
+
+    #[test]
+    fn a_full_disk_path_is_dead_and_the_fix_is_relative_to_the_transfer() {
+        let top = top_of(&["Photos"]);
+        let dead = |p: &str| FilterRule::exclude(p).dead_anchor(&top);
+
+        // What actually happened: a pasted absolute path, silently ignored.
+        assert_eq!(
+            dead("/home/me/Pictures/Photos/private"),
+            Some(DeadAnchor {
+                suggestion: Some("/Photos/private".into())
+            })
+        );
+        // The trailing slash ("directories only") survives the rewrite.
+        assert_eq!(
+            dead("/home/me/Photos/private/")
+                .unwrap()
+                .suggestion
+                .as_deref(),
+            Some("/Photos/private/")
+        );
+        // Dead, but nothing in it names a source: no guess is offered.
+        assert_eq!(dead("/private"), Some(DeadAnchor { suggestion: None }));
+    }
+
+    #[test]
+    fn rules_that_can_match_are_left_alone() {
+        let top = top_of(&["Photos", "notes.txt"]);
+        for live in [
+            "private", // unanchored: matches at any depth
+            "private/",
+            "Photos/private",
+            "/Photos/private", // anchored to a real top-level name
+            "/notes.txt",
+            "/*/private", // a wildcard could be anything
+            "/",
+        ] {
+            assert_eq!(FilterRule::exclude(live).dead_anchor(&top), None, "{live}");
+        }
+        // With no sources chosen there is nothing to judge a rule against, and
+        // a preset applied before picking folders must not light up.
+        assert_eq!(FilterRule::exclude("/x").dead_anchor(&top_of(&[])), None);
+    }
+
+    #[test]
+    fn copy_contents_moves_the_anchor_inside_the_folder() {
+        let tmp = std::env::temp_dir().join(format!("foresight-anchor-{}", std::process::id()));
+        let photos = tmp.join("Photos");
+        std::fs::create_dir_all(photos.join("private")).unwrap();
+        let sources = [Source {
+            path: photos.clone(),
+            is_dir: true,
+        }];
+
+        // Folder itself: its name is the top.
+        let nested = TransferTop::new(&sources, None, false);
+        assert_eq!(nested, top_of(&["Photos"]));
+        // Contents: its children are, and the very same rule flips.
+        let inside = TransferTop::new(&sources, None, true);
+        let rule = FilterRule::exclude("/Photos/private");
+        assert_eq!(rule.dead_anchor(&nested), None);
+        assert_eq!(
+            rule.dead_anchor(&inside).unwrap().suggestion.as_deref(),
+            Some("/private")
+        );
+        assert_eq!(FilterRule::exclude("/private").dead_anchor(&inside), None);
+        assert!(FilterRule::exclude("/private")
+            .dead_anchor(&nested)
+            .is_some());
+
+        // Several sources are never "contents of", whatever the switch says.
+        let two = [sources[0].clone(), sources[0].clone()];
+        assert!(matches!(
+            TransferTop::new(&two, None, true),
+            TransferTop::Names(_)
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn a_remote_source_anchors_by_its_typed_path() {
+        // No trailing slash: the folder arrives under its name.
+        assert_eq!(
+            TransferTop::new(&[], Some("/srv/photos"), false),
+            top_of(&["photos"])
+        );
+        // A typed trailing slash means contents, as it does to rsync — and a
+        // remote folder cannot be listed, so only the recognisable mistake of
+        // repeating its own name is called out.
+        let inside = TransferTop::new(&[], Some("/srv/photos/"), false);
+        assert_eq!(
+            FilterRule::exclude("/srv/photos/raw")
+                .dead_anchor(&inside)
+                .unwrap()
+                .suggestion
+                .as_deref(),
+            Some("/raw")
+        );
+        assert_eq!(FilterRule::exclude("/raw").dead_anchor(&inside), None);
+    }
+
+    /// The claim the whole feature rests on, checked against the real binary:
+    /// a dead-anchored exclude holds nothing back, its suggested fix does, and
+    /// the debug lines tell the two apart.
+    #[test]
+    fn rsync_agrees_about_dead_anchors() {
+        let tmp = std::env::temp_dir().join(format!("foresight-deadrule-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let photos = tmp.join("src/Photos");
+        std::fs::create_dir_all(photos.join("private")).unwrap();
+        std::fs::create_dir_all(tmp.join("dst")).unwrap();
+        std::fs::write(photos.join("private/b.jpg"), "b").unwrap();
+        std::fs::write(photos.join("top.txt"), "t").unwrap();
+
+        let mut job = Job::new(&photos, tmp.join("dst"));
+        let typed = format!("{}/private", photos.display());
+        job.filters = vec![FilterRule::exclude(typed)];
+        let top = TransferTop::new(&job.sources, None, false);
+        let fix = job.filters[0]
+            .dead_anchor(&top)
+            .unwrap()
+            .suggestion
+            .unwrap();
+        assert_eq!(fix, "/Photos/private");
+
+        let dry_run = |job: &Job| {
+            let out = std::process::Command::new("rsync")
+                .args(job.build_argv(Mode::Preview))
+                .output()
+                .expect("rsync runs");
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        };
+
+        let before = dry_run(&job);
+        assert!(before.contains("Photos/private/b.jpg"), "{before}");
+        assert!(!before.contains("because of pattern"), "{before}");
+
+        job.filters = vec![FilterRule::exclude(fix)];
+        let after = dry_run(&job);
+        assert!(!after.contains("private/b.jpg"), "{after}");
+        assert!(
+            after.contains("hiding directory Photos/private because of pattern /Photos/private"),
+            "{after}"
+        );
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }

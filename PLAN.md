@@ -8,30 +8,47 @@
 
 ## 0. Where things stand — read this first
 
-*Updated 2026-09-18. Keep this section current; it is the one place that says
+*Updated 2026-09-29. Keep this section current; it is the one place that says
 "now" — everything below it is either a decision, a record, or a fact.*
 
 **Released: v1.0.1** (signed tag `v1.0.1` = `56697fc`). Bundle on GitHub
-Releases; signed OSTree repo live at `superuser-miguel.github.io/foresight-repo`
-and verified with `flatpak remote-info`. Engine: rsync **3.5.0**. `main` is
-clean, pushed, CI green. **90 tests** (`cargo test --all`) + **53 headless
-widget checks** (`--features selftest`).
+Releases; signed OSTree repo live at `superuser-miguel.github.io/foresight-repo`.
+Engine: rsync **3.5.0**.
 
-**Nothing is in flight.** 1.0.1 is back in daily use; the next work comes from
-what that turns up. Known-open, in the order they'd be picked up:
+**In flight: 1.0.2 — code complete on `main`, not yet tagged.** **174 tests**
+(`cargo test --all`), **159 headless widget checks**
+(`build-aux/selftest-headless.sh`), 20 checks in the Python spec's self-check.
+What it is, is in the "1.0.2" milestone in §4. What stands between it and a tag:
 
-1. **The 1.0.1 UI has never been looked at.** Filter-rule warning rows, the Fix
-   button, the "matched nothing" banner and the Move confirmation are verified
-   headlessly and against real rsync, not by eye. Expect copy/layout changes.
-   None of that touches a format, so it needs no more than a patch release.
-2. **Screenshots** (the last open box in Milestone 5). Still the pre-1.0 set;
-   nothing shows remote sync's fingerprint dialog or the new rule warnings.
-   **No release needed** — metainfo references them by URL, so replacing the
-   files in `docs/screenshots/` and pushing updates the site and the listing.
+1. **Nobody has looked at any of it.** Every dialog, banner and toast that
+   1.0.1 and 1.0.2 added — the rule warnings and Fix button, the Move
+   confirmation, the close question, the refusal after an incomplete dry run,
+   the three preset dialogs, the problems report, the shortcuts window — is
+   verified headlessly and against real rsync, and by eye not at all. The keys
+   themselves have never been pressed. This is the gate.
+2. The release commit: version in `meson.build`, both crates and `Cargo.lock`;
+   the metainfo release note; README status, feature list and roadmap;
+   `docs/index.html`.
+
+Known-open after 1.0.2, in the order they'd be picked up:
+
+1. **Screenshots** (the last open box in Milestone 5). Still the pre-1.0 set;
+   nothing shows remote sync's fingerprint dialog, the rule warnings or the
+   shortcuts window. **No release needed** — metainfo references them by URL.
    `scripts/test-remote.sh start` gives real values for the remote shots.
-3. **Help body copy** — the group structure is settled, the prose still reads
-   like a first draft.
-4. Then the 2.0 thesis ("Beyond 1.0"), gated on portal-path persistence.
+2. **Issue #12** — the transfer log has no cap. **Issue #6** — IPv6 host trust
+   on the default port, unverified by anyone; needs a real IPv6 host.
+3. **Presets that parse but are malformed still lose data on re-save**, and
+   unknown keys and groups are dropped by a save — so a 1.0.x save strips
+   whatever a later version adds. This touches the format freeze (Milestone 5)
+   and needs a decision before it needs code.
+4. **Remote runs under everything 1.0.2 added** — stop, signals, the locale pin,
+   the glued error line — were reasoned about and not measured. ssh is rsync's
+   child, not ours.
+5. **PR #2** (gettext + Spanish, from the project's first outside contributor).
+   Wanted; conflicts with `main`; to be brought in as its own release. It adds
+   `gettext-rs` to `rsync-events`, which guardrail 1 exists to question.
+6. **Help body copy**, then the 2.0 thesis ("Beyond 1.0").
 
 **How to work here** (details in §7): dev builds run with
 `build-aux/run-dev.sh` and are **never installed** — the installed copy is the
@@ -83,7 +100,8 @@ App id is `io.github.superuser_miguel.Foresight` (named 2026-07-12; the
 ├── meson.build                         # drives blueprint + cargo + install; owns the version
 ├── build-aux/
 │   ├── cargo-build.sh                  # Meson → cargo bridge
-│   └── run-dev.sh                      # build + run the dev manifest WITHOUT installing (§7)
+│   ├── run-dev.sh                      # build + run the dev manifest WITHOUT installing (§7)
+│   └── selftest-headless.sh            # the widget checks, on a display of their own (§7)
 ├── data/
 │   ├── …Foresight.desktop.in
 │   ├── …Foresight.metainfo.xml         # appstream; one <release> per version
@@ -92,25 +110,30 @@ App id is `io.github.superuser_miguel.Foresight` (named 2026-07-12; the
 ├── crates/
 │   ├── rsync-events/                   # pure parser crate — NO gtk, ever
 │   │   ├── src/lib.rs                  #   itemize / progress2 / stats / filter-debug / ssh errors
-│   │   └── tests/fixtures_test.rs      #   9 fixture tests + 4 unit tests
+│   │   └── tests/                      #   fixtures_test.rs, chunk_boundary_test.rs
 │   └── foresight/src/                  # the GTK app crate
 │       ├── main.rs                     # adw::Application entry; selftest hook
 │       ├── window.rs                   # composite template + ALL widget state + selftest checks
 │       ├── job.rs                      # Job → argv (build_argv), spawn_rsync, FilterRule,
 │       │                               #   TransferTop / dead_anchor
 │       ├── capabilities.rs, help.rs    # flag registry (test-enforced vs build_argv) + Help dialog
+│       ├── shortcuts.rs                # THE table of keys: registers them and fills the window
+│       ├── signals.rs                  # SIGTERM/INT/HUP → the same orderly stop as a quit
 │       ├── profiles.rs                 # presets — FROZEN format (Milestone 5)
 │       ├── endpoint.rs, ssh.rs, remote_dialog.rs   # remote sync: parsing, -e command, trust
 │       └── change_object.rs, log_object.rs         # list-model row objects
 ├── src/ui/window.blp                   # all layout lives here
-├── reference/rsync_events.py           # executable spec of the parser — change both or neither
+├── reference/
+│   ├── rsync_events.py                 # executable spec of the parser — change both or neither
+│   └── rsync_events_selfcheck.py       # its self-check; CI runs it
 ├── scripts/
 │   ├── capture_fixtures.sh             # regenerate tests/fixtures (read §7 before committing output)
 │   ├── publish-repo.sh                 # signed OSTree repo → foresight-repo (squashed force-push)
 │   └── test-remote.sh                  # throwaway sshd for driving remote sync by hand
 ├── docs/                               # GitHub Pages site (index.html, screenshots/)
 ├── .github/workflows/ci.yml            # fmt + clippy + test; Meson build; headless widget checks
-└── tests/fixtures/                     # captured from real rsync (3.4.4; filter-debug from 3.5.0)
+├── LICENSE                             # GPL-3.0-or-later
+└── tests/fixtures/                     # captured from real rsync (3.4.4; the later ones from 3.5.0)
 ```
 
 Git-ignored and regenerable: `target/` and `builddir/cargo-target/` (compiler
@@ -356,6 +379,46 @@ preset freeze held.
 Still open from that soak: nobody has yet *looked* at the new rows, banner and
 dialog — they are verified headlessly and against real rsync only.
 
+### 1.0.2 — what the first outside user found  ✅ code, ☐ released
+
+On 2026-08-25 someone who was not the author used Foresight for a day, read the
+code, and filed twelve issues and a translation. Nobody looked at the inbox for
+five weeks. 1.0.2 is those reports, plus what fixing them turned up.
+
+- [x] **#4 — closing the window left rsync running.** A `close-request` guard
+      that asks during a transfer and stops a dry run unasked; `Runner::stop`
+      (SIGTERM → 5 s → SIGKILL → 2 s → given up on); `Drop for Runner` stops a
+      live process, so a `Runner` must now be **held** for its run to continue.
+- [x] **…and so did a signal to the app, and so did killing it.** SIGTERM,
+      SIGINT and SIGHUP lead to the same orderly stop (`signals.rs`, a GLib
+      signal source — nothing runs in handler context). What no handler can
+      catch — SIGKILL, a crash, GDK exiting when the compositor goes — is
+      covered by `PR_SET_PDEATHSIG`, set in the child (§6 item 19).
+- [x] **#3 — a dry run that did not finish confirmed things anyway.** Refused
+      on the Start path; its hit counts and deletions are discarded (§6 item 13).
+- [x] **#5, and its read-side sibling** — a failed preset save reported
+      success; an unreadable presets file loaded as "no presets" and was then
+      overwritten. Write first, memory second; an unreadable file is moved
+      aside, never replaced. The format is untouched.
+- [x] **#7 — a partial transfer did not say what failed.** The banner's button
+      leads to what rsync reported, and says when deletion stopped part-way.
+- [x] **#8 — keyboard shortcuts.** One table (`shortcuts.rs`) registers the
+      keys and fills the shortcuts window; each key is an action whose enabled
+      state follows its button, and Start by key stops where Start by click does.
+- [x] **#9 — a character split across two reads was corrupted.** Bytes are
+      split into lines before anything is decoded (§6 item 15).
+- [x] **The parser's view of errors** — lines rsync does not prefix (§6 item
+      14), and the summary it glues to its last progress update (§6 item 16).
+- [x] **The locale rsync runs in is pinned** (§6 item 17). It was part of the
+      output format all along and was whatever the desktop happened to be.
+- [x] `LICENSE`. It had been declared in four places and present in none.
+
+How it was done is worth keeping: each fix in its own worktree and branch,
+every diff read, every branch rebased onto the others, and the full gate run on
+the **combined** tree before anything merged. Twice that caught what no branch
+could have seen alone — a test that discarded its `Runner` on one branch, on
+the day another branch made that stop the run.
+
 ### Beyond 1.0 — what a 2.0 would be
 
 A 2.0 is a change in what the app **is**, not a longer flag list. Today a job is
@@ -528,6 +591,41 @@ These were discovered by building the pinned rsync and capturing transcripts
     each line decoded whole. `\n` and `\r` cannot occur inside a UTF-8
     sequence, which is what makes that safe.
 
+16. **rsync glues its closing summary to its last progress update.** A
+    progress2 update is `\r` + text with no terminator; rsync owes a newline
+    before the next thing it prints, and pays it to whichever stream that next
+    thing goes to. At the end of a run that failed, the owed newline goes to
+    stdout (a pipe: buffered, not yet flushed) and the summary to stderr
+    (unbuffered) — so the merged stream reads
+    `…to-chk=0/8)rsync error: … (code 23) …\n\n`. Every time, not a race. The
+    Stop path does it too, after a mid-file update that ends in two spaces.
+    Per-file errors mid-run are not glued. **Separate pipes do not cure it**:
+    they move the glue onto stdout, where an itemized line follows the update.
+    So the parser splits a line that *begins* with a complete update
+    (`GLUED_PROGRESS_RE`, stricter than `PROGRESS_RE`) and classifies the rest
+    as a line of its own.
+17. **The locale is part of the output format.** rsync reads two categories:
+    `LC_CTYPE` decides how names are written (item 15) and `LC_NUMERIC` the
+    progress line — under `de_DE` or `fr_FR` it is
+    `3.500.001  74%    1,09GB/s`, which `PROGRESS_RE` does not match from 1,000
+    bytes up. rsync's messages and errno texts are **not** translated in any
+    locale. The child therefore runs with `LC_ALL=C.UTF-8` and no `LANGUAGE`
+    (falling back to `en_US.UTF-8`, then to pinning only the numbers). The
+    Flatpak runtime has `C.utf8` and `en_*` in the base; every other language
+    is a Locale extension, and a locale that is not installed behaves as C.
+18. **On a pull, names and progress are still printed locally.** The far
+    side's locale makes no difference to itemized lines or progress; the local
+    one decides both. What the far side does write — error messages — carries
+    names with high bytes escaped, whatever either locale is. Its *shell* is
+    translated by its own locale and cannot be controlled from here.
+19. **`PR_SET_PDEATHSIG` is tied to the thread that forked, not the process.**
+    Spawned from a worker thread that then ended, rsync was stopped with its
+    parent still alive. GSubprocess forks in the calling thread, so runs are
+    spawned from the main thread and must stay there. It works inside the
+    Flatpak's PID namespace (measured in the installed app's sandbox). It is
+    not inherited by rsync's own children, which do not need it for a local
+    run: rsync's SIGTERM handler takes them with it.
+
 ## 7. Claude Code operating notes
 
 Build, run, test:
@@ -599,3 +697,13 @@ Conventions and guardrails:
    lock with no unlock.
 9. A release is not done when the tag is pushed: §0 lists the prose that has
    to move with the version numbers.
+10. A `Runner` is held for as long as its run should live. Dropping one stops
+    its process — so `spawn_rsync(...)` with the result discarded is a run
+    cancelled at birth. Runs are spawned from the main thread (§6 item 19).
+11. The widget checks run on a display of their own
+    (`build-aux/selftest-headless.sh`), never the session's. They open real
+    windows and start real processes; a test that leaves either behind is a
+    failed test. Processes are signalled by PID — never by a pattern that the
+    command doing the signalling also matches.
+12. One layout is not a measurement. A fact about rsync goes into §6 after it
+    has been produced more than one way; item 13 is there as the reminder.

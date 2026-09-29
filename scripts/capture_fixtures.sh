@@ -2,7 +2,7 @@
 # capture_fixtures.sh — regenerate tests/fixtures/ from a real rsync binary.
 #
 # The parser is tested against captured transcripts, not guessed formats.
-# Run this whenever the bundled rsync version is bumped, then run pytest:
+# Run this whenever the bundled rsync version is bumped, then diff the output:
 # a format drift shows up as a test failure, not a runtime surprise.
 #
 # Usage:  ./scripts/capture_fixtures.sh [path-to-rsync]   (default: rsync in PATH)
@@ -88,4 +88,19 @@ rc=0
 chmod 755 "$LAB/io/src/locked"
 echo "exit=$rc" >> "$FIX/dry_run_io_error.txt"
 
-echo "fixtures written to $FIX — now run: python3 -m pytest tests/"
+# 8. names that are not ASCII, RAW bytes. In a UTF-8 locale rsync writes valid
+#    UTF-8 as it is and escapes what is not (and control characters) as \#ooo;
+#    in the C locale it would escape every byte above 0x7f, so the locale is
+#    pinned here. 2-, 3- and 4-byte characters, a symlink whose target is one,
+#    a Latin-1 name, and a name holding a carriage return.
+mkdir -p "$LAB/u/año" "$LAB/udst"
+echo n > "$LAB/u/año/ñandú.txt"
+echo j > "$LAB/u/日本語.txt"
+echo e > "$LAB/u/emoji 😀.bin"
+echo l > "$LAB/u/"$'latin1-\xe9-\xff.txt'
+echo c > "$LAB/u/"$'cr\rname.txt'
+ln -s 日本語.txt "$LAB/u/lien-é"
+LC_ALL=C.UTF-8 $R -a --info=progress2 --out-format='%i %n%L' "$LAB/u/" "$LAB/udst/" \
+    > "$FIX/progress2_non_ascii.raw" 2>&1
+
+echo "fixtures written to $FIX — now: git diff tests/fixtures, then cargo test --all"

@@ -740,8 +740,10 @@ where
                 match read.await {
                     Ok(Ok(bytes)) if bytes.is_empty() => break, // EOF
                     Ok(Ok(bytes)) => {
-                        let chunk = String::from_utf8_lossy(&bytes);
-                        for ev in parser.feed(&chunk) {
+                        // As read, undecoded: a read can end inside a
+                        // character, and only the parser knows where the
+                        // lines are.
+                        for ev in parser.feed_bytes(&bytes) {
                             on_event(ev);
                         }
                     }
@@ -1773,6 +1775,215 @@ mod tests {
         assert_eq!(std::fs::read(dst.join("from_documents.txt")).unwrap(), b"B");
 
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// An itemized change as the tests below compare it: path and `%L` target.
+    type Named = (String, Option<String>);
+
+    /// Runs `rsync argv…` under the given `LC_ALL` through the real read loop
+    /// and returns every itemized change as `(path, link_target)`, with the
+    /// exit code. The locale is set on the child alone, through `env`, so the
+    /// other tests' processes never see it.
+    fn changes_under_locale(lc_all: &str, argv: Vec<OsString>) -> (Option<i32>, Vec<Named>) {
+        let changes: Rc<RefCell<Vec<Named>>> = Rc::default();
+        let code: Rc<Cell<Option<i32>>> = Rc::default();
+
+        let mut full = vec![
+            OsString::from(format!("LC_ALL={lc_all}")),
+            OsString::from("rsync"),
+        ];
+        full.extend(argv);
+
+        let ctx = glib::MainContext::new();
+        ctx.with_thread_default(|| {
+            let main_loop = glib::MainLoop::new(Some(&ctx), false);
+            let on_event = {
+                let changes = changes.clone();
+                move |ev: Event| {
+                    if let Event::Change(c) = ev {
+                        changes.borrow_mut().push((c.path, c.link_target));
+                    }
+                }
+            };
+            let on_done = {
+                let code = code.clone();
+                let ml = main_loop.clone();
+                move |c: Completion| {
+                    code.set(c.code);
+                    ml.quit();
+                }
+            };
+            // Held to the end of the run: a `Runner` that is dropped while its
+            // process is live stops the process.
+            let _runner =
+                spawn_program(OsStr::new("env"), full, on_event, on_done).expect("spawn rsync");
+            let ml_timeout = main_loop.clone();
+            glib::timeout_add_seconds_local_once(30, move || ml_timeout.quit());
+            main_loop.run();
+        })
+        .expect("run with thread-default context");
+
+        let changes = changes.borrow().clone();
+        (code.get(), changes)
+    }
+
+    /// Issue #9, against the real binary. The read loop takes rsync's output
+    /// 8192 bytes at a time, so with enough names some read ends inside a
+    /// character; decoded per read, both halves became U+FFFD and the path
+    /// shown was not a path on disk.
+    ///
+    /// The names are 2-, 3- and 4-byte characters behind a prefix whose length
+    /// changes from one file to the next, so that the boundaries do not all
+    /// fall at the same place in a name. Every path that arrives has to be one
+    /// that was created, and every one created has to arrive.
+    #[test]
+    fn non_ascii_names_survive_the_read_boundaries() {
+        if !rsync_available() {
+            eprintln!("skipping: rsync not on PATH");
+            return;
+        }
+
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+
+        let tmp = std::env::temp_dir().join(format!("foresight-utf8-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let _cleanup = Cleanup(tmp.clone());
+        let src = tmp.join("src");
+        let dst = tmp.join("dst");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&dst).unwrap();
+
+        const FILES: usize = 1200;
+        let mut expected: std::collections::BTreeSet<Named> = Default::default();
+        expected.insert(("src/".to_string(), None));
+        let mut output_bytes = 0;
+        for i in 0..FILES {
+            let name = format!("{}ñandú-日本語-😀-é{i:04}.txt", "a".repeat(i % 7));
+            std::fs::write(src.join(&name), b"x").unwrap();
+            // "<11 flags> src/<name>\n"
+            output_bytes += 11 + 1 + 4 + name.len() + 1;
+            expected.insert((format!("src/{name}"), None));
+        }
+        // `%L`: the target is a name too, and sits at the end of the line.
+        std::os::unix::fs::symlink("ñandú-日本語-😀-é0000.txt", src.join("lien-é")).unwrap();
+        expected.insert((
+            "src/lien-é".to_string(),
+            Some("ñandú-日本語-😀-é0000.txt".to_string()),
+        ));
+        assert!(
+            output_bytes > 4 * 8192,
+            "the itemized lines must span several reads, got {output_bytes} bytes"
+        );
+
+        let job = Job {
+            sources: vec![Source {
+                path: src.clone(),
+                is_dir: true,
+            }],
+            dest: dst.clone(),
+            ..Default::default()
+        };
+
+        // The dry run first, while the destination is still empty; then the
+        // transfer, whose lines are interleaved with `\r`-terminated progress.
+        for mode in [Mode::Preview, Mode::Sync] {
+            let (code, changes) = changes_under_locale("C.UTF-8", job.build_argv(mode));
+            assert_eq!(code, Some(0), "{mode:?}");
+
+            let ascii_only = changes
+                .iter()
+                .all(|(p, _)| p.is_ascii() && (p == "src/" || p.contains("\\#")));
+            if ascii_only && !changes.is_empty() {
+                // rsync escaped every byte above 0x7f, which is what it does
+                // when the locale it was given does not exist.
+                eprintln!("skipping: no C.UTF-8 locale for rsync to run under");
+                return;
+            }
+
+            for (path, target) in &changes {
+                assert!(
+                    !path.contains('\u{FFFD}')
+                        && !target.as_deref().unwrap_or("").contains('\u{FFFD}'),
+                    "{mode:?}: a character was split: {path:?} -> {target:?}"
+                );
+                assert!(
+                    expected.contains(&(path.clone(), target.clone())),
+                    "{mode:?}: not a name that exists: {path:?} -> {target:?}"
+                );
+            }
+            let received: std::collections::BTreeSet<_> = changes.iter().cloned().collect();
+            assert_eq!(received.len(), changes.len(), "{mode:?}: a path twice");
+            assert_eq!(received.len(), expected.len(), "{mode:?}: paths missing");
+        }
+
+        // What arrived is what is on disk.
+        let on_disk = std::fs::read_dir(dst.join("src")).unwrap().count();
+        assert_eq!(on_disk, FILES + 1);
+    }
+
+    /// The other half of the measurement: what reaches the parser is decided
+    /// by rsync's locale. In the C locale rsync escapes every byte above 0x7f
+    /// as `\#ooo`, and escapes bytes that are not valid UTF-8 in a UTF-8 locale
+    /// the same way — so the path in an event is the text rsync printed, not
+    /// always the name on disk.
+    #[test]
+    fn rsync_escapes_what_its_locale_cannot_show() {
+        if !rsync_available() {
+            eprintln!("skipping: rsync not on PATH");
+            return;
+        }
+
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+
+        let tmp = std::env::temp_dir().join(format!("foresight-escape-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let _cleanup = Cleanup(tmp.clone());
+        let src = tmp.join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(tmp.join("dst")).unwrap();
+        std::fs::write(src.join("ñ.txt"), b"x").unwrap();
+        // Latin-1 é, then a lone 0xff: valid in no UTF-8 locale.
+        let latin1 = OsString::from_vec(b"latin1-\xe9-\xff.txt".to_vec());
+        if std::fs::write(src.join(&latin1), b"x").is_err() {
+            eprintln!("skipping: this filesystem refuses names that are not UTF-8");
+            return;
+        }
+
+        let job = Job {
+            sources: vec![Source {
+                path: src.clone(),
+                is_dir: true,
+            }],
+            dest: tmp.join("dst"),
+            ..Default::default()
+        };
+        let paths = |lc_all: &str| -> Vec<String> {
+            let (code, changes) = changes_under_locale(lc_all, job.build_argv(Mode::Preview));
+            assert_eq!(code, Some(0), "{lc_all}");
+            changes.into_iter().map(|(p, _)| p).collect()
+        };
+
+        assert_eq!(
+            paths("C"),
+            ["src/", r"src/latin1-\#351-\#377.txt", r"src/\#303\#261.txt"]
+        );
+
+        let utf8 = paths("C.UTF-8");
+        if utf8.iter().any(|p| p == r"src/\#303\#261.txt") {
+            eprintln!("skipping the UTF-8 half: no C.UTF-8 locale for rsync to run under");
+            return;
+        }
+        assert_eq!(utf8, ["src/", r"src/latin1-\#351-\#377.txt", "src/ñ.txt"]);
     }
 
     /// Filter rules against the real engine, not just the argv we build.

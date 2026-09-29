@@ -39,15 +39,55 @@
 //! input can't override the contract. See `foresight::job::Job::build_argv`.
 //!
 //! Pinning the bundled rsync version pins these formats; this crate is tested
-//! against transcripts captured from rsync 3.4.4, plus a filter-debug one from
-//! 3.5.0, the version now bundled (see `tests/fixtures/` at the workspace
-//! root). The 3.4.4 → 3.5.0 bump changed none of these formats: a fresh 3.5.0
+//! against transcripts captured from rsync 3.4.4, plus a filter-debug one and
+//! a non-ASCII one from 3.5.0, the version now bundled (see `tests/fixtures/`
+//! at the workspace root). The 3.4.4 → 3.5.0 bump changed none of these formats: a fresh 3.5.0
 //! capture differs only in timestamps, byte counts and temp paths. A Python reference implementation with identical
 //! semantics lives in `reference/rsync_events.py`.
 //!
 //! Typical wiring (gtk-rs): read stdout chunks from `gio::Subprocess` on the
-//! main context, push each chunk through [`StreamParser::feed`], dispatch the
-//! returned events to your widgets, and call [`StreamParser::finish`] at EOF.
+//! main context, push each chunk **as the bytes it arrived as** through
+//! [`StreamParser::feed_bytes`], dispatch the returned events to your widgets,
+//! and call [`StreamParser::finish`] at EOF.
+//!
+//! # Bytes in, text out
+//!
+//! The caller does not decode. A read boundary can fall anywhere, including
+//! inside a multibyte character, and the two halves of `ñ` are each invalid on
+//! their own: decoding per read turns them into two U+FFFD and the path shown
+//! is no longer the path on disk. So the parser takes bytes, finds the line
+//! terminators in the bytes — `\n` and `\r` are single bytes that cannot occur
+//! inside a UTF-8 multibyte sequence — and decodes each *completed line* once,
+//! whole. Where the reads fell cannot change what comes out.
+//!
+//! What rsync puts in those bytes, measured on 3.5.0 (host build and the
+//! bundled one, inside the sandbox) with the two invocations above, which do
+//! not pass `-8`/`--8-bit-output`:
+//!
+//! - **In a UTF-8 locale** a name that is valid UTF-8 is written as its raw
+//!   bytes (`año ñ.txt`, `日本語.txt`, `emoji 😀.txt`), in the path and in the
+//!   `%L` symlink target alike. This is the case the per-line decode exists for.
+//! - **Bytes that are not valid in the locale are escaped by rsync itself** as
+//!   `\#ooo` (three octal digits): a Latin-1 `\xe9` arrives as the six ASCII
+//!   characters `\#351`. In the C/POSIX locale that is *every* byte above 0x7f,
+//!   so `ñ` arrives as `\#303\#261` and the stream is pure ASCII.
+//! - Control characters in a name are escaped the same way, in every locale
+//!   and with `-8` too: a newline is `\#012`, a carriage return `\#015`, BEL
+//!   `\#007` — so a name cannot forge a line terminator. Tab is written raw.
+//! - A literal backslash is written raw unless it is followed by `#` and three
+//!   digits, in which case it becomes `\#134`.
+//!
+//! The escapes are passed through untouched: [`ItemizedChange::path`] is the
+//! text rsync printed, which is the name on disk only when rsync had nothing to
+//! escape. Un-escaping is not attempted here.
+//!
+//! It follows that with these invocations rsync does not itself emit invalid
+//! UTF-8 for a file name. Invalid bytes can still reach the parser — `-8` in
+//! the free-form extra arguments writes names raw, and a remote job's stream
+//! carries whatever ssh and the far end's shell print — so a line that does
+//! not decode is decoded lossily (each invalid sequence becomes U+FFFD) and
+//! still yields its event. It is never dropped, and it does not disturb the
+//! lines around it.
 
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -512,10 +552,26 @@ pub fn parse_stats_block(text: &str) -> Stats {
 
 /// Incremental parser: handles the fact that progress updates end in `\r`
 /// while everything else ends in `\n`, and that chunk boundaries can fall
-/// anywhere — including mid-line and mid-number.
+/// anywhere — including mid-line, mid-number and mid-character.
+///
+/// It buffers **bytes** and decodes a line only once the line is complete; see
+/// "Bytes in, text out" in the crate docs for why, and for what rsync writes.
+///
+/// There are two ways in and one implementation. [`feed_bytes`] is the parser;
+/// [`feed`] hands it the bytes of a `&str`. `feed` was kept, rather than
+/// changed to take bytes, because text that is already a `&str` — a test's
+/// literal, a line built with `format!` — was decoded by nobody and has no
+/// boundary problem to cause, and because every caller that existed passes
+/// exactly that. What reads from a process uses `feed_bytes` and does no
+/// decoding of its own.
+///
+/// [`feed_bytes`]: StreamParser::feed_bytes
+/// [`feed`]: StreamParser::feed
 #[derive(Debug, Default)]
 pub struct StreamParser {
-    buf: String,
+    /// The bytes of the line that has not ended yet. Never contains a
+    /// terminator once a `feed` has returned.
+    buf: Vec<u8>,
 }
 
 impl StreamParser {
@@ -523,27 +579,47 @@ impl StreamParser {
         Self::default()
     }
 
-    /// Push a chunk of decoded stdout; returns every completed event.
-    pub fn feed(&mut self, chunk: &str) -> Vec<Event> {
-        self.buf.push_str(chunk);
+    /// Push a chunk of stdout exactly as it was read; returns every event
+    /// completed by it.
+    ///
+    /// The chunk may end anywhere, inside a multibyte character included. The
+    /// events returned over a whole stream are the same however the stream was
+    /// cut into chunks.
+    pub fn feed_bytes(&mut self, chunk: &[u8]) -> Vec<Event> {
+        self.buf.extend_from_slice(chunk);
         let mut events = Vec::new();
-        while let Some(idx) = self.buf.find(['\n', '\r']) {
-            let line: String = self.buf.drain(..=idx).collect();
-            let line = &line[..line.len() - 1]; // strip the terminator
-            if let Some(ev) = Self::parse_line(line) {
+        let mut start = 0;
+        while let Some(len) = self.buf[start..]
+            .iter()
+            .position(|b| matches!(b, b'\n' | b'\r'))
+        {
+            let end = start + len;
+            if let Some(ev) = Self::parse_line(&String::from_utf8_lossy(&self.buf[start..end])) {
                 events.push(ev);
             }
+            start = end + 1; // past the terminator
         }
+        self.buf.drain(..start);
         events
     }
 
+    /// [`feed_bytes`](Self::feed_bytes) for text that is already text.
+    ///
+    /// Not for process output: decoding a read in order to call this is the
+    /// mistake `feed_bytes` exists to prevent.
+    pub fn feed(&mut self, chunk: &str) -> Vec<Event> {
+        self.feed_bytes(chunk.as_bytes())
+    }
+
     /// Call after EOF to flush a final unterminated line.
+    ///
+    /// A stream cut short inside a character ends in an incomplete sequence,
+    /// which decodes to a single U+FFFD like any other invalid one.
     pub fn finish(&mut self) -> Vec<Event> {
         let rest = std::mem::take(&mut self.buf);
-        if rest.trim().is_empty() {
-            return Vec::new();
-        }
-        Self::parse_line(&rest).into_iter().collect()
+        Self::parse_line(&String::from_utf8_lossy(&rest))
+            .into_iter()
+            .collect()
     }
 
     fn parse_line(line: &str) -> Option<Event> {

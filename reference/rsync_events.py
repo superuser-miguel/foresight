@@ -20,11 +20,25 @@ Typical wiring inside the app (GLib main loop):
 
     parser = StreamParser()
     def on_stdout_chunk(chunk: bytes):
-        for event in parser.feed(chunk.decode("utf-8", "replace")):
+        for event in parser.feed_bytes(chunk):   # as read — do NOT decode
             dispatch(event)          # update progress bars / change list
     ...
     for event in parser.finish():
         dispatch(event)
+
+Bytes in, text out. A read can end inside a multibyte character, and each half
+decoded on its own is U+FFFD, so the caller does not decode: the parser splits
+the bytes on "\\n" / "\\r" (single bytes that cannot occur inside a UTF-8
+sequence) and decodes each completed line once. A line that is not valid UTF-8
+is decoded with errors="replace" and still yields its event.
+
+What rsync 3.5.0 writes, measured, without -8: in a UTF-8 locale valid UTF-8
+names arrive raw and invalid bytes arrive escaped as \\#ooo (octal); in the
+C/POSIX locale every byte above 0x7f is escaped; control characters in a name
+(\\#012, \\#015, \\#007 — not tab) are escaped in every locale. The escapes are
+passed through as printed. The full account is in the Rust crate's docs.
+
+Self-check:  python3 reference/rsync_events_selfcheck.py
 """
 
 from __future__ import annotations
@@ -308,34 +322,45 @@ def parse_stats_block(text: str) -> Stats:
 class StreamParser:
     """Incremental parser: handles the fact that progress updates end in
     ``\\r`` while everything else ends in ``\\n``, and that chunk boundaries
-    can fall anywhere."""
+    can fall anywhere — mid-line, mid-number and mid-character.
+
+    It buffers bytes and decodes a line only once the line is complete.
+    ``feed_bytes`` is the parser; ``feed`` hands it the bytes of a ``str`` and
+    is for text that is already text (a test's literal), never for process
+    output."""
 
     def __init__(self) -> None:
-        self._buf = ""
+        self._buf = b""
 
-    def feed(self, chunk: str) -> Iterator[Event]:
+    def feed_bytes(self, chunk: bytes) -> Iterator[Event]:
+        """Push a chunk exactly as it was read; yields every event completed
+        by it. The events over a whole stream are the same however the stream
+        was cut into chunks."""
         self._buf += chunk
         while True:
             # split on whichever terminator comes first
-            idx_n = self._buf.find("\n")
-            idx_r = self._buf.find("\r")
+            idx_n = self._buf.find(b"\n")
+            idx_r = self._buf.find(b"\r")
             if idx_n == -1 and idx_r == -1:
                 return
             if idx_r != -1 and (idx_n == -1 or idx_r < idx_n):
                 line, self._buf = self._buf[:idx_r], self._buf[idx_r + 1:]
             else:
                 line, self._buf = self._buf[:idx_n], self._buf[idx_n + 1:]
-            ev = self._parse_line(line)
+            ev = self._parse_line(line.decode("utf-8", "replace"))
             if ev is not None:
                 yield ev
 
+    def feed(self, chunk: str) -> Iterator[Event]:
+        """``feed_bytes`` for text that is already text."""
+        return self.feed_bytes(chunk.encode("utf-8"))
+
     def finish(self) -> Iterator[Event]:
         """Call after EOF to flush a final unterminated line."""
-        if self._buf.strip():
-            ev = self._parse_line(self._buf)
-            if ev is not None:
-                yield ev
-        self._buf = ""
+        rest, self._buf = self._buf, b""
+        ev = self._parse_line(rest.decode("utf-8", "replace"))
+        if ev is not None:
+            yield ev
 
     @staticmethod
     def _parse_line(line: str) -> Optional[Event]:
@@ -395,12 +420,13 @@ def classify_exit(code: int) -> tuple[str, str]:
 
 if __name__ == "__main__":
     parser = StreamParser()
-    with open(sys.argv[1], encoding="utf-8", errors="replace") as fh:
+    with open(sys.argv[1], "rb") as fh:
         data = fh.read()
-    # simulate arbitrary chunking to prove boundary handling
+    # simulate arbitrary chunking to prove boundary handling: 7 BYTES at a
+    # time, so a multibyte character in the file does get cut
     events = []
     for i in range(0, len(data), 7):
-        events.extend(parser.feed(data[i:i + 7]))
+        events.extend(parser.feed_bytes(data[i:i + 7]))
     events.extend(parser.finish())
     for ev in events:
         print(f"{type(ev).__name__:16} {ev}")

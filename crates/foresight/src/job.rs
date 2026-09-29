@@ -2825,6 +2825,159 @@ mod tests {
         assert_eq!(partial.filter_hits, 1);
     }
 
+    /// A real transfer that cannot read one file ends with exit 23, and rsync
+    /// writes its summary straight after the last progress update, with no
+    /// line ending between them (the newline it owes goes to stdout, which is
+    /// buffered; the summary to stderr, which is not). The summary is the
+    /// line the warning is built around, so it has to arrive as the error it
+    /// is — and the update it was glued to as an update.
+    #[test]
+    fn a_transfer_that_cannot_read_a_file_reports_the_summary_and_the_cause() {
+        use std::os::unix::fs::PermissionsExt;
+
+        if !rsync_available() {
+            eprintln!("skipping: rsync not on PATH");
+            return;
+        }
+
+        /// Hands the file back and removes the tree, however the test ends.
+        struct Cleanup {
+            locked: PathBuf,
+            tmp: PathBuf,
+        }
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ =
+                    std::fs::set_permissions(&self.locked, std::fs::Permissions::from_mode(0o644));
+                let _ = std::fs::remove_dir_all(&self.tmp);
+            }
+        }
+
+        let tmp = std::env::temp_dir().join(format!("foresight-glued-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let src = tmp.join("src");
+        let dst = tmp.join("dst");
+        let cleanup = Cleanup {
+            locked: src.join("locked.bin"),
+            tmp: tmp.clone(),
+        };
+        std::fs::create_dir_all(src.join("sub")).unwrap();
+        std::fs::create_dir_all(&dst).unwrap();
+        std::fs::write(src.join("a.bin"), vec![b'a'; 20_000]).unwrap();
+        std::fs::write(&cleanup.locked, vec![b'l'; 20_000]).unwrap();
+        std::fs::write(src.join("sub/z (100%).bin"), vec![b'z'; 30_000]).unwrap();
+        std::fs::set_permissions(&cleanup.locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read(&cleanup.locked).is_ok() {
+            eprintln!("skipped: file permissions are not enforced for this user");
+            return;
+        }
+
+        let job = Job {
+            sources: vec![Source {
+                path: src.clone(),
+                is_dir: true,
+            }],
+            dest: dst.clone(),
+            ..Default::default()
+        };
+
+        /// What arrived, in order, reduced to what the test asks about.
+        #[derive(Debug, PartialEq)]
+        enum Seen {
+            Progress { remaining: Option<u64> },
+            Change(String),
+            Error(String),
+            Chatter(String),
+        }
+        let seen: Rc<RefCell<Vec<Seen>>> = Rc::new(RefCell::new(Vec::new()));
+        let completion: Rc<RefCell<Option<Completion>>> = Rc::new(RefCell::new(None));
+
+        let ctx = glib::MainContext::new();
+        ctx.with_thread_default(|| {
+            let main_loop = glib::MainLoop::new(Some(&ctx), false);
+            let on_event = {
+                let seen = seen.clone();
+                move |ev: Event| {
+                    seen.borrow_mut().push(match ev {
+                        Event::Progress(p) => Seen::Progress {
+                            remaining: p.check_remaining,
+                        },
+                        Event::Change(c) => Seen::Change(c.path),
+                        Event::Message(m) if m.is_error => Seen::Error(m.text),
+                        Event::Message(m) => Seen::Chatter(m.text),
+                        Event::Filter(f) => Seen::Chatter(f.path),
+                    })
+                }
+            };
+            let on_done = {
+                let completion = completion.clone();
+                let ml = main_loop.clone();
+                move |c: Completion| {
+                    *completion.borrow_mut() = Some(c);
+                    ml.quit();
+                }
+            };
+            // Held to the end of the run: a `Runner` that is dropped while its
+            // process is live stops the process.
+            let _runner =
+                spawn_rsync(job.build_argv(Mode::Sync), on_event, on_done).expect("spawn rsync");
+            let ml_timeout = main_loop.clone();
+            glib::timeout_add_seconds_local_once(30, move || ml_timeout.quit());
+            main_loop.run();
+        })
+        .expect("run with thread-default context");
+
+        let completion = completion.borrow().clone().expect("on_done fired");
+        let seen = seen.borrow();
+        assert_eq!(completion.code, Some(23), "{seen:?}");
+        assert_eq!(completion.severity, Severity::Partial);
+
+        let errors: Vec<&str> = seen
+            .iter()
+            .filter_map(|s| match s {
+                Seen::Error(text) => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(errors.len(), 2, "{seen:?}");
+        // Why.
+        assert!(
+            errors[0].starts_with("rsync: [sender] send_files failed to open ")
+                && errors[0].ends_with("/src/locked.bin\": Permission denied (13)"),
+            "{seen:?}"
+        );
+        // And what it came to. At the start of its own text: nothing of the
+        // progress update is left in front of it.
+        assert!(
+            errors[1].starts_with(
+                "rsync error: some files/attrs were not transferred (see previous errors) (code 23)"
+            ),
+            "{seen:?}"
+        );
+        // Nothing fell through as chatter — which is where the glued line
+        // used to end up, whole.
+        assert!(
+            !seen.iter().any(|s| matches!(s, Seen::Chatter(_))),
+            "{seen:?}"
+        );
+        // The summary is the last thing said, and what came just before it is
+        // the final progress update, not lost to the line it was glued to.
+        let n = seen.len();
+        assert!(matches!(seen[n - 1], Seen::Error(_)), "{seen:?}");
+        assert_eq!(
+            seen[n - 2],
+            Seen::Progress { remaining: Some(0) },
+            "{seen:?}"
+        );
+
+        // What could be read was copied; what could not was not.
+        assert_eq!(std::fs::read(dst.join("src/a.bin")).unwrap().len(), 20_000);
+        assert!(dst.join("src/sub/z (100%).bin").exists());
+        assert!(!dst.join("src/locked.bin").exists());
+        drop(cleanup);
+        assert!(!tmp.exists(), "the test left {} behind", tmp.display());
+    }
+
     // -- filter debugging & dead anchors ------------------------------------
 
     #[test]

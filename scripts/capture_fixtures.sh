@@ -103,4 +103,26 @@ ln -s 日本語.txt "$LAB/u/lien-é"
 LC_ALL=C.UTF-8 $R -a --info=progress2 --out-format='%i %n%L' "$LAB/u/" "$LAB/udst/" \
     > "$FIX/progress2_non_ascii.raw" 2>&1
 
+# 9. a real run that ends with exit 23, RAW bytes, stderr merged into stdout
+#    as the app reads it. One file cannot be read, so rsync says why mid-run
+#    (`rsync: [sender] send_files failed to open …`, which arrives on a line of
+#    its own) and sums up at the end — and the summary arrives GLUED to the
+#    last progress update: `…to-chk=0/6)rsync error: some files/attrs were not
+#    transferred … (code 23) …`, the newline that should part them coming
+#    after. That junction is what this fixture is for. One name holds `)`, `%`
+#    and the look of a progress trailer, to show that an itemized line is not
+#    taken apart. Needs a non-root user (root reads a mode-000 file). The
+#    send_files line carries $LAB, so this fixture differs in that path on
+#    every capture.
+mkdir -p "$LAB/g/src/sub" "$LAB/g/dst"
+head -c 20000 /dev/urandom > "$LAB/g/src/a.bin"
+head -c 20000 /dev/urandom > "$LAB/g/src/locked.bin"
+head -c 30000 /dev/urandom > "$LAB/g/src/sub/z.bin"
+echo p > "$LAB/g/src/sub/50% (xfr#1, to-chk=0) done.txt"
+chmod 000 "$LAB/g/src/locked.bin"
+#    The exit code is not recorded beside it: the summary line states it.
+(cd "$LAB/g" && LC_ALL=C.UTF-8 $R -a --info=progress2 --out-format='%i %n%L' src dst/) \
+    > "$FIX/progress2_glued_error.raw" 2>&1 || true
+chmod 644 "$LAB/g/src/locked.bin"
+
 echo "fixtures written to $FIX — now: git diff tests/fixtures, then cargo test --all"

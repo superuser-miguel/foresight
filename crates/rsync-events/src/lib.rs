@@ -40,7 +40,8 @@
 //!
 //! Pinning the bundled rsync version pins these formats; this crate is tested
 //! against transcripts captured from rsync 3.4.4, plus a filter-debug one and
-//! a non-ASCII one from 3.5.0, the version now bundled (see `tests/fixtures/`
+//! a non-ASCII one and one that ends in an error from 3.5.0, the version now
+//! bundled (see `tests/fixtures/`
 //! at the workspace root). The 3.4.4 → 3.5.0 bump changed none of these formats: a fresh 3.5.0
 //! capture differs only in timestamps, byte counts and temp paths. A Python reference implementation with identical
 //! semantics lives in `reference/rsync_events.py`.
@@ -88,6 +89,58 @@
 //! not decode is decoded lossily (each invalid sequence becomes U+FFFD) and
 //! still yields its event. It is never dropped, and it does not disturb the
 //! lines around it.
+//!
+//! # One line, two events
+//!
+//! A progress update is not always followed by a terminator. The app reads
+//! rsync's stdout and stderr as one stream, and rsync keeps the two apart in a
+//! way that stream cannot show. Measured on 3.5.0 and read in its source
+//! (`progress.c`, `log.c`, `cleanup.c`):
+//!
+//! - A progress update is written to stdout as `\r` + the text, with no
+//!   terminator, and flushed. rsync notes that a newline is owed
+//!   (`output_needs_newline`) and pays it before the next thing it prints —
+//!   **to whichever stream that next thing goes to**.
+//! - Mid-run this works out in the merged stream. An itemized line goes to
+//!   stdout and so does its newline; a per-file `rsync: … failed: …` goes to
+//!   stderr and so does *its* newline, and stderr is not buffered. Both arrive
+//!   as `…to-chk=2/8)\n` and then the line.
+//! - At the end of the run it does not. `_exit_cleanup` pays the newline to
+//!   stdout, which is a pipe and therefore fully buffered, and does not flush;
+//!   the summary is then written to stderr at once. What arrives is
+//!   `…to-chk=0/8)rsync error: some files/attrs were not transferred … (code 23) …\n`
+//!   and the owed `\n` after it, when stdout is flushed at exit. Every run
+//!   that ends with a non-zero code after showing progress does this: 15 runs
+//!   of 15 here. A run that is stopped does it after a mid-file update, which
+//!   ends in two spaces: `…  0:00:03  rsync error: received SIGINT, SIGTERM,
+//!   or SIGHUP (code 20) …`.
+//! - It is not particular to the merged stream. Read separately, stderr is
+//!   whole and *stdout* has the glued line: the newline owed before a per-file
+//!   error went to stderr, so the next itemized line follows the update
+//!   directly (`…to-chk=2/8)cd+++++++++ locked/`).
+//!
+//! So a line that is nothing as a whole is looked at once more: if it
+//! **begins with a complete progress update**, in the exact form rsync prints
+//! — count, percentage, rate, `h:mm:ss`, then either the `(xfr#N, to-chk=R/T)`
+//! trailer and the spaces rsync pads it with, or the two spaces that end a
+//! mid-file update — that update is one event, and the text after it is
+//! classified as the line of its own that it was meant to be. `rsync error: …`
+//! is then at the start of its line and is collected as the error it is.
+//!
+//! Nothing else about classification changes. The error patterns stay anchored
+//! to the start of a line; a line that merely contains `rsync error:` is what
+//! it was before. A line that parses whole is never split — an itemized line
+//! is recognised by its flags before any of this is tried, whatever its path
+//! contains. Captured in `tests/fixtures/progress2_glued_error.raw`.
+//!
+//! What this cannot see: text that lands after a progress update and is cut
+//! short of being a line of its own, or stderr text that arrives in the middle
+//! of a line on stdout. Neither was observed — rsync writes whole lines to
+//! stderr, and flushes stdout at the end of each of its own — but a remote
+//! job's stream also carries what ssh prints, which is not rsync's to order.
+//! And the spaces between an update and the text glued to it are all taken as
+//! rsync's padding, there being no telling them from an indent: a glued line
+//! that began with spaces of its own is classified without them.
 
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -309,6 +362,30 @@ static PROGRESS_RE: Lazy<Regex> = Lazy::new(|| {
     .unwrap()
 });
 
+/// A complete progress update at the start of a line that goes on — see
+/// "One line, two events" in the crate docs for how such a line comes about.
+///
+/// Stricter than [`PROGRESS_RE`] on purpose, because here the pattern has to
+/// say where the update *ends*, and text of any kind follows it:
+///
+/// - the elapsed time is `h:mm:ss` exactly (rsync's `%4u:%02u:%02u`), not
+///   "digits and colons", so it cannot run on into a remainder that starts
+///   with a digit;
+/// - what closes the update is one of the two things rsync closes it with:
+///   the `(xfr#N, to-chk=R/T)` trailer, or the two spaces that end an update
+///   printed mid-file. An update that ends in neither is not split.
+///
+/// The spaces after it are taken with it: rsync pads the trailer to the width
+/// of the longest one it has printed, and they are spaces, never tabs.
+/// Digits are ASCII and blanks are spaces, as rsync writes them — `\d` and
+/// `\s` would admit more, and not the same more in Rust as in Python.
+static GLUED_PROGRESS_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"^ *[0-9,]+ +[0-9]+% +[0-9.,]+[^ ]+/s +[0-9]+:[0-9]{2}:[0-9]{2}(?: +\(xfr#[0-9]+, +(?:to-chk|ir-chk)=[0-9]+/[0-9]+\) *|  +)",
+    )
+    .unwrap()
+});
+
 /// `[sender] hiding directory Photos/private because of pattern private`.
 ///
 /// `path` is greedy so the split lands on the *last* " because of pattern ":
@@ -476,6 +553,21 @@ pub fn parse_progress_line(line: &str) -> Option<Progress> {
     })
 }
 
+/// Split a line that **begins** with a complete progress update and goes on:
+/// the update, and the text that follows it.
+///
+/// `None` unless both are there — a line that is a progress update and nothing
+/// more is [`parse_progress_line`]'s, and one that only resembles the start of
+/// an update is not split at all.
+fn split_glued_progress(line: &str) -> Option<(Progress, &str)> {
+    let end = GLUED_PROGRESS_RE.find(line)?.end();
+    let (update, rest) = line.split_at(end);
+    if rest.trim().is_empty() {
+        return None;
+    }
+    Some((parse_progress_line(update)?, rest))
+}
+
 pub fn parse_stats_block(text: &str) -> Stats {
     static PATS: Lazy<Vec<(&str, Regex)>> = Lazy::new(|| {
         vec![
@@ -594,9 +686,7 @@ impl StreamParser {
             .position(|b| matches!(b, b'\n' | b'\r'))
         {
             let end = start + len;
-            if let Some(ev) = Self::parse_line(&String::from_utf8_lossy(&self.buf[start..end])) {
-                events.push(ev);
-            }
+            Self::parse_line(&String::from_utf8_lossy(&self.buf[start..end]), &mut events);
             start = end + 1; // past the terminator
         }
         self.buf.drain(..start);
@@ -617,25 +707,44 @@ impl StreamParser {
     /// which decodes to a single U+FFFD like any other invalid one.
     pub fn finish(&mut self) -> Vec<Event> {
         let rest = std::mem::take(&mut self.buf);
-        Self::parse_line(&String::from_utf8_lossy(&rest))
-            .into_iter()
-            .collect()
+        let mut events = Vec::new();
+        Self::parse_line(&String::from_utf8_lossy(&rest), &mut events);
+        events
     }
 
-    fn parse_line(line: &str) -> Option<Event> {
+    /// The events of one line: none for a blank one, one for nearly every
+    /// other, and two for a progress update with a line glued to it.
+    fn parse_line(line: &str, events: &mut Vec<Event>) {
         if line.trim().is_empty() {
-            return None;
+            return;
         }
+        if let Some(ev) = Self::parse_structured(line) {
+            events.push(ev);
+            return;
+        }
+        // Only now, and only for a line that is nothing as a whole: whatever
+        // parsed before this was added parses the same way still.
+        if let Some((progress, rest)) = split_glued_progress(line) {
+            events.push(Event::Progress(progress));
+            events.push(Self::parse_structured(rest).unwrap_or_else(|| Self::message(rest)));
+            return;
+        }
+        events.push(Self::message(line));
+    }
+
+    /// A line that is, whole, one of the formats this crate structures.
+    fn parse_structured(line: &str) -> Option<Event> {
         if let Some(p) = parse_progress_line(line) {
             return Some(Event::Progress(p));
         }
         if let Some(c) = parse_itemize_line(line) {
             return Some(Event::Change(c));
         }
-        if let Some(f) = parse_filter_line(line) {
-            return Some(Event::Filter(f));
-        }
-        Some(Event::Message(Message {
+        parse_filter_line(line).map(Event::Filter)
+    }
+
+    fn message(line: &str) -> Event {
+        Event::Message(Message {
             text: line.trim_end().to_string(),
             // A remote job's stream carries ssh's stderr as well as rsync's,
             // and for those failures ssh is the one that says why. And not
@@ -643,7 +752,7 @@ impl StreamParser {
             is_error: ERROR_RE.is_match(line)
                 || UNPREFIXED_ERROR_RE.is_match(line)
                 || SSH_ERROR_RE.is_match(line),
-        }))
+        })
     }
 }
 

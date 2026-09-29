@@ -252,3 +252,290 @@ fn finish_on_nothing_but_whitespace_yields_nothing() {
     assert!(p.feed_bytes(b"\n\r\n  \t ").is_empty());
     assert!(p.finish().is_empty());
 }
+
+// -- a progress update with a line glued to it ------------------------------
+//
+// rsync does not always end a progress update before it prints something
+// else; see "One line, two events" in the crate docs. The cases below are in
+// `reference/rsync_events_selfcheck.py` too, with the same text.
+
+const SUMMARY: &str = "rsync error: some files/attrs were not transferred (see previous errors) (code 23) at main.c(1394) [sender=3.5.0-g483b5efc]";
+const LAST_UPDATE: &str = "         70,002 100%   47.69MB/s    0:00:00 (xfr#4, to-chk=0/6)";
+
+fn progress(bytes_done: u64, percent: u8, rate: &str, elapsed: &str) -> Progress {
+    Progress {
+        bytes_done,
+        percent,
+        rate_human: rate.into(),
+        elapsed: elapsed.into(),
+        xfr_index: None,
+        check_phase: None,
+        check_remaining: None,
+        check_total: None,
+    }
+}
+
+fn last_update() -> Event {
+    Event::Progress(Progress {
+        xfr_index: Some(4),
+        check_phase: Some("to-chk".into()),
+        check_remaining: Some(0),
+        check_total: Some(6),
+        ..progress(70_002, 100, "47.69MB/s", "0:00:00")
+    })
+}
+
+fn message(text: &str, is_error: bool) -> Event {
+    Event::Message(Message {
+        text: text.into(),
+        is_error,
+    })
+}
+
+/// The end of a run that exits 23, byte for byte as rsync 3.5.0 wrote it: the
+/// update, the summary with nothing between them, and the newline that should
+/// have parted them arriving last.
+#[test]
+fn a_summary_glued_to_the_last_update_is_an_update_and_an_error() {
+    let input = format!("\r{LAST_UPDATE}\r{LAST_UPDATE}{SUMMARY}\n\n");
+    assert_eq!(
+        whole(input.as_bytes()),
+        [last_update(), last_update(), message(SUMMARY, true)]
+    );
+    assert_cut_anywhere("glued summary", input.as_bytes());
+}
+
+/// The line that says why, in the same place. The path holds `)`, `%`, digits
+/// and the look of a trailer: the split is at the end of the update and
+/// nowhere after it.
+#[test]
+fn a_cause_glued_to_an_update_is_an_update_and_an_error() {
+    let cause = "rsync: [sender] send_files failed to open \"/x/50% (xfr#9, to-chk=1/2) (copy).bin\": Permission denied (13)";
+    let input = format!("\r{LAST_UPDATE}{cause}\n");
+    assert_eq!(
+        whole(input.as_bytes()),
+        [last_update(), message(cause, true)]
+    );
+    assert_cut_anywhere("glued cause", input.as_bytes());
+}
+
+/// A run that is stopped: the update is a mid-file one, which has no trailer
+/// and ends in two spaces. As captured from 3.5.0.
+#[test]
+fn a_line_glued_to_a_mid_file_update_is_split_after_its_two_spaces() {
+    let stopped = "rsync error: received SIGINT, SIGTERM, or SIGHUP (code 20) at rsync.c(874) [sender=3.5.0-g483b5efc]";
+    let input = format!("\r      1,081,344  36%  500.73kB/s    0:00:03  {stopped}\n");
+    assert_eq!(
+        whole(input.as_bytes()),
+        [
+            Event::Progress(progress(1_081_344, 36, "500.73kB/s", "0:00:03")),
+            message(stopped, true),
+        ]
+    );
+    assert_cut_anywhere("glued to a mid-file update", input.as_bytes());
+}
+
+/// rsync pads a trailer that is shorter than one it printed before. The
+/// padding belongs to the update.
+#[test]
+fn the_padding_after_a_trailer_is_not_part_of_the_line_that_follows() {
+    let input = format!("{LAST_UPDATE}   {SUMMARY}\n");
+    assert_eq!(
+        whole(input.as_bytes()),
+        [last_update(), message(SUMMARY, true)]
+    );
+    assert_cut_anywhere("glued after padding", input.as_bytes());
+}
+
+/// What follows the update is classified as any line is: by what it starts
+/// with. Glued text that is not an error does not become one, whatever it
+/// contains, and an itemized line is an itemized line (this is what stdout
+/// holds when the two streams are read apart).
+#[test]
+fn what_follows_the_update_is_classified_as_a_line_of_its_own() {
+    for (rest, expected) in [
+        (
+            "sent 125 bytes  received 33 bytes  316.00 bytes/sec",
+            message("sent 125 bytes  received 33 bytes  316.00 bytes/sec", false),
+        ),
+        (
+            "note: rsync error: is not at the start",
+            message("note: rsync error: is not at the start", false),
+        ),
+        (
+            "rsync warning: some files vanished before they could be transferred (code 24) at main.c(1394) [sender=3.5.0-g483b5efc]",
+            message("rsync warning: some files vanished before they could be transferred (code 24) at main.c(1394) [sender=3.5.0-g483b5efc]", false),
+        ),
+        (
+            "user@nas.local: Permission denied (publickey).",
+            message("user@nas.local: Permission denied (publickey).", true),
+        ),
+        (
+            "cd+++++++++ locked (100%)/",
+            change("cd+++++++++", "locked (100%)/", None),
+        ),
+        (
+            "*deleting   old/été.txt",
+            change("*deleting", "old/été.txt", None),
+        ),
+    ] {
+        let input = format!("\r{LAST_UPDATE}{rest}\n");
+        assert_eq!(
+            whole(input.as_bytes()),
+            [last_update(), expected],
+            "{rest:?}"
+        );
+        assert_cut_anywhere(rest, input.as_bytes());
+    }
+}
+
+/// Lines that parsed before parse as they did: a progress update alone, with
+/// and without padding, and an error on a line of its own.
+#[test]
+fn whole_lines_are_what_they_were() {
+    let padded = format!("{LAST_UPDATE}   ");
+    for line in [LAST_UPDATE, padded.as_str()] {
+        assert_eq!(whole(format!("\r{line}\r").as_bytes()), [last_update()]);
+        assert_eq!(whole(format!("{line}\n").as_bytes()), [last_update()]);
+        assert_eq!(whole(line.as_bytes()), [last_update()]);
+    }
+    assert_eq!(
+        whole(b"\r         20,000  28%    0.00kB/s    0:00:00  \r"),
+        [Event::Progress(progress(20_000, 28, "0.00kB/s", "0:00:00"))]
+    );
+    assert_eq!(
+        whole(format!("{SUMMARY}\n").as_bytes()),
+        [message(SUMMARY, true)]
+    );
+}
+
+/// Not split, and not errors: the words in the middle of a line, a name that
+/// holds them, and lines that only resemble the start of an update — one
+/// without its rate, one whose time is not `h:mm:ss`, one that ends in a
+/// single space where rsync writes the trailer or two.
+#[test]
+fn a_line_that_only_contains_the_words_is_one_event_and_no_error() {
+    for line in [
+        "note: rsync error: is not at the start",
+        "building file list ... rsync: done",
+        "100% rsync error: no",
+        "  1,000  50% done rsync error: no",
+        "  1,000  50%  0.00kB/s  0:00 rsync error: no",
+        "  1,000  50%  0.00kB/s  0:00:00 rsync error: no",
+        "  1,000  50%  0.00kB/s  0:00:00rsync error: no",
+        "  1,000  50%  0.00kB/s  0:00:007 rsync error: no",
+        "x 1,000  50%  0.00kB/s  0:00:00  rsync error: no",
+    ] {
+        assert_eq!(
+            whole(format!("{line}\n").as_bytes()),
+            [message(line.trim_end(), false)],
+            "{line:?}"
+        );
+    }
+    // A name is part of an itemized line, which is recognised by its flags
+    // before anything is looked for inside it.
+    let name = "70,002 100%  47.69MB/s  0:00:00 (xfr#4, to-chk=0/6)rsync error: x).txt";
+    assert_eq!(
+        whole(format!(">f+++++++++ {name}\n").as_bytes()),
+        [change(">f+++++++++", name, None)]
+    );
+    assert_eq!(
+        whole(format!("*deleting   {name}\n").as_bytes()),
+        [change("*deleting", name, None)]
+    );
+}
+
+/// An update and blanks after it, of any kind, is an update and no more.
+#[test]
+fn an_update_followed_by_nothing_is_not_split() {
+    assert_eq!(
+        whole(format!("{LAST_UPDATE} \t \n").as_bytes()),
+        [last_update()]
+    );
+}
+
+/// `finish` flushes both halves of a glued line that has no terminator.
+#[test]
+fn finish_flushes_both_events_of_a_glued_line() {
+    let mut p = StreamParser::new();
+    assert!(p
+        .feed_bytes(format!("\r{LAST_UPDATE}{SUMMARY}").as_bytes())
+        .is_empty());
+    assert_eq!(p.finish(), [last_update(), message(SUMMARY, true)]);
+    assert!(p.finish().is_empty());
+}
+
+/// Real rsync 3.5.0 output, stderr merged into stdout, for a run that could
+/// not read one file and exited 23 (`scripts/capture_fixtures.sh`, step 9).
+/// The cause arrives on a line of its own; the summary arrives glued to the
+/// last progress update.
+#[test]
+fn the_glued_error_fixture_yields_the_summary_and_the_cause() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../tests/fixtures/progress2_glued_error.raw");
+    let bytes = std::fs::read(&path).unwrap();
+    // The junction this fixture exists for is in it.
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(text.contains("to-chk=0/6)rsync error: "), "{text:?}");
+
+    let expected = whole(&bytes);
+    for size in [1, 2, 3, 7, 64, 4096, 8192] {
+        assert_eq!(chunked(&bytes, size), expected, "{size}-byte chunks");
+    }
+
+    let errors: Vec<&str> = expected
+        .iter()
+        .filter_map(|e| match e {
+            Event::Message(m) if m.is_error => Some(m.text.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(errors.len(), 2, "{errors:?}");
+    assert!(
+        errors[0].starts_with("rsync: [sender] send_files failed to open \"")
+            && errors[0].ends_with("/g/src/locked.bin\": Permission denied (13)"),
+        "{errors:?}"
+    );
+    assert_eq!(errors[1], SUMMARY);
+
+    // Nothing in it is left over as chatter: every line is accounted for.
+    assert!(
+        !expected
+            .iter()
+            .any(|e| matches!(e, Event::Message(m) if !m.is_error)),
+        "{expected:?}"
+    );
+    let changes: Vec<&str> = expected
+        .iter()
+        .filter_map(|e| match e {
+            Event::Change(c) => Some(c.path.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        changes,
+        [
+            "src/",
+            "src/a.bin",
+            "src/sub/",
+            "src/sub/50% (xfr#1, to-chk=0) done.txt",
+            "src/sub/z.bin",
+        ]
+    );
+    // The update the summary was glued to is the last event before it.
+    let n = expected.len();
+    assert_eq!(expected[n - 1], message(SUMMARY, true));
+    match &expected[n - 2] {
+        Event::Progress(p) => {
+            assert_eq!(p.check_remaining, Some(0));
+            assert_eq!(p.check_total, Some(6));
+            assert_eq!(p.xfr_index, Some(4));
+        }
+        other => panic!("expected the last progress update, got {other:?}"),
+    }
+    let updates = expected
+        .iter()
+        .filter(|e| matches!(e, Event::Progress(_)))
+        .count();
+    assert_eq!(updates, 7);
+}

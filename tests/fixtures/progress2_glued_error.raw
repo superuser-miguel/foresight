@@ -1,0 +1,10 @@
+cd+++++++++ src/
+>f+++++++++ src/a.bin
+         20,000  28%    0.00kB/s    0:00:00           20,000  28%    0.00kB/s    0:00:00 (xfr#1, to-chk=4/6)         20,000  28%    0.00kB/s    0:00:00 (xfr#1, to-chk=2/6)
+rsync: [sender] send_files failed to open "/tmp/tmp.eAWPECzFHJ/g/src/locked.bin": Permission denied (13)
+cd+++++++++ src/sub/
+>f+++++++++ src/sub/50% (xfr#1, to-chk=0) done.txt
+         40,002  57%   19.08MB/s    0:00:00 (xfr#3, to-chk=1/6)
+>f+++++++++ src/sub/z.bin
+         70,002 100%   47.69MB/s    0:00:00 (xfr#4, to-chk=0/6)         70,002 100%   47.69MB/s    0:00:00 (xfr#4, to-chk=0/6)         70,002 100%   47.69MB/s    0:00:00 (xfr#4, to-chk=0/6)rsync error: some files/attrs were not transferred (see previous errors) (code 23) at main.c(1394) [sender=3.5.0-g483b5efc]
+

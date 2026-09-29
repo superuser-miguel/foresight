@@ -182,6 +182,149 @@ def check_finish_on_nothing_but_whitespace_yields_nothing() -> None:
     assert list(p.finish()) == []
 
 
+# -- a progress update with a line glued to it -------------------------------
+#
+# The cases of the same names in chunk_boundary_test.rs, with the same text.
+
+SUMMARY = ("rsync error: some files/attrs were not transferred (see previous "
+           "errors) (code 23) at main.c(1394) [sender=3.5.0-g483b5efc]")
+LAST_UPDATE = "         70,002 100%   47.69MB/s    0:00:00 (xfr#4, to-chk=0/6)"
+LAST = Progress(bytes_done=70_002, percent=100, rate_human="47.69MB/s",
+                elapsed="0:00:00", xfr_index=4, check_phase="to-chk",
+                check_remaining=0, check_total=6)
+
+
+def check_a_summary_glued_to_the_last_update_is_an_update_and_an_error() -> None:
+    data = f"\r{LAST_UPDATE}\r{LAST_UPDATE}{SUMMARY}\n\n".encode()
+    assert whole(data) == [LAST, LAST, Message(SUMMARY, True)], whole(data)
+    assert_cut_anywhere("glued summary", data)
+
+
+def check_a_cause_glued_to_an_update_is_an_update_and_an_error() -> None:
+    cause = ('rsync: [sender] send_files failed to open '
+             '"/x/50% (xfr#9, to-chk=1/2) (copy).bin": Permission denied (13)')
+    data = f"\r{LAST_UPDATE}{cause}\n".encode()
+    assert whole(data) == [LAST, Message(cause, True)], whole(data)
+    assert_cut_anywhere("glued cause", data)
+
+
+def check_a_line_glued_to_a_mid_file_update_is_split_after_its_two_spaces() -> None:
+    stopped = ("rsync error: received SIGINT, SIGTERM, or SIGHUP (code 20) "
+               "at rsync.c(874) [sender=3.5.0-g483b5efc]")
+    data = (f"\r      1,081,344  36%  500.73kB/s    0:00:03  {stopped}\n"
+            ).encode()
+    assert whole(data) == [
+        Progress(bytes_done=1_081_344, percent=36, rate_human="500.73kB/s",
+                 elapsed="0:00:03"),
+        Message(stopped, True),
+    ], whole(data)
+    assert_cut_anywhere("glued to a mid-file update", data)
+
+
+def check_the_padding_after_a_trailer_is_not_part_of_the_line_that_follows() -> None:
+    data = f"{LAST_UPDATE}   {SUMMARY}\n".encode()
+    assert whole(data) == [LAST, Message(SUMMARY, True)], whole(data)
+    assert_cut_anywhere("glued after padding", data)
+
+
+def check_what_follows_the_update_is_classified_as_a_line_of_its_own() -> None:
+    vanished = ("rsync warning: some files vanished before they could be "
+                "transferred (code 24) at main.c(1394) "
+                "[sender=3.5.0-g483b5efc]")
+    cases = [
+        ("sent 125 bytes  received 33 bytes  316.00 bytes/sec",
+         Message("sent 125 bytes  received 33 bytes  316.00 bytes/sec", False)),
+        ("note: rsync error: is not at the start",
+         Message("note: rsync error: is not at the start", False)),
+        (vanished, Message(vanished, False)),
+        ("user@nas.local: Permission denied (publickey).",
+         Message("user@nas.local: Permission denied (publickey).", True)),
+        ("cd+++++++++ locked (100%)/",
+         ItemizedChange("cd+++++++++", "locked (100%)/")),
+        ("*deleting   old/été.txt",
+         ItemizedChange("*deleting", "old/été.txt", deleted=True)),
+    ]
+    for rest, expected in cases:
+        data = f"\r{LAST_UPDATE}{rest}\n".encode()
+        assert whole(data) == [LAST, expected], (rest, whole(data))
+        assert_cut_anywhere(rest, data)
+
+
+def check_whole_lines_are_what_they_were() -> None:
+    for line in (LAST_UPDATE, LAST_UPDATE + "   "):
+        assert whole(f"\r{line}\r".encode()) == [LAST]
+        assert whole(f"{line}\n".encode()) == [LAST]
+        assert whole(line.encode()) == [LAST]
+    assert whole(b"\r         20,000  28%    0.00kB/s    0:00:00  \r") == [
+        Progress(bytes_done=20_000, percent=28, rate_human="0.00kB/s",
+                 elapsed="0:00:00")]
+    assert whole(f"{SUMMARY}\n".encode()) == [Message(SUMMARY, True)]
+
+
+def check_a_line_that_only_contains_the_words_is_one_event_and_no_error() -> None:
+    for line in [
+        "note: rsync error: is not at the start",
+        "building file list ... rsync: done",
+        "100% rsync error: no",
+        "  1,000  50% done rsync error: no",
+        "  1,000  50%  0.00kB/s  0:00 rsync error: no",
+        "  1,000  50%  0.00kB/s  0:00:00 rsync error: no",
+        "  1,000  50%  0.00kB/s  0:00:00rsync error: no",
+        "  1,000  50%  0.00kB/s  0:00:007 rsync error: no",
+        "x 1,000  50%  0.00kB/s  0:00:00  rsync error: no",
+    ]:
+        got = whole(f"{line}\n".encode())
+        assert got == [Message(line.rstrip(), False)], (line, got)
+    name = ("70,002 100%  47.69MB/s  0:00:00 (xfr#4, to-chk=0/6)"
+            "rsync error: x).txt")
+    assert whole(f"{NEW} {name}\n".encode()) == [ItemizedChange(NEW, name)]
+    assert whole(f"*deleting   {name}\n".encode()) == [
+        ItemizedChange("*deleting", name, deleted=True)]
+
+
+def check_an_update_followed_by_nothing_is_not_split() -> None:
+    assert whole(f"{LAST_UPDATE} \t \n".encode()) == [LAST]
+
+
+def check_finish_flushes_both_events_of_a_glued_line() -> None:
+    p = StreamParser()
+    assert list(p.feed_bytes(f"\r{LAST_UPDATE}{SUMMARY}".encode())) == []
+    assert list(p.finish()) == [LAST, Message(SUMMARY, True)]
+    assert list(p.finish()) == []
+
+
+def check_the_glued_error_fixture_yields_the_summary_and_the_cause() -> None:
+    data = (FIXTURES / "progress2_glued_error.raw").read_bytes()
+    assert b"to-chk=0/6)rsync error: " in data, data
+
+    expected = whole(data)
+    for size in (1, 2, 3, 7, 64, 4096, 8192):
+        assert chunked(data, size) == expected, f"{size}-byte chunks"
+
+    errors = [e.text for e in expected
+              if isinstance(e, Message) and e.is_error]
+    assert len(errors) == 2, errors
+    assert errors[0].startswith('rsync: [sender] send_files failed to open "')
+    assert errors[0].endswith('/g/src/locked.bin": Permission denied (13)')
+    assert errors[1] == SUMMARY, errors
+
+    assert not any(isinstance(e, Message) and not e.is_error
+                   for e in expected), expected
+    changes = [e.path for e in expected if isinstance(e, ItemizedChange)]
+    assert changes == [
+        "src/",
+        "src/a.bin",
+        "src/sub/",
+        "src/sub/50% (xfr#1, to-chk=0) done.txt",
+        "src/sub/z.bin",
+    ], changes
+    assert expected[-1] == Message(SUMMARY, True)
+    last = expected[-2]
+    assert isinstance(last, Progress), last
+    assert (last.check_remaining, last.check_total, last.xfr_index) == (0, 6, 4)
+    assert sum(isinstance(e, Progress) for e in expected) == 7
+
+
 if __name__ == "__main__":
     checks = [(name, fn) for name, fn in sorted(globals().items())
               if name.startswith("check_") and callable(fn)]

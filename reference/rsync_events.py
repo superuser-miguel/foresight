@@ -38,6 +38,16 @@ C/POSIX locale every byte above 0x7f is escaped; control characters in a name
 (\\#012, \\#015, \\#007 — not tab) are escaped in every locale. The escapes are
 passed through as printed. The full account is in the Rust crate's docs.
 
+One line, two events. A progress update is written without a terminator, and
+rsync pays the newline it owes before the next thing it prints — to whichever
+stream that goes to. At the end of a run that failed, the newline goes to
+stdout (buffered, not flushed) and the summary to stderr (at once), so the
+merged stream reads "...to-chk=0/8)rsync error: ... (code 23) ...\n". A line
+that is nothing as a whole and BEGINS with a complete progress update is
+therefore two events: the update, and the text after it classified as the line
+of its own it was meant to be. Nothing else about classification changes; see
+the Rust crate's docs for the measurements.
+
 Self-check:  python3 reference/rsync_events_selfcheck.py
 """
 
@@ -205,6 +215,15 @@ _PROGRESS_RE = re.compile(
     r"(?P<rem>\d+)/(?P<tot>\d+)\))?\s*$"
 )
 
+# A complete progress update at the start of a line that goes on. Stricter than
+# _PROGRESS_RE because it has to say where the update ENDS: the elapsed time is
+# h:mm:ss exactly, and the update closes with the (xfr#N, to-chk=R/T) trailer
+# (and the spaces rsync pads it with) or with the two spaces that end a
+# mid-file update. ASCII digits and spaces only, as rsync writes them.
+_GLUED_PROGRESS_RE = re.compile(
+    r"^ *[0-9,]+ +[0-9]+% +[0-9.,]+[^ ]+/s +[0-9]+:[0-9]{2}:[0-9]{2}"
+    r"(?: +\(xfr#[0-9]+, +(?:to-chk|ir-chk)=[0-9]+/[0-9]+\) *|  +)")
+
 # `[sender] hiding directory Photos/private because of pattern private`.
 # `path` is greedy so the split lands on the LAST " because of pattern ".
 _FILTER_RE = re.compile(
@@ -289,6 +308,21 @@ def parse_progress_line(line: str) -> Optional[Progress]:
     )
 
 
+def _split_glued_progress(line: str) -> Optional[tuple[Progress, str]]:
+    """A line that BEGINS with a complete progress update and goes on: the
+    update, and the text after it. None unless both are there."""
+    m = _GLUED_PROGRESS_RE.match(line)
+    if not m:
+        return None
+    update, rest = line[:m.end()], line[m.end():]
+    if not rest.strip():
+        return None
+    progress = parse_progress_line(update)
+    if progress is None:
+        return None
+    return progress, rest
+
+
 _STATS_PATTERNS = {
     "files_total": re.compile(r"^Number of files: ([\d,]+)"),
     "files_created": re.compile(r"^Number of created files: ([\d,]+)"),
@@ -347,9 +381,7 @@ class StreamParser:
                 line, self._buf = self._buf[:idx_r], self._buf[idx_r + 1:]
             else:
                 line, self._buf = self._buf[:idx_n], self._buf[idx_n + 1:]
-            ev = self._parse_line(line.decode("utf-8", "replace"))
-            if ev is not None:
-                yield ev
+            yield from self._parse_line(line.decode("utf-8", "replace"))
 
     def feed(self, chunk: str) -> Iterator[Event]:
         """``feed_bytes`` for text that is already text."""
@@ -358,23 +390,38 @@ class StreamParser:
     def finish(self) -> Iterator[Event]:
         """Call after EOF to flush a final unterminated line."""
         rest, self._buf = self._buf, b""
-        ev = self._parse_line(rest.decode("utf-8", "replace"))
+        yield from self._parse_line(rest.decode("utf-8", "replace"))
+
+    @classmethod
+    def _parse_line(cls, line: str) -> list:
+        """The events of one line: none for a blank one, one for nearly every
+        other, and two for a progress update with a line glued to it."""
+        if not line.strip():
+            return []
+        ev = cls._parse_structured(line)
         if ev is not None:
-            yield ev
+            return [ev]
+        # Only now, and only for a line that is nothing as a whole.
+        glued = _split_glued_progress(line)
+        if glued is not None:
+            progress, rest = glued
+            ev = cls._parse_structured(rest)
+            return [progress, ev if ev is not None else cls._message(rest)]
+        return [cls._message(line)]
 
     @staticmethod
-    def _parse_line(line: str) -> Optional[Event]:
-        if not line.strip():
-            return None
+    def _parse_structured(line: str) -> Optional[Event]:
+        """A line that is, whole, one of the formats this module structures."""
         ev: Optional[Event] = parse_progress_line(line)
         if ev is not None:
             return ev
         ev = parse_itemize_line(line)
         if ev is not None:
             return ev
-        ev = parse_filter_line(line)
-        if ev is not None:
-            return ev
+        return parse_filter_line(line)
+
+    @staticmethod
+    def _message(line: str) -> Message:
         return Message(text=line.rstrip(),
                        is_error=bool(_ERROR_RE.match(line)
                                      or _UNPREFIXED_ERROR_RE.match(line)

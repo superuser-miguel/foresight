@@ -628,6 +628,30 @@ mod tests {
         assert!(o.took < STOP_GRACE, "rsync should leave on SIGTERM: {o:?}");
     }
 
+    /// What no handler can see coming: the process killed outright. Nothing
+    /// of ours runs — no handler, no shutdown, no `Drop` — so whatever stops
+    /// rsync here is not code in this process. It is the kernel, asked to by
+    /// `tie_to_this_process` when the run was spawned.
+    #[test]
+    fn a_hard_kill_of_the_process_still_stops_its_transfer() {
+        if !rsync_available() {
+            eprintln!("skipping: rsync not on PATH");
+            return;
+        }
+        let o = signal("hard-kill", Holding::Transfer, &[libc::SIGKILL]);
+        assert!(o.ready, "the transfer never got going: {o:?}");
+        assert!(
+            o.tree.len() >= 3,
+            "the process and a local transfer's two, found {:?}",
+            o.tree
+        );
+        assert_eq!(o.died_of(), Some(libc::SIGKILL), "{o:?}");
+        assert!(
+            o.left.is_empty(),
+            "rsync outlived the process that started it: {o:?}"
+        );
+    }
+
     #[test]
     fn sigterm_stops_a_live_transfer_before_the_process_ends() {
         a_live_transfer_is_stopped_by("term", libc::SIGTERM);

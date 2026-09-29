@@ -684,6 +684,51 @@ impl Drop for Runner {
     }
 }
 
+/// Have the kernel stop the child if this process dies without having done
+/// so itself.
+///
+/// Everything else that stops a run — the close guard, the shutdown hook, the
+/// signal handlers, `Drop for Runner` — is code of ours, and runs only if we
+/// get to run it. A SIGKILL does not let us (the OOM killer, a session manager
+/// out of patience, `kill -9`), nor does a crash, nor does GDK, which ends the
+/// process on the spot when the compositor goes away — at logout, quite
+/// possibly before any SIGTERM has arrived. `PR_SET_PDEATHSIG` is the one thing
+/// that covers all of those: it is set in the child between fork and exec, and
+/// from then on the kernel sends the child SIGTERM when its parent is gone.
+///
+/// Three things to know about it:
+///
+/// - It is tied to the **thread** that forked, not the process. GSubprocess
+///   forks in the calling thread, so a run must be spawned from a thread that
+///   lives as long as the run should: the main thread, in the app. Spawned
+///   from a worker that then ends, rsync would be stopped mid-transfer with
+///   the app still open. Do not move the spawn into a thread pool.
+/// - If the parent dies before the child has made the call, nothing would ever
+///   be sent. Hence the second look at the parent's pid, taken here before the
+///   fork: if it has changed, the parent is already gone and the child does
+///   not go on to exec.
+/// - It is SIGTERM, which rsync acts on by removing its temporary file and
+///   taking its own children with it. A process that ignores SIGTERM is not
+///   covered; SIGKILL would cover it and cost rsync that cleanup, which is the
+///   wrong trade for a backstop.
+fn tie_to_this_process(launcher: &gio::SubprocessLauncher) {
+    // SAFETY: getpid has no preconditions and cannot fail.
+    let parent = unsafe { libc::getpid() };
+    launcher.set_child_setup(move || {
+        // Between fork and exec, in a copy of a multithreaded process: only
+        // async-signal-safe calls, and nothing that allocates or locks.
+        // SAFETY: prctl, getppid and _exit are all async-signal-safe, and are
+        // given plain integers.
+        unsafe {
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM as libc::c_ulong) != 0
+                || libc::getppid() != parent
+            {
+                libc::_exit(127);
+            }
+        }
+    });
+}
+
 /// Spawn `rsync argv…` (bundled rsync resolved via PATH → `/app/bin` in the
 /// sandbox), streaming its output on the main context. `on_event` fires for
 /// every parsed [`Event`] as bytes arrive; `on_done` fires once at exit.
@@ -849,6 +894,7 @@ where
             None => launcher.unsetenv(name),
         }
     }
+    tie_to_this_process(&launcher);
     let proc = launcher.spawn(&full)?;
     let stdout = proc.stdout_pipe().expect("STDOUT_PIPE requested");
     let cancelled = Rc::new(Cell::new(false));

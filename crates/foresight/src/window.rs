@@ -1558,19 +1558,7 @@ impl ForesightWindow {
         };
         let imp = self.imp();
 
-        imp.result_banner.set_revealed(false);
-        imp.run_errors.borrow_mut().clear();
-        imp.deletions.borrow_mut().clear();
-        imp.filter_banner.set(false);
-        imp.filter_hits.replace(job.reports_filter_hits().then(|| {
-            (
-                job.filters.clone(),
-                vec![RuleHits::default(); job.filters.len()],
-            )
-        }));
-        if let Some(store) = imp.preview_store.get() {
-            store.remove_all();
-        }
+        self.begin_preview(&job);
         imp.main_stack.set_visible_child_name("preview");
 
         let argv = job.build_argv(Mode::Preview);
@@ -1591,6 +1579,26 @@ impl ForesightWindow {
                 self.refresh_action_sensitivity();
             }
             Err(e) => self.report_spawn_error(&e),
+        }
+    }
+
+    /// Forget everything the previous dry run left behind, so that whatever
+    /// this one collects is its own: the errors, the deletions to confirm, the
+    /// hit counts and the list itself.
+    fn begin_preview(&self, job: &Job) {
+        let imp = self.imp();
+        imp.result_banner.set_revealed(false);
+        imp.run_errors.borrow_mut().clear();
+        imp.deletions.borrow_mut().clear();
+        imp.filter_banner.set(false);
+        imp.filter_hits.replace(job.reports_filter_hits().then(|| {
+            (
+                job.filters.clone(),
+                vec![RuleHits::default(); job.filters.len()],
+            )
+        }));
+        if let Some(store) = imp.preview_store.get() {
+            store.remove_all();
         }
     }
 
@@ -1628,42 +1636,94 @@ impl ForesightWindow {
         }
     }
 
+    /// A dry run ended. Settle what it left behind, then show it.
     fn on_preview_done(&self, completion: Completion, then_confirm_start: bool) {
+        let outcome = self.settle_preview(&completion, then_confirm_start);
+        self.present_preview(outcome, completion);
+    }
+
+    /// The half of [`Self::on_preview_done`] that decides: release the run,
+    /// keep or discard what it collected, and say what may happen next. It
+    /// presents nothing, so it can be driven without a dialog to dismiss.
+    ///
+    /// What a dry run collects is a finding only if the scan finished. The
+    /// deletions list is confirmed as "what this sync will delete", and a rule
+    /// with no hits is reported as "matched nothing"; from a scan that stopped
+    /// part-way both are merely what had turned up so far. So an incomplete
+    /// run leaves neither behind, and everything downstream sees no evidence
+    /// rather than evidence of nothing.
+    fn settle_preview(&self, completion: &Completion, then_confirm_start: bool) -> PreviewOutcome {
         let imp = self.imp();
         *imp.runner.borrow_mut() = None;
         self.refresh_action_sensitivity();
 
-        // A dry run that itself failed (e.g. bad path) shouldn't proceed to a
-        // real sync; surface it and stop.
-        if completion.severity == Severity::Error {
-            self.show_completion(completion);
-            return;
+        let outcome = PreviewOutcome::decide(completion.severity, then_confirm_start);
+        if !outcome.is_complete() {
+            imp.filter_hits.replace(None);
+            imp.deletions.borrow_mut().clear();
         }
-        if matches!(completion.severity, Severity::Partial) {
-            self.show_banner(&completion.message);
-        }
-
-        // The hit counts are complete now; let the rule rows show them.
+        // Complete: the hit counts are final, let the rule rows show them.
+        // Incomplete: the rows go back to saying only what needs no run.
         self.rebuild_filter_rows();
+        outcome
+    }
 
-        if then_confirm_start {
-            self.confirm_idle_excludes_then_sync();
-        } else {
-            let n = imp.preview_store.get().map(|s| s.n_items()).unwrap_or(0);
-            self.toast(&format!("Preview: {n} change(s)"));
-            let idle = self.idle_rules();
-            if !idle.is_empty() {
-                let filters = imp.filters.borrow();
-                let names: Vec<&str> = idle.iter().map(|&i| filters[i].pattern.as_str()).collect();
-                let banner = imp.result_banner.get();
-                banner.set_title(&match names.len() {
-                    1 => format!("A filter rule matched nothing: {}", names[0]),
-                    n => format!("{n} filter rules matched nothing: {}", names.join(", ")),
-                });
-                banner.set_button_label(None);
-                banner.set_revealed(true);
-                imp.filter_banner.set(true);
+    /// The half that shows: a toast, a banner, a dialog, or the confirmations
+    /// that lead to the real sync.
+    fn present_preview(&self, outcome: PreviewOutcome, completion: Completion) {
+        let imp = self.imp();
+        match outcome {
+            PreviewOutcome::Confirm => self.confirm_idle_excludes_then_sync(),
+            PreviewOutcome::Report => {
+                let n = imp.preview_store.get().map(|s| s.n_items()).unwrap_or(0);
+                self.toast(&format!("Preview: {n} change(s)"));
+                let idle = self.idle_rules();
+                if !idle.is_empty() {
+                    let filters = imp.filters.borrow();
+                    let names: Vec<&str> =
+                        idle.iter().map(|&i| filters[i].pattern.as_str()).collect();
+                    let banner = imp.result_banner.get();
+                    banner.set_title(&match names.len() {
+                        1 => format!("A filter rule matched nothing: {}", names[0]),
+                        n => format!("{n} filter rules matched nothing: {}", names.join(", ")),
+                    });
+                    banner.set_button_label(None);
+                    banner.set_revealed(true);
+                    imp.filter_banner.set(true);
+                }
             }
+            PreviewOutcome::Incomplete => {
+                // Not `show_banner`: that one offers "New Job", which belongs
+                // to a finished transfer. And not the matched-nothing notice
+                // either, so editing the rules must not take this down.
+                let banner = imp.result_banner.get();
+                banner.set_title(&incomplete_preview_notice(
+                    completion.code,
+                    imp.run_errors.borrow().len(),
+                ));
+                banner.set_button_label(None);
+                imp.filter_banner.set(false);
+                banner.set_revealed(true);
+            }
+            PreviewOutcome::Refused => {
+                let body = refused_start_body(
+                    imp.delete_row.is_active(),
+                    imp.remove_source_row.is_active(),
+                    completion.code,
+                    &imp.run_errors.borrow(),
+                );
+                let dialog = adw::AlertDialog::builder()
+                    .heading("Dry run incomplete — nothing was transferred")
+                    .body(body)
+                    .build();
+                dialog.add_response("ok", "Close");
+                dialog.set_default_response(Some("ok"));
+                dialog.present(Some(self));
+            }
+            PreviewOutcome::Cancelled => self.toast("Dry run cancelled. Nothing was transferred."),
+            // A dry run that itself failed (e.g. bad path): surface it as any
+            // failed run is.
+            PreviewOutcome::Failed => self.show_completion(completion),
         }
     }
 
@@ -1945,6 +2005,104 @@ impl ForesightWindow {
     fn toast(&self, text: &str) {
         self.imp().toast_overlay.add_toast(adw::Toast::new(text));
     }
+}
+
+/// What a finished dry run allows next — the decision, apart from how it is
+/// shown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PreviewOutcome {
+    /// A plain Dry Run that finished: report what it found.
+    Report,
+    /// The dry run in front of Start finished: on to the confirmations.
+    Confirm,
+    /// A plain Dry Run that rsync could not finish. The list is worth looking
+    /// at and has to be labelled as partial.
+    Incomplete,
+    /// The dry run in front of Start could not finish, so the sync is not
+    /// started: Start only asks for a dry run when the job deletes or moves,
+    /// and what it would delete or move is exactly what is now unknown.
+    Refused,
+    /// Stopped by the user. Nothing follows.
+    Cancelled,
+    /// rsync failed outright. Nothing follows.
+    Failed,
+}
+
+impl PreviewOutcome {
+    /// Exit 23/24/25 is tolerated for a transfer, where it means "most of it
+    /// arrived". For a dry run it means "most of it was looked at", which is
+    /// not something a confirmation can be built on.
+    fn decide(severity: Severity, then_confirm_start: bool) -> Self {
+        match (severity, then_confirm_start) {
+            (Severity::Success, false) => Self::Report,
+            (Severity::Success, true) => Self::Confirm,
+            (Severity::Partial, false) => Self::Incomplete,
+            (Severity::Partial, true) => Self::Refused,
+            (Severity::Cancelled, _) => Self::Cancelled,
+            (Severity::Error, _) => Self::Failed,
+        }
+    }
+
+    /// The scan finished, so what it collected describes the whole job.
+    fn is_complete(self) -> bool {
+        matches!(self, Self::Report | Self::Confirm)
+    }
+}
+
+/// Banner text for a plain Dry Run that rsync could not finish. Written for
+/// the dry run rather than borrowed from `classify_exit`, whose wording is
+/// about files that were "not transferred" — here none were meant to be.
+fn incomplete_preview_notice(code: Option<i32>, errors: usize) -> String {
+    let mut text = String::from("Dry run incomplete");
+    match errors {
+        0 => {}
+        1 => text.push_str(" — rsync reported 1 error"),
+        n => text.push_str(&format!(" — rsync reported {n} errors")),
+    }
+    if let Some(code) = code {
+        text.push_str(&format!(" (exit code {code})"));
+    }
+    text.push_str(". This list may be missing changes. Nothing was transferred.");
+    text
+}
+
+/// Body of the dialog shown when Start is refused because its dry run was
+/// incomplete: that nothing happened, why the sync was not started, and what
+/// rsync reported.
+fn refused_start_body(deletes: bool, moves: bool, code: Option<i32>, errors: &[String]) -> String {
+    let mut body = String::from(
+        "The sync was not started. Nothing was transferred, deleted or moved.\n\n\
+         rsync could not finish the dry run, so the Preview may be missing changes.",
+    );
+    if deletes {
+        body.push_str(
+            " Mirror deletions removes files from the destination, and the list \
+             of them to confirm cannot be trusted to be complete.",
+        );
+    }
+    if moves {
+        body.push_str(
+            " Move files removes each file from the source once it has \
+             transferred, and whether the exclude rules hold anything back \
+             cannot be judged.",
+        );
+    }
+    body.push_str(
+        "\n\nThe Preview shows what rsync did find. Fix what is reported below, \
+         then start again.",
+    );
+    if let Some(code) = code {
+        body.push_str(&format!("\n\nrsync exit code {code}."));
+    }
+    if !errors.is_empty() {
+        const MAX: usize = 20;
+        body.push_str("\n\n");
+        body.push_str(&errors[..errors.len().min(MAX)].join("\n"));
+        if errors.len() > MAX {
+            body.push_str(&format!("\n…and {} more", errors.len() - MAX));
+        }
+    }
+    body
 }
 
 /// Map a real path to `(subtitle, tooltip)`. Portal document paths
@@ -2643,6 +2801,193 @@ impl ForesightWindow {
         );
         self.clear_job();
 
+        // -- a dry run that did not finish ------------------------------------
+        //
+        // Start runs a dry run first only for a job that deletes or moves, and
+        // builds its confirmations on what that run collected. A run that was
+        // cancelled, or that rsync could not finish, has collected only part of
+        // it: nothing may be confirmed from that, and no rule may be reported
+        // as matching nothing on the strength of it.
+        self.add_source(&gio::File::for_path(dir.join("src")));
+        self.set_dest(&gio::File::for_path(dir.join("dst")));
+        self.add_filter(FilterKind::Exclude, "/src/private");
+        self.add_filter(FilterKind::Exclude, "*.tmp");
+        self.imp().remove_source_row.set_active(true);
+        self.imp().delete_row.set_active(true);
+        let done = |severity: Severity, code: Option<i32>| Completion {
+            severity,
+            message: String::new(),
+            code,
+        };
+        // A dry run as the window lives it: reset, then rsync's own lines
+        // through the real parser and the real event handler. One rule gets a
+        // hit and one does not; one file is to be deleted.
+        let dry_run = |w: &ForesightWindow, lines: &str| {
+            let job = w.current_job().expect("sources + dest are set");
+            w.begin_preview(&job);
+            let mut parser = rsync_events::StreamParser::new();
+            let mut events = parser.feed(lines);
+            events.extend(parser.finish());
+            for ev in events {
+                w.on_preview_event(ev);
+            }
+        };
+        const SCAN: &str =
+            "[sender] hiding directory src/private because of pattern /src/private\n\
+                            *deleting   src/old.txt\n\
+                            >f+++++++++ src/a.txt\n";
+        const SCAN_FAILED: &str = "rsync: [sender] opendir \"/x/src/locked\" failed: Permission denied (13)\n\
+                                   rsync error: some files/attrs were not transferred (see previous errors) (code 23) at main.c(1394) [sender=3.5.0]\n";
+        let verdicts = |w: &ForesightWindow| -> String {
+            let rows = w.imp().filter_rows.borrow();
+            let mut all: Vec<String> = rows
+                .iter()
+                .map(|r| r.subtitle().map(|s| s.to_string()).unwrap_or_default())
+                .collect();
+            all.push(w.imp().filters_row.subtitle().to_string());
+            all.join(" | ")
+        };
+        let state = |w: &ForesightWindow| {
+            format!(
+                "hits={:?} idle={:?} idle_excludes={:?} deletions={:?} rows={:?}",
+                w.current_filter_hits(),
+                w.idle_rules(),
+                w.idle_source_excludes(),
+                w.imp().deletions.borrow(),
+                verdicts(w)
+            )
+        };
+
+        dry_run(self, SCAN);
+        let outcome = self.settle_preview(&done(Severity::Success, Some(0)), true);
+        check(
+            "a complete dry run in front of Start goes on to the confirmations",
+            outcome == PreviewOutcome::Confirm
+                && self.idle_source_excludes() == ["*.tmp"]
+                && *self.imp().deletions.borrow() == ["src/old.txt"],
+            format!("{outcome:?} {}", state(self)),
+        );
+        dry_run(self, SCAN);
+        let outcome = self.settle_preview(&done(Severity::Success, Some(0)), false);
+        check(
+            "a complete plain dry run reports what each rule matched",
+            outcome == PreviewOutcome::Report
+                && self.idle_rules() == [1]
+                && verdicts(self).contains("matched 1 path")
+                && verdicts(self).contains("matched nothing")
+                && verdicts(self).contains("1 matches nothing"),
+            format!("{outcome:?} {}", state(self)),
+        );
+
+        for (severity, code, name) in [
+            (Severity::Partial, Some(23), "partial"),
+            (Severity::Cancelled, None, "cancelled"),
+            (Severity::Error, Some(12), "failed"),
+        ] {
+            for start in [false, true] {
+                let path = if start {
+                    "in front of Start"
+                } else {
+                    "on its own"
+                };
+                dry_run(self, &format!("{SCAN}{SCAN_FAILED}"));
+                let outcome = self.settle_preview(&done(severity, code), start);
+                check(
+                    &format!("a {name} dry run {path} reaches no confirmation and no sync"),
+                    !outcome.is_complete() && outcome != PreviewOutcome::Confirm,
+                    format!("{outcome:?}"),
+                );
+                check(
+                    &format!("a {name} dry run {path} leaves no verdicts and no deletions"),
+                    self.current_filter_hits().is_none()
+                        && self.idle_rules().is_empty()
+                        && self.idle_source_excludes().is_empty()
+                        && self.imp().deletions.borrow().is_empty()
+                        && !verdicts(self).contains("matched")
+                        && !verdicts(self).contains("nothing")
+                        && !self.is_running(),
+                    state(self),
+                );
+            }
+        }
+        check(
+            "rsync's own errors are kept for the refusal to show",
+            self.imp().run_errors.borrow().len() == 2
+                && self.imp().run_errors.borrow()[0].contains("opendir"),
+            format!("{:?}", self.imp().run_errors.borrow()),
+        );
+
+        // Refused on the Start path, merely labelled on a plain Dry Run.
+        dry_run(self, &format!("{SCAN}{SCAN_FAILED}"));
+        let refused = self.settle_preview(&done(Severity::Partial, Some(23)), true);
+        dry_run(self, &format!("{SCAN}{SCAN_FAILED}"));
+        let labelled = self.settle_preview(&done(Severity::Partial, Some(23)), false);
+        check(
+            "a partial dry run refuses Start and labels a plain Dry Run",
+            refused == PreviewOutcome::Refused && labelled == PreviewOutcome::Incomplete,
+            format!("{refused:?} / {labelled:?}"),
+        );
+        self.present_preview(labelled, done(Severity::Partial, Some(23)));
+        let banner = self.imp().result_banner.get();
+        check(
+            "an incomplete plain dry run says so, and not that files were not transferred",
+            banner.is_revealed()
+                && banner.title().starts_with("Dry run incomplete")
+                && banner.title().contains("Nothing was transferred")
+                && !banner.title().contains("matched nothing"),
+            banner.title().to_string(),
+        );
+        // It is a statement about the run, not about the rules: editing them
+        // must not take it down the way it does the matched-nothing notice.
+        self.add_filter(FilterKind::Exclude, "while-reading");
+        check(
+            "editing the rules leaves the incomplete notice up",
+            banner.is_revealed(),
+            "the banner was taken down".into(),
+        );
+        self.remove_filter(2);
+
+        // What needs no run must survive a run that told us nothing.
+        self.add_filter(FilterKind::Exclude, &pasted);
+        dry_run(self, SCAN_FAILED);
+        self.settle_preview(&done(Severity::Partial, Some(23)), true);
+        check(
+            "a rule that can never match is still flagged after an incomplete run",
+            self.idle_rules() == [2] && subtitle_of(self, 2).contains("can never match"),
+            state(self),
+        );
+        self.remove_filter(2);
+
+        // The next complete run is believed again, and only for what it saw:
+        // the deletion from before the incomplete run must not come back.
+        dry_run(self, SCAN);
+        self.settle_preview(&done(Severity::Success, Some(0)), true);
+        dry_run(
+            self,
+            &format!("*deleting   src/half-seen.txt\n{SCAN_FAILED}"),
+        );
+        self.settle_preview(&done(Severity::Partial, Some(23)), true);
+        let after_incomplete = self.imp().deletions.borrow().clone();
+        dry_run(
+            self,
+            "[sender] hiding directory src/private because of pattern /src/private\n",
+        );
+        let outcome = self.settle_preview(&done(Severity::Success, Some(0)), true);
+        check(
+            "deletions from an incomplete run do not reach a later confirmation",
+            after_incomplete.is_empty() && self.imp().deletions.borrow().is_empty(),
+            format!("{after_incomplete:?} then {}", state(self)),
+        );
+        check(
+            "a complete run after an incomplete one restores the verdicts",
+            outcome == PreviewOutcome::Confirm
+                && self.idle_source_excludes() == ["*.tmp"]
+                && self.idle_rules() == [1]
+                && subtitle_of(self, 0).contains("matched 1 path"),
+            format!("{outcome:?} {}", state(self)),
+        );
+        self.clear_job();
+
         // Regression guard: a name a KeyFile group could never hold used to be
         // dropped on save while the UI reported success.
         self.set_filters(&[FilterRule::exclude("*.tmp")]);
@@ -2717,7 +3062,66 @@ impl ForesightWindow {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_bwlimit, tokenize};
+    use super::{
+        incomplete_preview_notice, parse_bwlimit, refused_start_body, tokenize, PreviewOutcome,
+    };
+    use rsync_events::Severity;
+
+    /// Every ending of a dry run, on both paths. Only a run that finished may
+    /// lead anywhere; exit 23 is tolerated for a transfer, not for the scan a
+    /// confirmation is built on.
+    #[test]
+    fn only_a_complete_dry_run_leads_to_a_confirmation() {
+        use PreviewOutcome::*;
+        for (severity, plain, start) in [
+            (Severity::Success, Report, Confirm),
+            (Severity::Partial, Incomplete, Refused),
+            (Severity::Cancelled, Cancelled, Cancelled),
+            (Severity::Error, Failed, Failed),
+        ] {
+            assert_eq!(PreviewOutcome::decide(severity, false), plain);
+            assert_eq!(PreviewOutcome::decide(severity, true), start);
+        }
+        for outcome in [Incomplete, Refused, Cancelled, Failed] {
+            assert!(!outcome.is_complete(), "{outcome:?}");
+        }
+        assert!(Report.is_complete() && Confirm.is_complete());
+    }
+
+    #[test]
+    fn the_incomplete_notice_speaks_of_a_dry_run() {
+        let text = incomplete_preview_notice(Some(23), 2);
+        assert_eq!(
+            text,
+            "Dry run incomplete — rsync reported 2 errors (exit code 23). \
+             This list may be missing changes. Nothing was transferred."
+        );
+        assert_eq!(
+            incomplete_preview_notice(None, 0),
+            "Dry run incomplete. This list may be missing changes. Nothing was transferred."
+        );
+        assert!(incomplete_preview_notice(Some(24), 1).contains("1 error "));
+    }
+
+    #[test]
+    fn the_refusal_says_nothing_happened_and_why() {
+        let errors = vec!["rsync: [sender] opendir \"/s/locked\" failed".to_string()];
+        let body = refused_start_body(true, false, Some(23), &errors);
+        assert!(body.starts_with("The sync was not started. Nothing was transferred"));
+        assert!(body.contains("Mirror deletions") && !body.contains("Move files"));
+        assert!(body.contains("rsync exit code 23."));
+        assert!(body.ends_with(&errors[0]), "{body}");
+
+        let body = refused_start_body(false, true, Some(23), &[]);
+        assert!(body.contains("Move files") && !body.contains("Mirror deletions"));
+        assert!(body.ends_with("rsync exit code 23."), "{body}");
+
+        // A tree full of unreadable folders must not become a wall.
+        let many: Vec<String> = (0..25).map(|i| format!("rsync: error {i}")).collect();
+        let body = refused_start_body(true, true, Some(23), &many);
+        assert!(body.contains("rsync: error 19\n…and 5 more"), "{body}");
+        assert!(!body.contains("rsync: error 20"));
+    }
 
     #[test]
     fn bwlimit_token_parses_value_and_unit() {

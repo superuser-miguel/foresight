@@ -1651,6 +1651,163 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    /// What rsync really does when a dry run cannot read part of the source,
+    /// measured rather than assumed (3.5.0): exit 23, an `rsync:` line naming
+    /// the directory, and — the part that matters to the confirmation built
+    /// on a dry run — **no `*deleting` lines at all**, not even for the parts
+    /// of the tree it did read. rsync says why on a line that does not start
+    /// with `rsync:`. So the deletions list of a partial dry run is not
+    /// slightly short; it is empty, and reads exactly like "nothing to delete".
+    #[test]
+    fn a_dry_run_that_cannot_read_a_folder_is_partial_and_lists_no_deletions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        if !rsync_available() {
+            eprintln!("skipping: rsync not on PATH");
+            return;
+        }
+
+        /// Hands the folder back and removes the tree, however the test ends.
+        struct Cleanup {
+            locked: PathBuf,
+            tmp: PathBuf,
+        }
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ =
+                    std::fs::set_permissions(&self.locked, std::fs::Permissions::from_mode(0o755));
+                let _ = std::fs::remove_dir_all(&self.tmp);
+            }
+        }
+
+        let tmp = std::env::temp_dir().join(format!("foresight-partial-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let src = tmp.join("src");
+        let dst = tmp.join("dst");
+        let cleanup = Cleanup {
+            locked: src.join("locked"),
+            tmp: tmp.clone(),
+        };
+        std::fs::create_dir_all(src.join("ok")).unwrap();
+        std::fs::create_dir_all(src.join("locked")).unwrap();
+        std::fs::create_dir_all(dst.join("src/ok")).unwrap();
+        std::fs::write(src.join("ok/a.txt"), b"a").unwrap();
+        std::fs::write(src.join("ok/skip.tmp"), b"t").unwrap();
+        std::fs::write(src.join("locked/b.txt"), b"b").unwrap();
+        // In a folder rsync reads without trouble, and absent from the source:
+        // a complete dry run lists it for deletion.
+        std::fs::write(dst.join("src/ok/stale.txt"), b"old").unwrap();
+
+        let job = Job {
+            sources: vec![Source {
+                path: src.clone(),
+                is_dir: true,
+            }],
+            dest: dst.clone(),
+            delete: true,
+            filters: vec![FilterRule::exclude("*.tmp")],
+            ..Default::default()
+        };
+
+        struct Seen {
+            completion: Completion,
+            deleted: Vec<String>,
+            errors: Vec<String>,
+            messages: Vec<String>,
+            filter_hits: usize,
+        }
+        let dry_run = |job: &Job| -> Seen {
+            let seen = Rc::new(RefCell::new(Seen {
+                completion: Completion {
+                    severity: Severity::Error,
+                    message: "on_done never fired".into(),
+                    code: None,
+                },
+                deleted: Vec::new(),
+                errors: Vec::new(),
+                messages: Vec::new(),
+                filter_hits: 0,
+            }));
+            let ctx = glib::MainContext::new();
+            ctx.with_thread_default(|| {
+                let main_loop = glib::MainLoop::new(Some(&ctx), false);
+                let ml = main_loop.clone();
+                let on_event = {
+                    let seen = seen.clone();
+                    move |ev: Event| {
+                        let mut seen = seen.borrow_mut();
+                        match ev {
+                            Event::Change(c) if c.deleted => seen.deleted.push(c.path),
+                            Event::Message(m) if m.is_error => seen.errors.push(m.text),
+                            Event::Message(m) => seen.messages.push(m.text),
+                            Event::Filter(_) => seen.filter_hits += 1,
+                            Event::Change(_) | Event::Progress(_) => {}
+                        }
+                    }
+                };
+                let on_done = {
+                    let seen = seen.clone();
+                    move |c: Completion| {
+                        seen.borrow_mut().completion = c;
+                        ml.quit();
+                    }
+                };
+                spawn_rsync(job.build_argv(Mode::Preview), on_event, on_done).expect("spawn rsync");
+                let ml_timeout = main_loop.clone();
+                glib::timeout_add_seconds_local_once(30, move || ml_timeout.quit());
+                main_loop.run();
+            })
+            .expect("run with thread-default context");
+            Rc::try_unwrap(seen)
+                .ok()
+                .expect("the run is over")
+                .into_inner()
+        };
+
+        // The control: everything readable, and the stale file is listed.
+        let complete = dry_run(&job);
+        assert_eq!(complete.completion.code, Some(0), "{:?}", complete.errors);
+        assert_eq!(complete.deleted, ["src/ok/stale.txt"]);
+        assert_eq!(complete.filter_hits, 1);
+
+        std::fs::set_permissions(&cleanup.locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::read_dir(&cleanup.locked).is_ok() {
+            eprintln!("skipped: directory permissions are not enforced for this user");
+            return;
+        }
+
+        let partial = dry_run(&job);
+        assert_eq!(partial.completion.code, Some(23), "{:?}", partial.errors);
+        assert_eq!(partial.completion.severity, Severity::Partial);
+        assert_eq!(partial.errors.len(), 2, "{:?}", partial.errors);
+        assert!(
+            partial.errors[0].starts_with("rsync: [sender] opendir ")
+                && partial.errors[0].ends_with("/src/locked\" failed: Permission denied (13)"),
+            "{:?}",
+            partial.errors
+        );
+        assert!(
+            partial.errors[1].starts_with(
+                "rsync error: some files/attrs were not transferred (see previous errors) (code 23)"
+            ),
+            "{:?}",
+            partial.errors
+        );
+        // Same destination, same stale file, in a folder that was read.
+        assert!(partial.deleted.is_empty(), "{:?}", partial.deleted);
+        assert!(
+            partial
+                .messages
+                .iter()
+                .any(|m| m == "IO error encountered -- skipping file deletion"),
+            "{:?}",
+            partial.messages
+        );
+        // The rules were still applied to what could be read — which is what
+        // makes the counts look like findings when they are not.
+        assert_eq!(partial.filter_hits, 1);
+    }
+
     // -- filter debugging & dead anchors ------------------------------------
 
     #[test]

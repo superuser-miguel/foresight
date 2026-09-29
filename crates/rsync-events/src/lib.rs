@@ -38,6 +38,11 @@
 //! [`Message`] events. The reporting flags are always emitted last so user
 //! input can't override the contract. See `foresight::job::Job::build_argv`.
 //!
+//! The locale rsync runs in is part of the contract, as its version is: the
+//! app must start it with **`LC_ALL=C.UTF-8`** set for the child (see
+//! `foresight::job::spawn_rsync`, and "The locale is pinned" below for what
+//! that decides). The patterns here are written for that locale and no other.
+//!
 //! Pinning the bundled rsync version pins these formats; this crate is tested
 //! against transcripts captured from rsync 3.4.4, plus a filter-debug one and
 //! a non-ASCII one and one that ends in an error from 3.5.0, the version now
@@ -61,6 +66,49 @@
 //! inside a UTF-8 multibyte sequence — and decodes each *completed line* once,
 //! whole. Where the reads fell cannot change what comes out.
 //!
+//! # The locale is pinned
+//!
+//! rsync 3.5.0 reads two locale categories, and both change what it prints.
+//! Measured on the host build and on the bundled one inside the sandbox, with
+//! the two invocations above:
+//!
+//! | rsync's locale | a name | a progress line |
+//! |---|---|---|
+//! | `C.UTF-8`, `en_US.UTF-8` | `año ñ.txt` | `3,500,001  74%    1.09GB/s` |
+//! | `de_DE.UTF-8`, `fr_FR.UTF-8` | `año ñ.txt` | `3.500.001  74%    1,09GB/s` |
+//! | `C`, `POSIX`, or one that is not installed | `a\#303\#261o \#303\#261.txt` | `3,500,001  74%    1.09GB/s` |
+//!
+//! - `LC_CTYPE` decides which bytes of a name are text and which are escaped.
+//!   A locale that is named in the environment but not installed is the C
+//!   locale, silently — which is what a sandbox has for every language whose
+//!   runtime extension is absent.
+//! - `LC_NUMERIC` decides the separators: where the decimal point is a comma,
+//!   the thousands are separated by `.`. The progress pattern reads `,` in the
+//!   byte count, so `3.500.001` is not a progress line to it.
+//! - Nothing else moves. The itemize flags, `xfr#`, `to-chk`/`ir-chk`, the
+//!   `--debug=FILTER` lines, rsync's own messages and the errno text inside
+//!   them (`Permission denied (13)`) are the same in every locale tried,
+//!   `LANGUAGE` and a translated libc notwithstanding: rsync has no message
+//!   catalogue and does not set `LC_MESSAGES`.
+//!
+//! So the app runs rsync under `LC_ALL=C.UTF-8` whatever it was launched in: a
+//! UTF-8 codeset, the C conventions for everything else, and a locale that is
+//! built into the runtime rather than installed per language. Where `C.UTF-8`
+//! cannot be loaded it is `en_US.UTF-8`, which prints the same; where neither
+//! can, the numbers are pinned (`LC_NUMERIC=C`) and the codeset is left as the
+//! user has it, so names are then escaped or not as that locale decides.
+//!
+//! For a remote job the rsync that prints is still the local one, in both
+//! directions: a pull's names cross the wire as bytes and are itemized here,
+//! under the pinned locale, whatever the locale of the far end (measured
+//! against an sshd whose sessions ran under `C` and under `de_DE.UTF-8`). What
+//! the far end does write itself is its error messages, and in those a name
+//! arrives with every byte above 0x7f escaped — `opendir "…/cerrado
+//! \#303\#261" failed: Permission denied (13)` — under either of those far
+//! locales and whatever the locale here.
+//!
+//! # What is in the bytes
+//!
 //! What rsync puts in those bytes, measured on 3.5.0 (host build and the
 //! bundled one, inside the sandbox) with the two invocations above, which do
 //! not pass `-8`/`--8-bit-output`:
@@ -80,7 +128,11 @@
 //!
 //! The escapes are passed through untouched: [`ItemizedChange::path`] is the
 //! text rsync printed, which is the name on disk only when rsync had nothing to
-//! escape. Un-escaping is not attempted here.
+//! escape. Un-escaping is not attempted here, and is not for the app to do
+//! either. With the locale pinned to UTF-8 what is still escaped is what has
+//! no text form — bytes that are not valid UTF-8, control characters — and
+//! `\#351` is the honest rendering of such a name: it says which byte is
+//! there, where any character put in its place would be a guess.
 //!
 //! It follows that with these invocations rsync does not itself emit invalid
 //! UTF-8 for a file name. Invalid bytes can still reach the parser — `-8` in

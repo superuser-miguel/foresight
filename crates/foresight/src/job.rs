@@ -677,6 +677,12 @@ impl Drop for Runner {
 /// stderr is merged into stdout so a single [`StreamParser`] sees rsync's error
 /// lines too. Output is read incrementally and never collected in full first,
 /// so the main loop is never blocked.
+///
+/// rsync runs in a locale of the app's choosing, not the one the app was
+/// started in: `LC_ALL=C.UTF-8` — see [`child_locale`] for why, and for what
+/// happens where that locale does not exist. Only the child's environment is
+/// changed; the app's own locale, and with it the language of its interface,
+/// is not.
 pub fn spawn_rsync<F, D>(
     argv: Vec<OsString>,
     on_event: F,
@@ -689,9 +695,123 @@ where
     spawn_program(OsStr::new("rsync"), argv, on_event, on_done)
 }
 
+/// The locales rsync is run in, in order of preference. Both are UTF-8 and
+/// both write numbers the way the parser reads them (`3,500,001`, `1.09GB/s`).
+///
+/// `C.UTF-8` is the one that is meant: a UTF-8 codeset and the C conventions
+/// for everything else, and it is part of the runtime itself (org.gnome.Platform
+/// 49 has `C`, `C.utf8`, `POSIX` and the `en_*` family built in; every other
+/// language is an extension that is installed or not). `en_US.UTF-8` is for a
+/// host that has no `C.UTF-8` — glibc before 2.35 without a distribution's
+/// patch.
+const PINNED_LOCALES: [&str; 2] = ["C.UTF-8", "en_US.UTF-8"];
+
+/// One change to the child's environment: set `name` to the value, or remove
+/// it when there is none.
+type EnvEdit = (&'static str, Option<OsString>);
+
+/// What to change in rsync's environment so that what it prints does not
+/// depend on how the app was launched.
+///
+/// The locale is part of the output format, as the version is. Measured on
+/// rsync 3.5.0, which reads two categories and no others:
+///
+/// - `LC_CTYPE` decides which bytes of a name are text. In a UTF-8 locale
+///   `ñ` is written as itself; in C/POSIX — which is also what libc falls back
+///   to, silently, when the locale named in the environment is not installed —
+///   every byte above 0x7f is escaped and the name arrives as `\#303\#261`.
+/// - `LC_NUMERIC` decides the separators. Where the decimal point is a comma
+///   (`de_DE`, `fr_FR`, …) rsync writes `3.500.001` and `1,09GB/s`, and the
+///   first of those is not a progress line to the parser: on such a desktop
+///   the progress stopped being read at the first 1,000 bytes.
+///
+/// rsync's own messages are not translated and neither are the errno texts in
+/// them (it never sets `LC_MESSAGES`), but the child it starts for a remote job
+/// is not rsync, so that category is pinned with the rest rather than trusted.
+///
+/// So `LC_ALL`, which overrides every category and `LANG`, to the first of
+/// [`PINNED_LOCALES`] that can be loaded here. `LANGUAGE` is removed: it is
+/// ignored under `C.UTF-8` but under `en_US.UTF-8` it would still choose the
+/// language of any message that has a translation.
+///
+/// Where neither locale exists nothing can be named that is known to be
+/// UTF-8, and naming one that is missing would turn a working setup into the C
+/// locale. Then the codeset is left as the user has it — `LC_CTYPE` is given
+/// what `LC_ALL`, `LC_CTYPE` or `LANG` said, in that order, so names are shown
+/// exactly as they were before there was a pin — and the numbers and messages
+/// are pinned to `C`, which always exists. `LC_ALL` has to go for that to take
+/// effect.
+///
+/// The environment is otherwise the app's, untouched: the `ssh` that rsync
+/// starts inherits it, `SSH_AUTH_SOCK` included.
+///
+/// `env` and `loads` are parameters so the decision can be tested without
+/// changing the environment of a process that runs its tests in parallel.
+fn locale_edits(
+    env: impl Fn(&str) -> Option<OsString>,
+    loads: impl Fn(&str) -> bool,
+) -> Vec<EnvEdit> {
+    if let Some(name) = PINNED_LOCALES.into_iter().find(|name| loads(name)) {
+        return vec![("LC_ALL", Some(name.into())), ("LANGUAGE", None)];
+    }
+
+    let mut edits: Vec<EnvEdit> = vec![("LC_ALL", None)];
+    let theirs = ["LC_ALL", "LC_CTYPE", "LANG"]
+        .into_iter()
+        .find_map(|name| env(name).filter(|value| !value.is_empty()));
+    if let Some(ctype) = theirs {
+        edits.push(("LC_CTYPE", Some(ctype)));
+    }
+    edits.push(("LC_NUMERIC", Some("C".into())));
+    edits.push(("LC_MESSAGES", Some("C".into())));
+    edits.push(("LANGUAGE", None));
+    edits
+}
+
+/// Whether libc can load the locale `name`, asked without changing the locale
+/// of this process: `newlocale` builds a locale object and touches nothing
+/// global, where `setlocale` would change the app's own locale under every
+/// other thread. rsync is started with the same libc and the same environment,
+/// so what loads here loads there.
+fn locale_loads(name: &str) -> bool {
+    use std::ffi::{c_char, c_int, c_void, CString};
+
+    extern "C" {
+        fn newlocale(mask: c_int, locale: *const c_char, base: *mut c_void) -> *mut c_void;
+        fn freelocale(locale: *mut c_void);
+    }
+    // `1 << LC_CTYPE | 1 << LC_NUMERIC`, the two categories rsync reads. The
+    // category numbers are 0 and 1 on Linux, in glibc and musl alike.
+    const CTYPE_AND_NUMERIC: c_int = 0b11;
+
+    let Ok(name) = CString::new(name) else {
+        return false;
+    };
+    // SAFETY: `name` is a NUL-terminated string that outlives the call, a null
+    // base asks for a new object, and the object is freed once and not used.
+    unsafe {
+        let locale = newlocale(CTYPE_AND_NUMERIC, name.as_ptr(), std::ptr::null_mut());
+        if locale.is_null() {
+            return false;
+        }
+        freelocale(locale);
+    }
+    true
+}
+
+/// [`locale_edits`] for this process, worked out once: which locales are
+/// installed does not change while the app runs.
+fn child_locale() -> &'static [EnvEdit] {
+    static EDITS: std::sync::OnceLock<Vec<EnvEdit>> = std::sync::OnceLock::new();
+    EDITS.get_or_init(|| locale_edits(|name| std::env::var_os(name), locale_loads))
+}
+
 /// [`spawn_rsync`] with the program named, so the tests can put something in
 /// rsync's place that behaves as rsync must never be assumed not to: ignoring
 /// SIGTERM, or leaving a process behind that holds the output open.
+///
+/// The child gets the app's environment with [`child_locale`] applied to it,
+/// and nothing else changed.
 fn spawn_program<F, D>(
     program: &OsStr,
     argv: Vec<OsString>,
@@ -706,10 +826,16 @@ where
     full.push(program);
     full.extend(argv.iter().map(OsString::as_os_str));
 
-    let proc = gio::Subprocess::newv(
-        &full,
+    let launcher = gio::SubprocessLauncher::new(
         gio::SubprocessFlags::STDOUT_PIPE | gio::SubprocessFlags::STDERR_MERGE,
-    )?;
+    );
+    for (name, value) in child_locale() {
+        match value {
+            Some(value) => launcher.setenv(name, value, true),
+            None => launcher.unsetenv(name),
+        }
+    }
+    let proc = launcher.spawn(&full)?;
     let stdout = proc.stdout_pipe().expect("STDOUT_PIPE requested");
     let cancelled = Rc::new(Cell::new(false));
     let finished = Rc::new(Cell::new(false));
@@ -1984,6 +2110,413 @@ mod tests {
             return;
         }
         assert_eq!(utf8, ["src/", r"src/latin1-\#351-\#377.txt", "src/ñ.txt"]);
+    }
+
+    // -- the locale rsync runs in -------------------------------------------
+
+    fn env_of(vars: &[(&'static str, &'static str)]) -> impl Fn(&str) -> Option<OsString> {
+        let vars = vars.to_vec();
+        move |name| {
+            vars.iter()
+                .find(|(n, _)| *n == name)
+                .map(|(_, v)| OsString::from(v))
+        }
+    }
+
+    fn set(name: &'static str, value: &str) -> EnvEdit {
+        (name, Some(OsString::from(value)))
+    }
+
+    #[test]
+    fn the_locale_is_pinned_whole_whatever_the_app_was_started_in() {
+        for theirs in [
+            &[][..],
+            &[("LC_ALL", "C")],
+            &[("LANG", "de_DE.UTF-8"), ("LANGUAGE", "de")],
+            &[("LANG", "xx_XX.UTF-8")],
+        ] {
+            assert_eq!(
+                locale_edits(env_of(theirs), |_| true),
+                [set("LC_ALL", "C.UTF-8"), ("LANGUAGE", None)],
+                "{theirs:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_host_without_c_utf8_gets_the_next_utf8_locale() {
+        assert_eq!(
+            locale_edits(env_of(&[("LC_ALL", "C")]), |name| name == "en_US.UTF-8"),
+            [set("LC_ALL", "en_US.UTF-8"), ("LANGUAGE", None)]
+        );
+    }
+
+    /// Nothing known to be UTF-8 can be named, so the codeset stays the
+    /// user's — the names are shown as they were before there was a pin — and
+    /// what can be pinned without one is: `C` always loads.
+    #[test]
+    fn with_no_locale_to_pin_to_the_codeset_is_left_as_the_user_has_it() {
+        let none = |_: &str| false;
+        let rest = [
+            set("LC_NUMERIC", "C"),
+            set("LC_MESSAGES", "C"),
+            ("LANGUAGE", None),
+        ];
+        let expect = |ctype: Option<&str>| -> Vec<EnvEdit> {
+            let mut edits: Vec<EnvEdit> = vec![("LC_ALL", None)];
+            edits.extend(ctype.map(|c| set("LC_CTYPE", c)));
+            edits.extend(rest.clone());
+            edits
+        };
+
+        // In the order libc reads them: LC_ALL, then LC_CTYPE, then LANG.
+        let all = [
+            ("LANG", "fr_FR.UTF-8"),
+            ("LC_CTYPE", "ja_JP.UTF-8"),
+            ("LC_ALL", "de_DE.UTF-8"),
+        ];
+        assert_eq!(
+            locale_edits(env_of(&all), none),
+            expect(Some("de_DE.UTF-8"))
+        );
+        assert_eq!(
+            locale_edits(env_of(&all[..2]), none),
+            expect(Some("ja_JP.UTF-8"))
+        );
+        assert_eq!(
+            locale_edits(env_of(&all[..1]), none),
+            expect(Some("fr_FR.UTF-8"))
+        );
+        // Set but empty is not set, to libc and here.
+        assert_eq!(
+            locale_edits(env_of(&[("LC_ALL", ""), ("LANG", "fr_FR.UTF-8")]), none),
+            expect(Some("fr_FR.UTF-8"))
+        );
+        assert_eq!(locale_edits(env_of(&[]), none), expect(None));
+    }
+
+    #[test]
+    fn a_locale_that_is_not_installed_is_known_not_to_load() {
+        assert!(locale_loads("C"));
+        assert!(locale_loads("POSIX"));
+        assert!(!locale_loads("xx_XX.UTF-8"));
+        assert!(!locale_loads("C.UTF-8\0oops"));
+        // Asking did not change the locale of this process.
+        assert!(locale_loads("C"));
+    }
+
+    /// Runs `program argv…` through the real spawn and read loop and returns
+    /// how it ended with every event it produced.
+    fn run_to_the_end(program: &str, argv: Vec<OsString>) -> (Completion, Vec<Event>) {
+        let events: Rc<RefCell<Vec<Event>>> = Rc::default();
+        let completion: Rc<RefCell<Option<Completion>>> = Rc::default();
+
+        let ctx = glib::MainContext::new();
+        ctx.with_thread_default(|| {
+            let main_loop = glib::MainLoop::new(Some(&ctx), false);
+            let on_event = {
+                let events = events.clone();
+                move |ev: Event| events.borrow_mut().push(ev)
+            };
+            let on_done = {
+                let completion = completion.clone();
+                let ml = main_loop.clone();
+                move |c: Completion| {
+                    *completion.borrow_mut() = Some(c);
+                    ml.quit();
+                }
+            };
+            // Held to the end of the run: a `Runner` that is dropped while its
+            // process is live stops the process.
+            let _runner = if program == "rsync" {
+                spawn_rsync(argv, on_event, on_done)
+            } else {
+                spawn_program(OsStr::new(program), argv, on_event, on_done)
+            }
+            .expect("spawn");
+            let ml_timeout = main_loop.clone();
+            glib::timeout_add_seconds_local_once(30, move || ml_timeout.quit());
+            main_loop.run();
+        })
+        .expect("run with thread-default context");
+
+        let completion = completion.borrow().clone().expect("on_done fired");
+        let events = events.borrow().clone();
+        (completion, events)
+    }
+
+    /// The pin is `setenv` on the launcher and nothing else: the child has the
+    /// app's environment, with the locale variables changed. What `ssh` needs
+    /// to find the agent is in there with the rest.
+    #[test]
+    fn the_child_has_the_apps_environment_with_the_locale_pinned() {
+        let (completion, events) = run_to_the_end("env", vec![]);
+        assert_eq!(completion.code, Some(0), "{completion:?}");
+
+        let theirs: std::collections::BTreeMap<String, String> = events
+            .iter()
+            .filter_map(|ev| match ev {
+                Event::Message(m) => m.text.split_once('='),
+                _ => None,
+            })
+            .map(|(name, value)| (name.to_string(), value.to_string()))
+            .collect();
+
+        for (name, value) in child_locale() {
+            let value = value.as_ref().map(|v| v.to_string_lossy().into_owned());
+            assert_eq!(theirs.get(*name), value.as_ref(), "{name}");
+        }
+
+        let mut compared = 0;
+        for (name, value) in std::env::vars_os() {
+            let (Some(name), Some(value)) = (name.to_str(), value.to_str()) else {
+                continue;
+            };
+            // `env` prints a line per variable, so one whose value has lines
+            // of its own cannot be read back; `_` is the shell's, not ours.
+            let pinned = child_locale().iter().any(|(n, _)| *n == name);
+            if pinned || name == "_" || value.contains(['\n', '\r']) {
+                continue;
+            }
+            // The parser trims a line, and the values are read through it.
+            assert_eq!(
+                theirs.get(name).map(|v| v.trim()),
+                Some(value.trim()),
+                "{name}"
+            );
+            compared += 1;
+        }
+        assert!(compared > 0, "PATH at least is always there");
+        if let Some(sock) = std::env::var_os("SSH_AUTH_SOCK") {
+            assert_eq!(
+                theirs
+                    .get("SSH_AUTH_SOCK")
+                    .map(|v| OsString::from(v.trim())),
+                Some(sock),
+                "the agent socket has to reach ssh"
+            );
+        }
+    }
+
+    /// Marks the process that [`under_a_hostile_locale`] does its work in.
+    const HOSTILE: &str = "FORESIGHT_TEST_HOSTILE_LOCALE";
+
+    /// Every variable libc or gettext reads a locale from.
+    const LOCALE_VARS: [&str; 6] = [
+        "LC_ALL",
+        "LC_CTYPE",
+        "LC_NUMERIC",
+        "LC_MESSAGES",
+        "LANG",
+        "LANGUAGE",
+    ];
+
+    /// What rsync prints must not depend on the locale the app was started
+    /// in, so the app is started in the ones that went wrong: C, where names
+    /// were escaped; a locale that is not installed, which is C without saying
+    /// so; and one whose decimal point is a comma, where `3.500.001` was not a
+    /// progress line.
+    ///
+    /// The environment belongs to the whole process and the tests share it,
+    /// one thread each, so it is not changed here. This test starts the test
+    /// binary again — that one test of it, [`under_a_hostile_locale`] — with
+    /// the locale in the environment of that process alone, which is also the
+    /// honest way round: the locale is then hostile from the first instruction,
+    /// as it is for an app launched in it.
+    #[test]
+    fn rsync_output_does_not_depend_on_the_locale_of_the_app() {
+        if !rsync_available() {
+            eprintln!("skipping: rsync not on PATH");
+            return;
+        }
+
+        let hostile: [&[(&str, &str)]; 3] = [
+            &[("LC_ALL", "C")],
+            &[("LANG", "xx_XX.UTF-8")],
+            &[
+                ("LANG", "de_DE.UTF-8"),
+                ("LC_ALL", "de_DE.UTF-8"),
+                ("LANGUAGE", "de"),
+            ],
+        ];
+        let me = std::env::current_exe().expect("the test binary");
+        for vars in hostile {
+            let mut helper = std::process::Command::new(&me);
+            helper
+                .args(["--exact", "job::tests::under_a_hostile_locale"])
+                .args(["--nocapture", "--test-threads=1"])
+                .env(HOSTILE, format!("{vars:?}"));
+            for name in LOCALE_VARS {
+                helper.env_remove(name);
+            }
+            helper.envs(vars.iter().copied());
+
+            let out = helper.output().expect("run the test binary");
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert!(
+                out.status.success(),
+                "{vars:?}: {}\n{stdout}\n{stderr}",
+                out.status
+            );
+            // A filter that matched nothing is a success too.
+            assert!(
+                stdout.contains("test result: ok. 1 passed"),
+                "{vars:?}: the helper did not run its test\n{stdout}\n{stderr}"
+            );
+        }
+    }
+
+    /// The work of [`rsync_output_does_not_depend_on_the_locale_of_the_app`],
+    /// done in a process of its own. Run with the rest of the suite it has
+    /// nothing to do and passes.
+    #[test]
+    fn under_a_hostile_locale() {
+        let Some(hostile) = std::env::var_os(HOSTILE) else {
+            return;
+        };
+
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                use std::os::unix::fs::PermissionsExt;
+                // The copy has the mode of the original, and a folder that
+                // cannot be listed cannot be removed with what is in it.
+                for locked in ["src/cerrado", "dst/src/cerrado"] {
+                    let open = std::fs::Permissions::from_mode(0o755);
+                    let _ = std::fs::set_permissions(self.0.join(locked), open);
+                }
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+
+        let tmp = std::env::temp_dir().join(format!("foresight-hostile-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let cleanup = Cleanup(tmp.clone());
+        let src = tmp.join("src");
+        let dst = tmp.join("dst");
+        std::fs::create_dir_all(src.join("cerrado")).unwrap();
+        std::fs::create_dir_all(&dst).unwrap();
+
+        const NAMES: [&str; 3] = ["año ñ.txt", "日本語.txt", "emoji 😀.txt"];
+        // Large enough that the byte count is written with separators.
+        const BIG: usize = 3_500_000;
+        for name in NAMES {
+            std::fs::write(src.join(name), b"x").unwrap();
+        }
+        std::fs::write(src.join("big.bin"), vec![0u8; BIG]).unwrap();
+        std::os::unix::fs::symlink("año ñ.txt", src.join("lien-é")).unwrap();
+        let total = (BIG + NAMES.len()) as u64;
+
+        let unreadable = {
+            use std::os::unix::fs::PermissionsExt;
+            let locked = src.join("cerrado");
+            std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+            // Not so for root, who reads what it likes.
+            std::fs::read_dir(&locked).is_err()
+        };
+
+        // Whether names can be promised: not on a host with no UTF-8 locale
+        // to pin to, where the codeset is left as it was found — hostile.
+        let whole = matches!(child_locale().first(), Some(("LC_ALL", Some(_))));
+        if !whole {
+            eprintln!("no C.UTF-8 or en_US.UTF-8 here: names are not checked");
+        }
+
+        let job = Job {
+            sources: vec![Source {
+                path: src.clone(),
+                is_dir: true,
+            }],
+            dest: dst.clone(),
+            ..Default::default()
+        };
+
+        for mode in [Mode::Preview, Mode::Sync] {
+            let at = format!("{hostile:?} {mode:?}");
+            let (completion, events) = run_to_the_end("rsync", job.build_argv(mode));
+
+            let changes: Vec<(&str, Option<&str>)> = events
+                .iter()
+                .filter_map(|ev| match ev {
+                    Event::Change(c) => Some((c.path.as_str(), c.link_target.as_deref())),
+                    _ => None,
+                })
+                .collect();
+            if whole {
+                for name in NAMES {
+                    let path = format!("src/{name}");
+                    assert!(
+                        changes.contains(&(path.as_str(), None)),
+                        "{at}: {path:?} is not in {changes:?}"
+                    );
+                }
+                assert!(
+                    changes.contains(&("src/lien-é", Some("año ñ.txt"))),
+                    "{at}: the link is not in {changes:?}"
+                );
+                assert!(
+                    !changes.iter().any(|(path, _)| path.contains("\\#")),
+                    "{at}: a name was escaped: {changes:?}"
+                );
+            }
+
+            let messages: Vec<&rsync_events::Message> = events
+                .iter()
+                .filter_map(|ev| match ev {
+                    Event::Message(m) => Some(m),
+                    _ => None,
+                })
+                .collect();
+            if unreadable {
+                assert_eq!(completion.code, Some(23), "{at}: {completion:?}");
+                assert!(
+                    messages.iter().any(|m| m.is_error
+                        && m.text.starts_with("rsync: [sender] opendir ")
+                        && m.text.ends_with("failed: Permission denied (13)")),
+                    "{at}: the error was not collected: {messages:?}"
+                );
+            } else {
+                assert_eq!(completion.code, Some(0), "{at}: {completion:?}");
+            }
+
+            if mode == Mode::Sync {
+                let last = events
+                    .iter()
+                    .rev()
+                    .find_map(|ev| match ev {
+                        Event::Progress(p) => Some(p),
+                        _ => None,
+                    })
+                    .unwrap_or_else(|| panic!("{at}: no progress at all in {events:?}"));
+                assert_eq!(last.bytes_done, total, "{at}: {last:?}");
+                assert_eq!(last.check_phase.as_deref(), Some("to-chk"), "{at}");
+                assert_eq!(last.check_remaining, Some(0), "{at}");
+                assert!(
+                    last.rate_human.contains('.') && !last.rate_human.contains(','),
+                    "{at}: the rate has a decimal point: {last:?}"
+                );
+                // A progress line the parser did not know is a message. The
+                // very last one is: rsync ends it with nothing, and the
+                // summary of a run that had errors follows it on the same
+                // line. That is so in every locale and is not judged here.
+                assert!(
+                    !messages
+                        .iter()
+                        .any(|m| m.text.contains("/s ") && !m.text.contains(")rsync error: ")),
+                    "{at}: a progress line was not read: {messages:?}"
+                );
+            }
+        }
+
+        assert_eq!(std::fs::read(dst.join("src/año ñ.txt")).unwrap(), b"x");
+        drop(cleanup);
+        assert!(!tmp.exists(), "{} was left behind", tmp.display());
+        // The app's own locale is as it was: only the child's was set.
+        assert_eq!(std::env::var_os("LC_ALL").is_some(), {
+            let hostile = hostile.to_string_lossy();
+            hostile.contains("LC_ALL")
+        });
     }
 
     /// Filter rules against the real engine, not just the argv we build.

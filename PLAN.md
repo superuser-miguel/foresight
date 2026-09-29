@@ -203,9 +203,10 @@ with live progress.
 - [x] `job.rs`: spawn bundled rsync with `gio::Subprocess`
       (`STDOUT_PIPE | STDERR_PIPE`), read stdout with async
       `read_bytes_future` in a loop on the main context
-      (`glib::spawn_future_local`), decode lossily
-      (`String::from_utf8_lossy`), feed chunks to
-      `rsync_events::StreamParser::feed()`, and dispatch the returned
+      (`glib::spawn_future_local`), feed each read **as bytes** to
+      `rsync_events::StreamParser::feed_bytes()` — never decode a read first:
+      a read can end inside a character, and only the parser knows where the
+      lines are (§6 item 15) — and dispatch the returned
       `Event`s to the widgets. Never block the main loop; never collect all
       output before parsing.
       → `spawn_rsync()` (STDERR_MERGE so errors share the stream). Covered by
@@ -497,6 +498,35 @@ These were discovered by building the pinned rsync and capturing transcripts
     trace of it), so a **pull** reports no `hiding` lines at all and must not be
     judged by them; and that same fact is why this is safe for `rrsync`, which
     as of 3.5.0 refuses a peer-sent `--debug` outright.
+13. **On an I/O error `--delete` stops deleting — part-way, not before it
+    starts.** When any part of the source cannot be read rsync can no longer
+    tell "gone from the source" from "could not be looked at", so it prints
+    `IO error encountered -- skipping file deletion` (once, with no `rsync:`
+    prefix) and deletes nothing **more**. But it deletes directory by directory:
+    whatever it had dealt with before meeting the error is listed by a dry run
+    and really deleted by a real one. The list a partial dry run produces is
+    therefore short, and nothing in it says so — which is why a dry run that did
+    not finish is never allowed to confirm anything. Exit 23 either way.
+    *This entry corrects a first measurement that said "no deletions at all":
+    that tree had its one stale file in a folder reached after the error. One
+    layout is not a measurement — vary where the stale files sit.*
+14. **Not every failure rsync reports starts with `rsync:`.** The prefix is
+    added by one function (`rsyserr`); what goes through plain `rprintf` arrives
+    bare whatever its log level. The ones that mean something went wrong are a
+    short closed list (`UNPREFIXED_ERROR_RE`): the skipped-deletion line above,
+    `Deletions stopped due to --max-delete limit`, anything beginning `ERROR: `,
+    `symlink has no referent:`, `could not make way for `. `file has vanished`
+    is deliberately not on it — rsync calls it a warning, deletion carries on,
+    and exit 24 already says so.
+15. **What rsync prints for a name depends on its locale, and a read can end
+    inside a character.** In a UTF-8 locale a valid name is written as raw
+    UTF-8; a name that is not valid UTF-8, and any control character, is
+    escaped as `\#ooo` (octal). In the C locale *every* byte above 0x7f is
+    escaped, so `año` arrives as `a\#303\#261o`. `-8` turns the escaping off.
+    Separately, output is read 8192 bytes at a time and a multibyte character
+    can straddle two reads — so the stream is split into lines as bytes and
+    each line decoded whole. `\n` and `\r` cannot occur inside a UTF-8
+    sequence, which is what makes that safe.
 
 ## 7. Claude Code operating notes
 
@@ -525,11 +555,13 @@ blueprint-compiler compile src/ui/window.blp > /dev/null
 # really moved. Commit only fixtures that are new or genuinely changed.
 ./scripts/capture_fixtures.sh /path/to/new/rsync && git diff tests/fixtures
 
-# headless widget checks (what CI runs; needs the Meson-built gresource)
-cargo build --bin foresight --features selftest
-dbus-run-session -- env GDK_BACKEND=x11 XDG_CONFIG_HOME=<tmp> \
-    FORESIGHT_SELFTEST_DIR=<tmp> FORESIGHT_GRESOURCE=$PWD/builddir/foresight.gresource \
-    ./target/debug/foresight
+# headless widget checks (needs the Meson-built gresource). On a display of
+# their own: they open real windows, and on the session's display those land
+# in front of whoever is at the machine. CI does the same with xvfb-run.
+build-aux/selftest-headless.sh
+
+# the Python spec's self-check — the two parsers must agree
+python3 -B reference/rsync_events_selfcheck.py
 
 # regenerate vendored crates for offline/reproducible release builds after Cargo.lock changes
 python3 flatpak-cargo-generator.py Cargo.lock -o cargo-sources.json

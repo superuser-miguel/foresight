@@ -48,6 +48,12 @@ jobs:
       - name: Test
         run: cargo test --all
 
+      # reference/rsync_events.py is the parser's executable spec and the rule
+      # is "change both or neither". Nothing enforced it, and the two had
+      # drifted apart once already before anyone noticed.
+      - name: Python spec self-check
+        run: python3 -B reference/rsync_events_selfcheck.py
+
   # Everything `cargo` alone cannot see. Blueprint files, the GResource bundle
   # and the AppStream metainfo are all built by Meson, so a broken .blp or an
   # invalid <release> block used to reach a tag unnoticed — both releases before

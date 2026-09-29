@@ -194,6 +194,10 @@ mod imp {
         /// The banner is currently the matched-nothing notice (as opposed to a
         /// run result), so editing the rules may take it down.
         pub filter_banner: Cell<bool>,
+        /// What the banner's one button does at the moment. The label is set
+        /// from this and the click handler reads it, both through
+        /// [`super::ForesightWindow::show_banner`], so the two cannot disagree.
+        pub banner_button: RefCell<BannerButton>,
 
         /// Saved Advanced-option presets, in combo order.
         pub profiles: RefCell<Vec<Profile>>,
@@ -626,13 +630,24 @@ impl ForesightWindow {
                 .set_tooltip_text(Some(&format!("{text} (F10)")));
         }
 
-        // The partial-result banner offers a one-tap reset.
-        imp.result_banner.set_button_label(Some("New Job"));
+        // The banner has one button, and what it does depends on what the
+        // banner is saying: see `BannerButton`.
         imp.result_banner.connect_button_clicked(glib::clone!(
             #[weak(rename_to = win)]
             self,
-            move |_| win.clear_job()
+            move |_| win.on_banner_button()
         ));
+    }
+
+    /// The banner's button was pressed: do what it currently stands for.
+    fn on_banner_button(&self) {
+        // Cloned out: both branches reach code that sets this cell.
+        let button = self.imp().banner_button.borrow().clone();
+        match button {
+            BannerButton::None => {}
+            BannerButton::NewJob => self.clear_job(),
+            BannerButton::Problems(report) => self.present_partial_report(&report),
+        }
     }
 
     fn cancel_run(&self) {
@@ -703,7 +718,7 @@ impl ForesightWindow {
         imp.overall_progress.set_fraction(0.0);
         imp.overall_progress.set_text(None);
         imp.current_file_label.set_label("");
-        imp.result_banner.set_revealed(false);
+        self.hide_banner();
 
         imp.main_stack.set_visible_child_name("configure");
         self.refresh_sources_state();
@@ -1113,7 +1128,7 @@ impl ForesightWindow {
         // The rules changed under a matched-nothing notice: it no longer
         // describes them.
         if hits.is_none() && imp.filter_banner.replace(false) {
-            imp.result_banner.set_revealed(false);
+            self.hide_banner();
         }
         for (index, rule) in rules.iter().enumerate() {
             // Two ways to know a rule does nothing: by construction (its anchor
@@ -1948,7 +1963,7 @@ impl ForesightWindow {
     /// hit counts and the list itself.
     fn begin_preview(&self, job: &Job) {
         let imp = self.imp();
-        imp.result_banner.set_revealed(false);
+        self.hide_banner();
         imp.run_errors.borrow_mut().clear();
         imp.deletions.borrow_mut().clear();
         imp.filter_banner.set(false);
@@ -2050,28 +2065,21 @@ impl ForesightWindow {
                     let filters = imp.filters.borrow();
                     let names: Vec<&str> =
                         idle.iter().map(|&i| filters[i].pattern.as_str()).collect();
-                    let banner = imp.result_banner.get();
-                    banner.set_title(&match names.len() {
+                    let title = match names.len() {
                         1 => format!("A filter rule matched nothing: {}", names[0]),
                         n => format!("{n} filter rules matched nothing: {}", names.join(", ")),
-                    });
-                    banner.set_button_label(None);
-                    banner.set_revealed(true);
+                    };
+                    self.show_banner(&title, BannerButton::None);
                     imp.filter_banner.set(true);
                 }
             }
             PreviewOutcome::Incomplete => {
-                // Not `show_banner`: that one offers "New Job", which belongs
-                // to a finished transfer. And not the matched-nothing notice
-                // either, so editing the rules must not take this down.
-                let banner = imp.result_banner.get();
-                banner.set_title(&incomplete_preview_notice(
-                    completion.code,
-                    imp.run_errors.borrow().len(),
-                ));
-                banner.set_button_label(None);
-                imp.filter_banner.set(false);
-                banner.set_revealed(true);
+                // No button: "New Job" belongs to a finished transfer. And not
+                // the matched-nothing notice either, so editing the rules must
+                // not take this down.
+                let title =
+                    incomplete_preview_notice(completion.code, imp.run_errors.borrow().len());
+                self.show_banner(&title, BannerButton::None);
             }
             PreviewOutcome::Refused => {
                 let body = refused_start_body(
@@ -2091,7 +2099,9 @@ impl ForesightWindow {
             PreviewOutcome::Cancelled => self.toast("Dry run cancelled. Nothing was transferred."),
             // A dry run that itself failed (e.g. bad path): surface it as any
             // failed run is.
-            PreviewOutcome::Failed => self.show_completion(completion),
+            // Only `Severity::Error` arrives here, which asks nothing about
+            // what kind of run it was.
+            PreviewOutcome::Failed => self.show_completion(completion, None),
         }
     }
 
@@ -2175,7 +2185,7 @@ impl ForesightWindow {
         };
         let imp = self.imp();
 
-        imp.result_banner.set_revealed(false);
+        self.hide_banner();
         imp.run_errors.borrow_mut().clear();
         imp.overall_progress.set_fraction(0.0);
         imp.overall_progress.set_text(Some("Starting…"));
@@ -2242,6 +2252,9 @@ impl ForesightWindow {
 
     fn on_sync_done(&self, completion: Completion) {
         let imp = self.imp();
+        // Read before `finish_run` lets go of the run: what it was doing to
+        // the two ends is part of what a partial result has to say.
+        let kind = imp.runner.borrow().as_ref().map(Runner::kind);
         if self.finish_run() {
             return;
         }
@@ -2250,15 +2263,16 @@ impl ForesightWindow {
             imp.overall_progress.set_fraction(1.0);
             imp.overall_progress.set_text(Some("Done"));
         }
-        self.show_completion(completion);
+        self.show_completion(completion, kind);
     }
 
     // -- completion / confirmation UI --------------------------------------
 
     /// Map a [`Completion`] to the right surface: toast (success), banner
     /// (partial 23/24/25 — never a failure wall), toast (cancelled), or a
-    /// details dialog (error).
-    fn show_completion(&self, completion: Completion) {
+    /// details dialog (error). `kind` is what the run was, where that is
+    /// known; only a partial result has anything to say about it.
+    fn show_completion(&self, completion: Completion, kind: Option<RunKind>) {
         match completion.severity {
             // A finished transfer offers a one-tap reset for the next job.
             Severity::Success => {
@@ -2270,7 +2284,12 @@ impl ForesightWindow {
                 self.imp().toast_overlay.add_toast(toast);
             }
             Severity::Cancelled => self.toast("Sync cancelled."),
-            Severity::Partial => self.show_banner(&completion.message),
+            // Still only a banner: nothing is put in front of the user. What
+            // changes is that the banner leads to what rsync reported.
+            Severity::Partial => {
+                let report = PartialReport::new(&completion, kind, &self.imp().run_errors.borrow());
+                self.show_banner(&report.banner_text(), report.button());
+            }
             Severity::Error => {
                 self.show_error_dialog_with_code(&completion.message, completion.code)
             }
@@ -2366,13 +2385,40 @@ impl ForesightWindow {
         self.show_error_dialog(&format!("Could not start rsync: {error}"));
     }
 
-    fn show_banner(&self, text: &str) {
-        let banner = self.imp().result_banner.get();
+    /// What a partial transfer reported, on request: the banner's button
+    /// leads here. Never opened by the run itself.
+    fn present_partial_report(&self, report: &PartialReport) {
+        let dialog = adw::AlertDialog::builder()
+            .heading(PARTIAL_HEADING)
+            .body(report.body())
+            .build();
+        dialog.add_response("ok", "Close");
+        dialog.set_default_response(Some("ok"));
+        dialog.present(Some(self));
+    }
+
+    /// Put the banner up. Every use of it comes through here, so that the
+    /// button it shows and what the button does are set together. The
+    /// matched-nothing notice marks itself as such after calling this.
+    fn show_banner(&self, text: &str, button: BannerButton) {
+        let imp = self.imp();
+        let banner = imp.result_banner.get();
         banner.set_title(text);
-        // The matched-nothing notice borrows this banner without the button.
-        banner.set_button_label(Some("New Job"));
-        self.imp().filter_banner.set(false);
+        banner.set_button_label(button.label());
+        imp.banner_button.replace(button);
+        imp.filter_banner.set(false);
         banner.set_revealed(true);
+    }
+
+    /// Take the banner down, and with it whatever its button stood for: a
+    /// report on a run is dropped when the banner that led to it goes. The
+    /// label is left as it is — the banner is on screen while it slides away,
+    /// and a button changing under it would be seen — so a press that lands
+    /// in that moment does nothing.
+    fn hide_banner(&self) {
+        let imp = self.imp();
+        imp.result_banner.set_revealed(false);
+        imp.banner_button.replace(BannerButton::None);
     }
 
     fn toast(&self, text: &str) {
@@ -2420,6 +2466,154 @@ impl PreviewOutcome {
     fn is_complete(self) -> bool {
         matches!(self, Self::Report | Self::Confirm)
     }
+}
+
+/// What the banner's one button stands for. The banner is shared — a finished
+/// transfer, a partial one, and two notices about a dry run — so the button's
+/// meaning is this value and nothing else: never the label read back.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum BannerButton {
+    /// No button: the banner is a notice and offers nothing, or is not up.
+    #[default]
+    None,
+    /// Clear the form for the next job.
+    NewJob,
+    /// Show what a partial transfer reported.
+    Problems(PartialReport),
+}
+
+impl BannerButton {
+    fn label(&self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::NewJob => Some("New Job"),
+            Self::Problems(_) => Some("Show Problems"),
+        }
+    }
+}
+
+/// A transfer that ended with exit 23, 24 or 25: what is known about it once
+/// the run itself has gone. Made when the run ends and from then on the only
+/// source for the banner and the dialog, so neither can describe a later run.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PartialReport {
+    /// `classify_exit`'s sentence for the exit code.
+    message: String,
+    code: Option<i32>,
+    /// What the run was doing to the two ends, where that is known.
+    kind: Option<RunKind>,
+    /// The error lines rsync printed, without its closing summary.
+    problems: Vec<String>,
+}
+
+impl PartialReport {
+    fn new(completion: &Completion, kind: Option<RunKind>, errors: &[String]) -> Self {
+        Self {
+            message: completion.message.clone(),
+            code: completion.code,
+            kind,
+            problems: reported_problems(errors),
+        }
+    }
+
+    /// With nothing to list there is nothing to open, and the banner keeps
+    /// the button a finished transfer has.
+    fn button(&self) -> BannerButton {
+        if self.problems.is_empty() {
+            BannerButton::NewJob
+        } else {
+            BannerButton::Problems(self.clone())
+        }
+    }
+
+    fn banner_text(&self) -> String {
+        partial_banner_text(&self.message, self.code, self.problems.len())
+    }
+
+    fn body(&self) -> String {
+        partial_report_body(self.kind, self.code, &self.problems)
+    }
+}
+
+/// Heading of the dialog a partial transfer's banner leads to. Not "Sync
+/// failed": the sync ran to its end.
+const PARTIAL_HEADING: &str = "Sync finished with problems";
+
+/// rsync's one line saying that it stopped deleting because of an I/O error.
+const DELETION_SKIPPED: &str = "IO error encountered -- skipping file deletion";
+
+/// The collected error lines without rsync's closing summary (`rsync error:
+/// … (code 23) at main.c(…)`). That line restates the exit code, once per end
+/// of the transfer, and names nothing: counted, it would make one unreadable
+/// file "2 problems", or 3 over ssh.
+fn reported_problems(errors: &[String]) -> Vec<String> {
+    errors
+        .iter()
+        .filter(|line| !(line.starts_with("rsync error: ") && line.contains("(code ")))
+        .cloned()
+        .collect()
+}
+
+/// Banner text for a partial transfer: `classify_exit`'s sentence, then how
+/// many problems rsync reported. When none were collected — exit 24, whose
+/// "file has vanished" lines are warnings to rsync and to the parser — the
+/// sentence is all there is to say, with where rsync's own words are.
+fn partial_banner_text(message: &str, code: Option<i32>, problems: usize) -> String {
+    let mut text = message.to_string();
+    match problems {
+        0 => {
+            text.push_str(
+                " No specific errors were collected; rsync's output is in the activity log",
+            );
+            if let Some(code) = code {
+                text.push_str(&format!(" (exit code {code})"));
+            }
+            text.push('.');
+        }
+        1 => text.push_str(" 1 problem reported."),
+        n => text.push_str(&format!(" {n} problems reported.")),
+    }
+    text
+}
+
+/// Body of the dialog a partial transfer's banner leads to: what "partial"
+/// means, what it did to deletions and to a move where that is true of this
+/// run, the exit code, and what rsync reported. Says nothing about which
+/// files were deleted: that is not known here.
+fn partial_report_body(kind: Option<RunKind>, code: Option<i32>, problems: &[String]) -> String {
+    let mut body = String::from("The sync ran to its end, but not everything went through. ");
+    body.push_str(&match problems.len() {
+        0 => "rsync reported no error lines.".to_string(),
+        1 => "rsync reported 1 problem, shown below.".to_string(),
+        n => format!("rsync reported {n} problems, shown below."),
+    });
+    if let Some(RunKind::Transfer { moves, deletes }) = kind {
+        if deletes && problems.iter().any(|p| p.starts_with(DELETION_SKIPPED)) {
+            body.push_str(
+                "\n\nMirror deletions stopped part-way. Some files may already have \
+                 been deleted from the destination; others that were due to be \
+                 deleted were left there.",
+            );
+        }
+        if moves {
+            body.push_str(
+                "\n\nThis was a move. Files that transferred were removed from the \
+                 source; files that did not transfer are still in the source.",
+            );
+        }
+    }
+    if let Some(code) = code {
+        body.push_str(&format!("\n\nrsync exit code {code}."));
+    }
+    if !problems.is_empty() {
+        const MAX: usize = 20;
+        body.push_str("\n\n");
+        body.push_str(&problems[..problems.len().min(MAX)].join("\n"));
+        if problems.len() > MAX {
+            body.push_str(&format!("\n…and {} more", problems.len() - MAX));
+        }
+    }
+    body
 }
 
 /// Banner text for a plain Dry Run that rsync could not finish. Written for
@@ -4185,6 +4379,471 @@ impl ForesightWindow {
         let _ = std::fs::remove_file(&stale);
         self.clear_job();
 
+        // -- a partial transfer says what went wrong --------------------------
+        //
+        // Exit 23/24/25 stays a banner and nothing more is put in front of
+        // anyone; what is checked is that the banner now leads to what rsync
+        // reported, that it says what the run did to deletions and to a move
+        // only when that is true of the run, and that the banner's other
+        // users are unchanged. The lines are rsync 3.5.0's own, from the two
+        // runs repeated for real at the end of this block, paths shortened.
+        {
+            use std::os::unix::fs::PermissionsExt;
+            const OPENDIR: &str =
+                "rsync: [sender] opendir \"/x/src/locked\" failed: Permission denied (13)";
+            const SEND_FILES: &str = "rsync: [sender] send_files failed to open \"/x/src/secret.txt\": Permission denied (13)";
+            const EXIT_23: &str = "rsync error: some files/attrs were not transferred (see previous errors) (code 23) at main.c(1394) [sender=3.5.0-g483b5efc]";
+            const DELETION: &str = "Mirror deletions stopped part-way";
+            const MOVED: &str = "Files that transferred were removed from the source";
+            let mirror_lines = format!(
+                "{OPENDIR}\n*deleting   src/top-stale.txt\n{DELETION_SKIPPED}\n{SEND_FILES}\n\
+                 \r              2  50%    1.95kB/s    0:00:00 (xfr#1, to-chk=1/5)\r\
+                 cd+++++++++ src/locked/\n>f+++++++++ src/ok/a.txt\n{EXIT_23}\n"
+            );
+            let move_lines = format!("{SEND_FILES}\n>f+++++++++ src/ok/a.txt\n{EXIT_23}\n");
+            const VANISHED: &str = ">f+++++++++ src/a.txt\n\
+                 file has vanished: \"/x/src/z_late.txt\"\n\
+                 rsync warning: some files vanished before they could be transferred (code 24) at main.c(1394) [sender=3.5.0-g483b5efc]\n";
+
+            let imp = self.imp();
+            let banner = imp.result_banner.get();
+            let mirror = RunKind::Transfer {
+                moves: false,
+                deletes: true,
+            };
+            let moving = RunKind::Transfer {
+                moves: true,
+                deletes: false,
+            };
+            // A transfer as the window lives it: reset as `run_sync` resets,
+            // rsync's lines through the real parser and the real handler, a
+            // run of the given kind in the window's hands, and then its end
+            // through the real completion handler. The run held is a real one
+            // (`rsync --version`), so its kind is read from a `Runner`.
+            let transfer = |w: &ForesightWindow, lines: &str, kind: RunKind, code: i32| -> bool {
+                w.hide_banner();
+                w.imp().run_errors.borrow_mut().clear();
+                let mut parser = rsync_events::StreamParser::new();
+                let mut events = parser.feed(lines);
+                events.extend(parser.finish());
+                for ev in events {
+                    w.on_sync_event(ev);
+                }
+                let Ok(runner) = spawn_rsync(vec!["--version".into()], |_| {}, |_| {}) else {
+                    return false;
+                };
+                *w.imp().runner.borrow_mut() = Some(runner.with_kind(kind));
+                let (severity, message) = rsync_events::classify_exit(code);
+                w.on_sync_done(Completion {
+                    severity,
+                    message,
+                    code: Some(code),
+                });
+                true
+            };
+            let report_of = |w: &ForesightWindow| match w.imp().banner_button.borrow().clone() {
+                BannerButton::Problems(report) => Some(report),
+                _ => None,
+            };
+            let press = |w: &ForesightWindow| {
+                w.imp()
+                    .result_banner
+                    .emit_by_name::<()>("button-clicked", &[]);
+                pump(200);
+            };
+            let shown = |w: &ForesightWindow| -> Option<(String, String)> {
+                w.visible_dialog()
+                    .and_then(|d| d.downcast::<adw::AlertDialog>().ok())
+                    .map(|d| {
+                        (
+                            d.heading().map(String::from).unwrap_or_default(),
+                            d.body().to_string(),
+                        )
+                    })
+            };
+            let dismiss = |w: &ForesightWindow| {
+                if let Some(dialog) = w.visible_dialog() {
+                    dialog.force_close();
+                    pump(600);
+                }
+            };
+            let banner_state = |w: &ForesightWindow| {
+                format!(
+                    "revealed={} title={:?} label={:?} button={:?}",
+                    w.imp().result_banner.is_revealed(),
+                    w.imp().result_banner.title(),
+                    w.imp().result_banner.button_label(),
+                    w.imp().banner_button.borrow()
+                )
+            };
+
+            self.add_source(&gio::File::for_path(dir.join("src")));
+            self.set_dest(&gio::File::for_path(dir.join("dst")));
+
+            let ran = transfer(self, &mirror_lines, mirror, 23);
+            let report = report_of(self);
+            check(
+                "a partial transfer is a banner that counts what rsync reported",
+                ran && !self.is_running()
+                    && banner.is_revealed()
+                    && banner.title()
+                        == "Completed, but some files could not be transferred. \
+                            3 problems reported.",
+                banner_state(self),
+            );
+            check(
+                "a partial transfer puts no dialog in front of anyone",
+                self.visible_dialog().is_none(),
+                format!("{:?}", shown(self)),
+            );
+            check(
+                "after a partial transfer the banner's button leads to the problems",
+                banner.button_label().as_deref() == Some("Show Problems") && report.is_some(),
+                banner_state(self),
+            );
+            let collected = imp.run_errors.borrow().clone();
+            check(
+                "what would be shown is what rsync reported, without its closing summary",
+                collected == [OPENDIR, DELETION_SKIPPED, SEND_FILES, EXIT_23]
+                    && report.as_ref().is_some_and(|r| {
+                        r.problems == [OPENDIR, DELETION_SKIPPED, SEND_FILES]
+                            && r.code == Some(23)
+                            && r.kind == Some(mirror)
+                    }),
+                format!("{collected:?} / {report:?}"),
+            );
+            let body = report.as_ref().map(PartialReport::body).unwrap_or_default();
+            check(
+                "a Mirror run whose deletions were skipped says deletion stopped part-way",
+                body.contains(DELETION)
+                    && !body.contains(MOVED)
+                    && body.contains("rsync exit code 23.")
+                    && body.contains(OPENDIR)
+                    && body.contains(DELETION_SKIPPED),
+                body.clone(),
+            );
+            check(
+                "the report lists no itemized line and does not claim which files went",
+                !body.contains("*deleting")
+                    && !body.contains("top-stale")
+                    && !body.contains("src/ok/a.txt"),
+                body.clone(),
+            );
+            press(self);
+            let dialog = shown(self);
+            check(
+                "pressing the button opens the report, headed as a sync that finished",
+                dialog
+                    .as_ref()
+                    .is_some_and(|(heading, text)| heading == PARTIAL_HEADING && *text == body)
+                    && PARTIAL_HEADING != "Sync failed",
+                format!("{dialog:?}"),
+            );
+            dismiss(self);
+            check(
+                "closing the report leaves the banner and the job as they were",
+                banner.is_revealed()
+                    && report_of(self) == report
+                    && imp.sources.borrow().len() == 1
+                    && imp.dest.borrow().is_some(),
+                banner_state(self),
+            );
+            // The report is of the run that ended, not of whatever is in
+            // `run_errors` when the button is pressed.
+            imp.run_errors.borrow_mut().push("rsync: later".into());
+            press(self);
+            let dialog = shown(self);
+            check(
+                "the report is the finished run's, not what was collected since",
+                dialog
+                    .as_ref()
+                    .is_some_and(|(_, text)| *text == body && !text.contains("later")),
+                format!("{dialog:?}"),
+            );
+            dismiss(self);
+
+            let ran = transfer(self, &move_lines, moving, 23);
+            let body = report_of(self).map(|r| r.body()).unwrap_or_default();
+            check(
+                "a partial move says what left the source, and nothing about deletions",
+                ran && banner.title().ends_with("1 problem reported.")
+                    && body.contains(MOVED)
+                    && body.contains("are still in the source")
+                    && !body.contains(DELETION)
+                    && body.contains(SEND_FILES),
+                format!("{} / {body}", banner_state(self)),
+            );
+            let ran = transfer(self, &move_lines, mirror, 23);
+            let body = report_of(self).map(|r| r.body()).unwrap_or_default();
+            check(
+                "a Mirror run that was not told deletion stopped says nothing of deletions",
+                ran && !body.contains(DELETION) && !body.contains(MOVED) && !body.is_empty(),
+                body,
+            );
+            let plain = RunKind::Transfer {
+                moves: false,
+                deletes: false,
+            };
+            let ran = transfer(self, &mirror_lines, plain, 23);
+            let body = report_of(self).map(|r| r.body()).unwrap_or_default();
+            check(
+                "the skipped-deletion line alone, in a run that deletes nothing, adds no sentence",
+                ran && !body.contains(DELETION) && body.contains(DELETION_SKIPPED),
+                body,
+            );
+
+            // Exit 24: what vanished is a warning to rsync and is not
+            // collected, so there is nothing to open.
+            let ran = transfer(self, VANISHED, moving, 24);
+            check(
+                "a partial transfer with nothing collected offers no list to open",
+                ran && imp.run_errors.borrow().is_empty()
+                    && banner.is_revealed()
+                    && *imp.banner_button.borrow() == BannerButton::NewJob
+                    && banner.button_label().as_deref() == Some("New Job"),
+                format!("{:?} {}", imp.run_errors.borrow(), banner_state(self)),
+            );
+            check(
+                "…and says what the exit code means instead",
+                banner.title()
+                    == "Completed, but some source files vanished mid-sync. No specific \
+                        errors were collected; rsync's output is in the activity log \
+                        (exit code 24).",
+                banner_state(self),
+            );
+            press(self);
+            check(
+                "…and its button is New Job, as it was",
+                self.visible_dialog().is_none()
+                    && !banner.is_revealed()
+                    && imp.sources.borrow().is_empty()
+                    && imp.dest.borrow().is_none(),
+                format!("{} dialog={:?}", banner_state(self), shown(self)),
+            );
+            dismiss(self);
+
+            // What follows a partial transfer finds the banner as it always
+            // was: a successful run, and New Job.
+            self.add_source(&gio::File::for_path(dir.join("src")));
+            self.set_dest(&gio::File::for_path(dir.join("dst")));
+            let ran = transfer(self, &mirror_lines, mirror, 23);
+            let had_report = report_of(self).is_some();
+            let ran = ran && transfer(self, ">f+++++++++ src/a.txt\n", mirror, 0);
+            check(
+                "a successful run after a partial one takes the banner and its report down",
+                ran && had_report
+                    && !banner.is_revealed()
+                    && *imp.banner_button.borrow() == BannerButton::None
+                    && imp.run_errors.borrow().is_empty(),
+                banner_state(self),
+            );
+            let ran = transfer(self, &mirror_lines, mirror, 23);
+            let had_report = report_of(self).is_some();
+            self.clear_job();
+            check(
+                "New Job after a partial transfer takes the banner and its report down",
+                ran && had_report
+                    && !banner.is_revealed()
+                    && *imp.banner_button.borrow() == BannerButton::None
+                    && imp.run_errors.borrow().is_empty(),
+                banner_state(self),
+            );
+
+            press(self);
+            check(
+                "…and a press on a banner that has gone opens nothing and clears nothing",
+                self.visible_dialog().is_none() && !banner.is_revealed(),
+                format!("{} dialog={:?}", banner_state(self), shown(self)),
+            );
+            self.show_banner("Completed.", BannerButton::NewJob);
+            check(
+                "the banner of a finished transfer is New Job again",
+                banner.is_revealed()
+                    && banner.button_label().as_deref() == Some("New Job")
+                    && *imp.banner_button.borrow() == BannerButton::NewJob,
+                banner_state(self),
+            );
+            self.hide_banner();
+
+            // The two notices that borrow the banner, each put up over a
+            // partial transfer's: neither has a button, and a press that
+            // reached them anyway would do nothing.
+            self.add_source(&gio::File::for_path(dir.join("src")));
+            self.set_dest(&gio::File::for_path(dir.join("dst")));
+            self.set_filters(&[FilterRule::exclude("*.tmp")]);
+            let ran = transfer(self, &mirror_lines, mirror, 23);
+            dry_run(self, ">f+++++++++ src/a.txt\n");
+            let outcome = self.settle_preview(&done(Severity::Success, Some(0)), false);
+            self.present_preview(outcome, done(Severity::Success, Some(0)));
+            check(
+                "the matched-nothing notice still has no button",
+                ran && outcome == PreviewOutcome::Report
+                    && banner.is_revealed()
+                    && banner.title().contains("matched nothing")
+                    && banner.button_label().unwrap_or_default().is_empty()
+                    && *imp.banner_button.borrow() == BannerButton::None
+                    && imp.filter_banner.get(),
+                banner_state(self),
+            );
+            press(self);
+            check(
+                "…and pressing where it would be does nothing",
+                self.visible_dialog().is_none()
+                    && banner.is_revealed()
+                    && imp.sources.borrow().len() == 1,
+                banner_state(self),
+            );
+            self.add_filter(FilterKind::Exclude, "while-reading");
+            check(
+                "…and editing the rules still takes it down",
+                !banner.is_revealed() && !imp.filter_banner.get(),
+                banner_state(self),
+            );
+
+            let ran = transfer(self, &mirror_lines, mirror, 23);
+            dry_run(self, SCAN_FAILED);
+            let outcome = self.settle_preview(&done(Severity::Partial, Some(23)), false);
+            self.present_preview(outcome, done(Severity::Partial, Some(23)));
+            check(
+                "the incomplete-dry-run notice still has no button",
+                ran && outcome == PreviewOutcome::Incomplete
+                    && banner.is_revealed()
+                    && banner.title().starts_with("Dry run incomplete")
+                    && banner.button_label().unwrap_or_default().is_empty()
+                    && *imp.banner_button.borrow() == BannerButton::None
+                    && !imp.filter_banner.get(),
+                banner_state(self),
+            );
+            press(self);
+            check(
+                "…and no report of a transfer can be opened from it",
+                self.visible_dialog().is_none()
+                    && banner.is_revealed()
+                    && imp.sources.borrow().len() == 1,
+                banner_state(self),
+            );
+            dismiss(self);
+            self.clear_job();
+
+            // The two runs for real, through `run_sync`: what kind of run it
+            // was has to survive the run being let go of, and what the report
+            // says happened has to be what happened.
+            let base = dir.join("partial");
+            let mode = |path: &std::path::Path, mode: u32| {
+                let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
+            };
+            let finish = |w: &ForesightWindow| {
+                for _ in 0..150 {
+                    if !w.is_running() {
+                        break;
+                    }
+                    pump(100);
+                }
+                pump(100);
+            };
+
+            let (src, dst) = (base.join("mirror/src"), base.join("mirror/dst"));
+            let _ = std::fs::create_dir_all(src.join("ok"));
+            let _ = std::fs::create_dir_all(src.join("locked"));
+            let _ = std::fs::create_dir_all(dst.join("src/ok"));
+            let _ = std::fs::write(src.join("ok/a.txt"), "a");
+            let _ = std::fs::write(dst.join("src/top-stale.txt"), "stale");
+            let _ = std::fs::write(dst.join("src/ok/stale.txt"), "stale");
+            mode(&src.join("locked"), 0o000);
+            self.add_source(&gio::File::for_path(&src));
+            self.set_dest(&gio::File::for_path(&dst));
+            imp.delete_row.set_active(true);
+            self.run_sync();
+            let started = self.is_running();
+            finish(self);
+            let report = report_of(self);
+            let body = report.as_ref().map(PartialReport::body).unwrap_or_default();
+            check(
+                "a real Mirror run past an unreadable folder ends as a partial with a report",
+                started
+                    && !self.is_running()
+                    && self.visible_dialog().is_none()
+                    && banner.is_revealed()
+                    && banner.button_label().as_deref() == Some("Show Problems")
+                    && report.as_ref().is_some_and(|r| {
+                        r.kind == Some(mirror)
+                            && r.code == Some(23)
+                            && r.problems.iter().any(|p| p == DELETION_SKIPPED)
+                            && r.problems.iter().any(|p| p.contains("opendir"))
+                            && !r.problems.iter().any(|p| p.starts_with("rsync error:"))
+                    })
+                    && body.contains(DELETION),
+                format!("started={started} {} / {body}", banner_state(self)),
+            );
+            check(
+                "…and deletion did stop part-way: one stale file gone, one left",
+                !dst.join("src/top-stale.txt").exists()
+                    && dst.join("src/ok/stale.txt").exists()
+                    && dst.join("src/ok/a.txt").exists(),
+                format!(
+                    "top-stale={} ok/stale={} ok/a={}",
+                    dst.join("src/top-stale.txt").exists(),
+                    dst.join("src/ok/stale.txt").exists(),
+                    dst.join("src/ok/a.txt").exists()
+                ),
+            );
+            mode(&src.join("locked"), 0o755);
+            mode(&dst.join("src/locked"), 0o755);
+            self.clear_job();
+
+            let (src, dst) = (base.join("move/src"), base.join("move/dst"));
+            let _ = std::fs::create_dir_all(&src);
+            let _ = std::fs::create_dir_all(&dst);
+            let _ = std::fs::write(src.join("a.txt"), "a");
+            let _ = std::fs::write(src.join("secret.txt"), "s");
+            mode(&src.join("secret.txt"), 0o000);
+            self.add_source(&gio::File::for_path(&src));
+            self.set_dest(&gio::File::for_path(&dst));
+            imp.remove_source_row.set_active(true);
+            self.run_sync();
+            let started = self.is_running();
+            finish(self);
+            let report = report_of(self);
+            let body = report.as_ref().map(PartialReport::body).unwrap_or_default();
+            check(
+                "a real Move past an unreadable file ends as a partial that says it was a move",
+                started
+                    && !self.is_running()
+                    && banner.is_revealed()
+                    && banner.title().ends_with("1 problem reported.")
+                    && report.as_ref().is_some_and(|r| {
+                        r.kind == Some(moving)
+                            && r.problems.len() == 1
+                            && r.problems[0].contains("secret.txt")
+                    })
+                    && body.contains(MOVED)
+                    && !body.contains(DELETION),
+                format!("started={started} {} / {body}", banner_state(self)),
+            );
+            check(
+                "…and the file that transferred left the source, the other did not",
+                !src.join("a.txt").exists()
+                    && dst.join("src/a.txt").exists()
+                    && src.join("secret.txt").exists()
+                    && !dst.join("src/secret.txt").exists(),
+                format!(
+                    "source a={} secret={}; destination a={} secret={}",
+                    src.join("a.txt").exists(),
+                    src.join("secret.txt").exists(),
+                    dst.join("src/a.txt").exists(),
+                    dst.join("src/secret.txt").exists()
+                ),
+            );
+            mode(&src.join("secret.txt"), 0o644);
+            self.clear_job();
+            let _ = std::fs::remove_dir_all(&base);
+            check(
+                "the partial-transfer checks leave nothing behind",
+                !base.exists() && !self.is_running() && self.visible_dialog().is_none(),
+                format!("{} still there", base.display()),
+            );
+        }
+
         (pass, fail)
     }
 }
@@ -4192,9 +4851,180 @@ impl ForesightWindow {
 #[cfg(test)]
 mod tests {
     use super::{
-        incomplete_preview_notice, parse_bwlimit, refused_start_body, tokenize, PreviewOutcome,
+        incomplete_preview_notice, parse_bwlimit, partial_banner_text, partial_report_body,
+        refused_start_body, reported_problems, tokenize, BannerButton, PartialReport,
+        PreviewOutcome, DELETION_SKIPPED,
     };
-    use rsync_events::Severity;
+    use crate::job::{Completion, RunKind};
+    use rsync_events::{classify_exit, Severity};
+
+    const OPENDIR: &str =
+        "rsync: [sender] opendir \"/x/src/locked\" failed: Permission denied (13)";
+    const SEND_FILES: &str =
+        "rsync: [sender] send_files failed to open \"/x/src/secret.txt\": Permission denied (13)";
+    const SUMMARY: &str = "rsync error: some files/attrs were not transferred (see previous \
+                           errors) (code 23) at main.c(1394) [sender=3.5.0-g483b5efc]";
+
+    fn lines(of: &[&str]) -> Vec<String> {
+        of.iter().map(|l| l.to_string()).collect()
+    }
+
+    fn transfer(moves: bool, deletes: bool) -> Option<RunKind> {
+        Some(RunKind::Transfer { moves, deletes })
+    }
+
+    fn exited(code: i32) -> Completion {
+        let (severity, message) = classify_exit(code);
+        Completion {
+            severity,
+            message,
+            code: Some(code),
+        }
+    }
+
+    /// rsync's closing line restates the exit code and names nothing; one
+    /// unreadable file is one problem, not two.
+    #[test]
+    fn the_exit_summary_is_not_counted_as_a_problem() {
+        assert_eq!(
+            reported_problems(&lines(&[OPENDIR, DELETION_SKIPPED, SUMMARY])),
+            lines(&[OPENDIR, DELETION_SKIPPED])
+        );
+        // Over ssh each end prints one.
+        assert!(reported_problems(&lines(&[SUMMARY, SUMMARY])).is_empty());
+        // Only the summary: a line that merely begins the same way is kept.
+        assert_eq!(
+            reported_problems(&lines(&["rsync error: something else"])).len(),
+            1
+        );
+    }
+
+    #[test]
+    fn the_partial_banner_counts_what_was_reported() {
+        let message = classify_exit(23).1;
+        assert_eq!(
+            partial_banner_text(&message, Some(23), 1),
+            "Completed, but some files could not be transferred. 1 problem reported."
+        );
+        assert_eq!(
+            partial_banner_text(&message, Some(23), 3),
+            "Completed, but some files could not be transferred. 3 problems reported."
+        );
+    }
+
+    #[test]
+    fn a_partial_with_nothing_collected_says_what_the_exit_code_means() {
+        let message = classify_exit(24).1;
+        assert_eq!(
+            partial_banner_text(&message, Some(24), 0),
+            "Completed, but some source files vanished mid-sync. No specific errors were \
+             collected; rsync's output is in the activity log (exit code 24)."
+        );
+        assert!(partial_banner_text(&message, None, 0).ends_with("the activity log."));
+    }
+
+    /// The button follows from what there is to show, and from nothing else.
+    #[test]
+    fn a_partial_offers_its_problems_only_when_it_has_some() {
+        let report = PartialReport::new(
+            &exited(23),
+            transfer(false, false),
+            &lines(&[SEND_FILES, SUMMARY]),
+        );
+        assert_eq!(report.problems, lines(&[SEND_FILES]));
+        assert_eq!(report.button(), BannerButton::Problems(report.clone()));
+        assert_eq!(report.button().label(), Some("Show Problems"));
+        assert!(report.banner_text().ends_with("1 problem reported."));
+
+        // Exit 24: the vanished-file lines are not errors, so nothing is
+        // collected — and a lone summary line is nothing to list either.
+        for errors in [lines(&[]), lines(&[SUMMARY])] {
+            let report = PartialReport::new(&exited(24), transfer(true, true), &errors);
+            assert_eq!(report.button(), BannerButton::NewJob);
+            assert!(report.banner_text().contains("(exit code 24)"));
+        }
+        assert_eq!(BannerButton::default(), BannerButton::None);
+        assert_eq!(BannerButton::NewJob.label(), Some("New Job"));
+        assert_eq!(BannerButton::None.label(), None);
+    }
+
+    #[test]
+    fn the_partial_report_says_the_sync_finished_and_what_went_wrong() {
+        let body = partial_report_body(transfer(false, false), Some(23), &lines(&[SEND_FILES]));
+        assert_eq!(
+            body,
+            format!(
+                "The sync ran to its end, but not everything went through. rsync \
+                 reported 1 problem, shown below.\n\nrsync exit code 23.\n\n{SEND_FILES}"
+            )
+        );
+        assert!(!body.contains("failed to transfer") && !body.contains("Sync failed"));
+        let body = partial_report_body(None, None, &lines(&[OPENDIR, SEND_FILES]));
+        assert!(body.contains("reported 2 problems, shown below."), "{body}");
+        assert!(!body.contains("exit code"), "{body}");
+    }
+
+    /// Deletion is mentioned when the run deleted *and* rsync said it stopped
+    /// deleting; either alone says nothing about this run's deletions.
+    #[test]
+    fn the_deletion_sentence_needs_a_deleting_run_and_the_skipped_line() {
+        const SENTENCE: &str = "Mirror deletions stopped part-way";
+        let skipped = lines(&[OPENDIR, DELETION_SKIPPED]);
+        let body = partial_report_body(transfer(false, true), Some(23), &skipped);
+        assert!(body.contains(SENTENCE), "{body}");
+        assert!(body.contains("may already have been deleted from the destination"));
+        assert!(!body.contains("source"), "{body}");
+
+        for (kind, errors) in [
+            // Deleting, but deletion was not interrupted.
+            (transfer(false, true), lines(&[SEND_FILES])),
+            // The line without a run that deletes.
+            (transfer(false, false), skipped.clone()),
+            (transfer(true, false), skipped.clone()),
+            (Some(RunKind::DryRun), skipped.clone()),
+            (None, skipped.clone()),
+        ] {
+            let body = partial_report_body(kind, Some(23), &errors);
+            assert!(!body.contains(SENTENCE), "{kind:?}: {body}");
+        }
+    }
+
+    #[test]
+    fn the_move_sentence_appears_for_a_move_only() {
+        const SENTENCE: &str = "Files that transferred were removed from the source";
+        let errors = lines(&[SEND_FILES]);
+        let body = partial_report_body(transfer(true, false), Some(23), &errors);
+        assert!(body.contains(SENTENCE), "{body}");
+        assert!(body.contains("are still in the source") && !body.contains("deleted"));
+        for kind in [
+            transfer(false, false),
+            transfer(false, true),
+            Some(RunKind::DryRun),
+            None,
+        ] {
+            assert!(!partial_report_body(kind, Some(23), &errors).contains(SENTENCE));
+        }
+        // Both at once, deletions first, each in its own paragraph.
+        let body = partial_report_body(transfer(true, true), Some(23), &lines(&[DELETION_SKIPPED]));
+        let (deleted, moved) = (body.find("Mirror deletions"), body.find(SENTENCE));
+        assert!(deleted.is_some() && deleted < moved, "{body}");
+    }
+
+    /// A big tree can collect thousands of lines.
+    #[test]
+    fn the_partial_report_caps_its_list() {
+        let many: Vec<String> = (0..2500).map(|i| format!("rsync: error {i}")).collect();
+        let body = partial_report_body(transfer(false, false), Some(23), &many);
+        assert!(body.contains("reported 2500 problems"), "{body}");
+        assert!(body.ends_with("rsync: error 19\n…and 2480 more"), "{body}");
+        assert!(!body.contains("rsync: error 20\n"));
+        let exactly: Vec<String> = many[..20].to_vec();
+        let body = partial_report_body(transfer(false, false), Some(23), &exactly);
+        assert!(
+            body.ends_with("rsync: error 19") && !body.contains("more"),
+            "{body}"
+        );
+    }
 
     /// Every ending of a dry run, on both paths. Only a run that finished may
     /// lead anywhere; exit 23 is tolerated for a transfer, not for the scan a

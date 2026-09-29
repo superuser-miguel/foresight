@@ -172,7 +172,7 @@ flatpak install flathub org.gnome.Platform//49
 ```
 
 Release tags are GPG-signed with the same key. Verify with
-`git verify-tag v0.1.2`.
+`git verify-tag v1.0.1`.
 
 ## Layout
 
@@ -387,5 +387,5 @@ interactive ones, or they won't ship.
 
 ## License
 
-Foresight is **GPL-3.0-or-later**. The bundled rsync remains its own
-GPL-3.0-or-later work, built as a separate module.
+Foresight is **GPL-3.0-or-later** — see [`LICENSE`](LICENSE). The bundled rsync
+remains its own GPL-3.0-or-later work, built as a separate module.

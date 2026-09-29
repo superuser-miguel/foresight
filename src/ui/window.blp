@@ -27,6 +27,7 @@ template $ForesightWindow: Adw.ApplicationWindow {
         [start]
         Button start_button {
           label: _("Start Sync");
+          tooltip-text: _("Run the transfer");
           sensitive: false;
           styles ["suggested-action"]
           // real run: -a --info=progress2 --out-format='%i %n%L' [--delete]
@@ -38,9 +39,11 @@ template $ForesightWindow: Adw.ApplicationWindow {
         };
 
         [end]
-        MenuButton {
+        MenuButton menu_button {
           icon-name: "open-menu-symbolic";
+          tooltip-text: _("Main Menu");
           menu-model: primary_menu;
+          // `primary` is what makes F10 open it — GTK's doing, not an action.
           primary: true;
         }
       }
@@ -174,7 +177,7 @@ template $ForesightWindow: Adw.ApplicationWindow {
                 }
 
                 Adw.PreferencesGroup {
-                  Adw.ExpanderRow {
+                  Adw.ExpanderRow advanced_row {
                     title: _("Advanced");
                     subtitle: _("Extra rsync options");
 
@@ -306,6 +309,7 @@ template $ForesightWindow: Adw.ApplicationWindow {
 
             Button cancel_button {
               label: _("Cancel");
+              tooltip-text: _("Stop the running job");
               halign: end;
               sensitive: false;
               styles ["destructive-action"]

@@ -92,6 +92,8 @@ mod imp {
         #[template_child]
         pub cancel_button: TemplateChild<gtk::Button>,
         #[template_child]
+        pub menu_button: TemplateChild<gtk::MenuButton>,
+        #[template_child]
         pub result_banner: TemplateChild<adw::Banner>,
         #[template_child]
         pub main_stack: TemplateChild<adw::ViewStack>,
@@ -113,6 +115,8 @@ mod imp {
         pub dest_row: TemplateChild<adw::ActionRow>,
         #[template_child]
         pub dest_icon: TemplateChild<gtk::Image>,
+        #[template_child]
+        pub advanced_row: TemplateChild<adw::ExpanderRow>,
         #[template_child]
         pub contents_row: TemplateChild<adw::SwitchRow>,
         #[template_child]
@@ -219,10 +223,12 @@ mod imp {
         fn constructed(&self) {
             self.parent_constructed();
             let obj = self.obj();
+            // First: setup_rows ends by deriving every action's enabled state,
+            // so the actions have to exist by then.
+            obj.setup_actions();
             obj.setup_rows();
             obj.setup_preview_list();
             obj.setup_log_list();
-            obj.setup_actions();
             obj.setup_presets();
         }
     }
@@ -520,7 +526,24 @@ impl ForesightWindow {
         glib::idle_add_local_once(move || vadj.set_value(vadj.upper()));
     }
 
-    /// Wire the Preview / Start / Cancel buttons.
+    /// Add a parameterless `win.<name>` action that calls `run`.
+    fn add_simple_action(&self, name: &str, run: impl Fn(&Self) + 'static) {
+        let action = gio::SimpleAction::new(name, None);
+        action.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, _| run(&win)
+        ));
+        self.add_action(&action);
+    }
+
+    /// Wire the Preview / Start / Cancel buttons, and the window's actions.
+    ///
+    /// Every keyboard shortcut is one of these actions (the keys themselves are
+    /// in [`crate::shortcuts`]). Each calls the very function its button calls —
+    /// Start in particular goes through `on_start_clicked`, so the dry-run-first
+    /// confirmations cannot be skipped from the keyboard — and each is enabled
+    /// only while that button is, which `refresh_action_sensitivity` sees to.
     fn setup_actions(&self) {
         let imp = self.imp();
 
@@ -537,30 +560,71 @@ impl ForesightWindow {
         imp.cancel_button.connect_clicked(glib::clone!(
             #[weak(rename_to = win)]
             self,
-            move |_| {
-                if let Some(runner) = win.imp().runner.borrow().as_ref() {
-                    runner.cancel();
+            move |_| win.cancel_run()
+        ));
+
+        self.add_simple_action("dry-run", |win| win.run_preview(false));
+        self.add_simple_action("start-sync", Self::on_start_clicked);
+        self.add_simple_action("cancel-run", Self::cancel_run);
+        // "New Job" (win.new-job): clear the whole form to start fresh.
+        self.add_simple_action("new-job", Self::clear_job);
+
+        self.add_simple_action("add-folder", Self::choose_add_folders);
+        self.add_simple_action("add-file", Self::choose_add_files);
+        self.add_simple_action("remote-source", |win| win.choose_remote(RemoteSide::Source));
+        self.add_simple_action("choose-destination", Self::choose_dest);
+        self.add_simple_action("remote-destination", |win| {
+            win.choose_remote(RemoteSide::Dest)
+        });
+        self.add_simple_action("add-filter-rule", Self::focus_filter_entry);
+        self.add_simple_action("save-preset", Self::prompt_save_preset);
+
+        // One action for the three pages; the page name is its parameter.
+        let show_page = gio::SimpleAction::new("show-page", Some(glib::VariantTy::STRING));
+        show_page.connect_activate(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_, page| {
+                if let Some(page) = page.and_then(|p| p.str()) {
+                    win.imp().main_stack.set_visible_child_name(page);
                 }
             }
         ));
-
-        // "New Job" (win.new-job): clear the whole form to start fresh.
-        let new_job = gio::SimpleAction::new("new-job", None);
-        new_job.connect_activate(glib::clone!(
-            #[weak(rename_to = win)]
-            self,
-            move |_, _| win.clear_job()
-        ));
-        self.add_action(&new_job);
+        self.add_action(&show_page);
 
         // "What Foresight Can Do" (win.capabilities): the Help/capability dialog.
-        let capabilities = gio::SimpleAction::new("capabilities", None);
-        capabilities.connect_activate(glib::clone!(
-            #[weak(rename_to = win)]
-            self,
-            move |_, _| crate::help::present(&win)
-        ));
-        self.add_action(&capabilities);
+        self.add_simple_action("capabilities", crate::help::present);
+        // The name is the one GTK gives the action behind a help overlay, and
+        // the one the menu has always pointed at.
+        self.add_simple_action("show-help-overlay", |win| {
+            crate::shortcuts::present(win.upcast_ref());
+        });
+        self.add_simple_action("close", |win| win.close());
+
+        // A dialog lives inside this window, so the window's accelerators are
+        // still matched while one is up — Start would be reachable from behind
+        // its own confirmation. Opening or closing one re-derives the actions.
+        self.connect_visible_dialog_notify(|win| win.refresh_action_sensitivity());
+
+        // A button with a key says so, the key taken from the same table.
+        for (button, action) in [
+            (&*imp.preview_button, "win.dry-run"),
+            (&*imp.start_button, "win.start-sync"),
+            (&*imp.cancel_button, "win.cancel-run"),
+            (&*imp.add_folder_button, "win.add-folder"),
+            (&*imp.add_file_button, "win.add-file"),
+            (&*imp.add_remote_source_button, "win.remote-source"),
+            (&*imp.remote_dest_button, "win.remote-destination"),
+            (&*imp.save_preset_button, "win.save-preset"),
+        ] {
+            if let Some(text) = button.tooltip_text() {
+                button.set_tooltip_text(Some(&crate::shortcuts::tooltip(&text, action)));
+            }
+        }
+        if let Some(text) = imp.menu_button.tooltip_text() {
+            imp.menu_button
+                .set_tooltip_text(Some(&format!("{text} (F10)")));
+        }
 
         // The partial-result banner offers a one-tap reset.
         imp.result_banner.set_button_label(Some("New Job"));
@@ -569,6 +633,27 @@ impl ForesightWindow {
             self,
             move |_| win.clear_job()
         ));
+    }
+
+    fn cancel_run(&self) {
+        if let Some(runner) = self.imp().runner.borrow().as_ref() {
+            runner.cancel();
+        }
+    }
+
+    /// Open Advanced → Filter rules and put the cursor in the add-rule entry,
+    /// which is otherwise two expanders deep.
+    fn focus_filter_entry(&self) {
+        let imp = self.imp();
+        imp.main_stack.set_visible_child_name("configure");
+        imp.advanced_row.set_expanded(true);
+        imp.filters_row.set_expanded(true);
+        // Once the expanders have laid out: a row that is not mapped yet
+        // cannot take the focus.
+        let entry = imp.filter_entry.get();
+        glib::idle_add_local_once(move || {
+            entry.grab_focus();
+        });
     }
 
     /// Reset the window to an empty Configure page for a new transfer. Ignored
@@ -825,21 +910,29 @@ impl ForesightWindow {
         // a dead end.
         let source_is_remote = matches!(remote, Some((RemoteSide::Source, _)));
         let dest_is_remote = matches!(remote, Some((RemoteSide::Dest, _)));
+        // The key is named only where the button works: beside the reason a
+        // button is closed off it would read as a way around it.
+        let with_key = crate::shortcuts::tooltip;
         imp.add_remote_source_button
-            .set_tooltip_text(Some(if dest_is_remote {
+            .set_tooltip_text(Some(&if dest_is_remote {
                 "The destination is already remote — rsync cannot have both ends on other machines"
+                    .to_string()
             } else if source_is_remote {
-                "Change the remote source"
+                with_key("Change the remote source", "win.remote-source")
             } else {
-                "Pull from a remote machine over SSH"
+                with_key("Pull from a remote machine over SSH", "win.remote-source")
             }));
         imp.remote_dest_button
-            .set_tooltip_text(Some(if source_is_remote {
+            .set_tooltip_text(Some(&if source_is_remote {
                 "The source is already remote — rsync cannot have both ends on other machines"
+                    .to_string()
             } else if dest_is_remote {
-                "Change the remote destination"
+                with_key("Change the remote destination", "win.remote-destination")
             } else {
-                "Send to a remote machine over SSH"
+                with_key(
+                    "Send to a remote machine over SSH",
+                    "win.remote-destination",
+                )
             }));
 
         self.refresh_action_sensitivity();
@@ -1626,6 +1719,10 @@ impl ForesightWindow {
     /// Preview and Start follow selection; both are disabled while a run is
     /// live. Cancel is the inverse. The add/remove controls also lock during a
     /// run so the source list can't change mid-transfer.
+    ///
+    /// The actions behind the keyboard shortcuts are set here too, from the
+    /// same values as the buttons they mirror, so a key and its button cannot
+    /// come to disagree.
     fn refresh_action_sensitivity(&self) {
         let imp = self.imp();
         let running = self.is_running();
@@ -1644,10 +1741,39 @@ impl ForesightWindow {
         imp.add_folder_button.set_sensitive(local_allowed);
         imp.add_file_button.set_sensitive(local_allowed);
         // One remote side at a time: rsync refuses a job remote at both ends.
+        let remote_source_allowed = !dest_is_remote && !running;
+        let remote_dest_allowed = !source_is_remote && !running;
         imp.add_remote_source_button
-            .set_sensitive(!dest_is_remote && !running);
-        imp.remote_dest_button
-            .set_sensitive(!source_is_remote && !running);
+            .set_sensitive(remote_source_allowed);
+        imp.remote_dest_button.set_sensitive(remote_dest_allowed);
+
+        // While a dialog is up the keys are the dialog's. It covers the
+        // buttons, so they need no such term; an accelerator is matched by the
+        // window whatever is drawn over it.
+        let free = self.visible_dialog().is_none();
+        for (name, enabled) in [
+            ("dry-run", idle_ready),
+            ("start-sync", idle_ready),
+            ("cancel-run", running),
+            // clear_job refuses during a run; this makes the menu item say so.
+            ("new-job", !running),
+            ("add-folder", local_allowed),
+            ("add-file", local_allowed),
+            ("remote-source", remote_source_allowed),
+            ("remote-destination", remote_dest_allowed),
+            // The destination row stays clickable during a run. The key is
+            // held to the stricter rule the other endpoint controls follow.
+            ("choose-destination", !running),
+            ("add-filter-rule", true),
+            ("save-preset", true),
+            ("show-page", true),
+            ("capabilities", true),
+            ("show-help-overlay", true),
+        ] {
+            if let Some(action) = self.lookup_action(name).and_downcast::<gio::SimpleAction>() {
+                action.set_enabled(enabled && free);
+            }
+        }
     }
 
     // -- closing with a run live --------------------------------------------
@@ -3651,6 +3777,325 @@ impl ForesightWindow {
                 && !moving.contains("deleted"),
             moving,
         );
+
+        // -- keyboard shortcuts ----------------------------------------------
+        //
+        // A key is an action plus an accelerator, and an action is only as safe
+        // as its `enabled`. What is checked: the table, the application and the
+        // window agree on what exists; each action is enabled exactly while
+        // its button is; and Start by key stops where Start by click stops.
+        // What cannot be checked here is a key actually being pressed.
+        use crate::shortcuts::{self, SHORTCUTS};
+        self.clear_job();
+        let app = self.application().expect("the window has an application");
+        let pump = |ms: u64| {
+            let ctx = glib::MainContext::default();
+            let elapsed = std::rc::Rc::new(std::cell::Cell::new(false));
+            glib::timeout_add_local_once(std::time::Duration::from_millis(ms), {
+                let elapsed = elapsed.clone();
+                move || elapsed.set(true)
+            });
+            while !elapsed.get() {
+                ctx.iteration(true);
+            }
+        };
+        let enabled =
+            |w: &ForesightWindow, name: &str| w.lookup_action(name).is_some_and(|a| a.is_enabled());
+        let activate = |w: &ForesightWindow, name: &str| {
+            gio::prelude::ActionGroupExt::activate_action(w, name, None);
+        };
+
+        let missing: Vec<&str> = SHORTCUTS
+            .iter()
+            .filter_map(|s| s.action)
+            .filter(|detailed| {
+                let name = detailed.split("::").next().unwrap_or(detailed);
+                match name.split_once('.') {
+                    Some(("win", n)) => self.lookup_action(n).is_none(),
+                    Some(("app", n)) => app.lookup_action(n).is_none(),
+                    _ => true,
+                }
+            })
+            .collect();
+        check(
+            "every action in the shortcut table exists",
+            missing.is_empty(),
+            format!("no such action: {missing:?}"),
+        );
+        let unparsed: Vec<&str> = SHORTCUTS
+            .iter()
+            .flat_map(|s| s.accels.iter().copied())
+            .filter(|a| gtk::accelerator_parse(*a).is_none())
+            .collect();
+        check(
+            "every accelerator in the table is one GTK can parse",
+            unparsed.is_empty(),
+            format!("{unparsed:?}"),
+        );
+        // Compared as parsed keys: GTK hands accelerators back in its own
+        // spelling, which need not be the table's.
+        let keys = |accels: Vec<String>| -> Vec<_> {
+            accels
+                .iter()
+                .filter_map(|a| gtk::accelerator_parse(a.as_str()))
+                .collect()
+        };
+        let unregistered: Vec<&str> = SHORTCUTS
+            .iter()
+            .filter(|s| {
+                s.action.is_some_and(|action| {
+                    let got = app.accels_for_action(action);
+                    keys(got.iter().map(|a| a.to_string()).collect())
+                        != keys(s.accels.iter().map(|a| a.to_string()).collect())
+                })
+            })
+            .map(|s| s.title)
+            .collect();
+        check(
+            "the application holds exactly the table's keys for each action",
+            unregistered.is_empty(),
+            format!("{unregistered:?}"),
+        );
+        let unlisted: Vec<String> = app
+            .list_action_descriptions()
+            .iter()
+            .map(|a| a.to_string())
+            .filter(|a| !SHORTCUTS.iter().any(|s| s.action == Some(a.as_str())))
+            .collect();
+        check(
+            "no accelerator is registered that the table does not list",
+            unlisted.is_empty(),
+            format!("{unlisted:?}"),
+        );
+        check(
+            "F10 is GTK's: the menu button is the primary one",
+            self.imp().menu_button.is_primary(),
+            "the table lists F10 but nothing answers it".into(),
+        );
+        check(
+            "a button's tooltip names its key",
+            shortcuts::label("win.dry-run").is_some_and(|key| {
+                self.imp()
+                    .preview_button
+                    .tooltip_text()
+                    .is_some_and(|t| t.ends_with(&format!("({key})")))
+            }),
+            format!("{:?}", self.imp().preview_button.tooltip_text()),
+        );
+
+        // Each action against the button it mirrors, through the states the
+        // window passes through. Returns the pairs that disagree.
+        let disagree = |w: &ForesightWindow| -> Vec<&'static str> {
+            let imp = w.imp();
+            [
+                ("dry-run", imp.preview_button.is_sensitive()),
+                ("start-sync", imp.start_button.is_sensitive()),
+                ("cancel-run", imp.cancel_button.is_sensitive()),
+                ("add-folder", imp.add_folder_button.is_sensitive()),
+                ("add-file", imp.add_file_button.is_sensitive()),
+                ("remote-source", imp.add_remote_source_button.is_sensitive()),
+                ("remote-destination", imp.remote_dest_button.is_sensitive()),
+            ]
+            .into_iter()
+            .filter(|(name, sensitive)| enabled(w, name) != *sensitive)
+            .map(|(name, _)| name)
+            .collect()
+        };
+        check(
+            "nothing selected: Dry Run, Start and Cancel are off by key too",
+            disagree(self).is_empty()
+                && !enabled(self, "dry-run")
+                && !enabled(self, "start-sync")
+                && !enabled(self, "cancel-run")
+                && enabled(self, "add-folder"),
+            format!("disagree: {:?}", disagree(self)),
+        );
+        activate(self, "start-sync");
+        check(
+            "a disabled Start does nothing when activated",
+            !self.is_running()
+                && self.imp().main_stack.visible_child_name().as_deref() == Some("configure"),
+            "something started".into(),
+        );
+
+        self.add_source(&gio::File::for_path(dir.join("src")));
+        self.set_dest(&gio::File::for_path(dir.join("dst")));
+        check(
+            "both ends selected: Dry Run and Start come on by key",
+            disagree(self).is_empty() && enabled(self, "dry-run") && enabled(self, "start-sync"),
+            format!("disagree: {:?}", disagree(self)),
+        );
+        self.set_remote(RemoteSide::Dest, ep("nas.local", "/srv/backup"));
+        check(
+            "a remote destination closes the remote-source key with its button",
+            disagree(self).is_empty() && !enabled(self, "remote-source"),
+            format!("disagree: {:?}", disagree(self)),
+        );
+        self.set_dest(&gio::File::for_path(dir.join("dst")));
+
+        match spawn_rsync(vec!["--version".into()], |_| {}, |_| {}) {
+            Ok(runner) => {
+                *self.imp().runner.borrow_mut() = Some(runner);
+                self.refresh_action_sensitivity();
+                check(
+                    "a live run leaves Cancel as the only job key",
+                    disagree(self).is_empty()
+                        && enabled(self, "cancel-run")
+                        && !enabled(self, "dry-run")
+                        && !enabled(self, "start-sync")
+                        && !enabled(self, "new-job")
+                        && !enabled(self, "add-folder")
+                        && !enabled(self, "choose-destination"),
+                    format!("disagree: {:?}", disagree(self)),
+                );
+                *self.imp().runner.borrow_mut() = None;
+                self.refresh_action_sensitivity();
+                check(
+                    "the keys come back when the run ends",
+                    disagree(self).is_empty()
+                        && !enabled(self, "cancel-run")
+                        && enabled(self, "start-sync")
+                        && enabled(self, "new-job")
+                        && enabled(self, "choose-destination"),
+                    format!("disagree: {:?}", disagree(self)),
+                );
+            }
+            Err(e) => check("rsync spawns for the shortcut checks", false, e.to_string()),
+        }
+
+        self.imp().main_stack.set_visible_child_name("configure");
+        gio::prelude::ActionGroupExt::activate_action(
+            self,
+            "show-page",
+            Some(&"transfer".to_variant()),
+        );
+        check(
+            "the page action switches pages",
+            self.imp().main_stack.visible_child_name().as_deref() == Some("transfer"),
+            format!("{:?}", self.imp().main_stack.visible_child_name()),
+        );
+
+        self.imp().advanced_row.set_expanded(false);
+        self.imp().filters_row.set_expanded(false);
+        activate(self, "add-filter-rule");
+        pump(600);
+        check(
+            "the filter-rule key opens the way to the entry and focuses it",
+            self.imp().main_stack.visible_child_name().as_deref() == Some("configure")
+                && self.imp().advanced_row.is_expanded()
+                && self.imp().filters_row.is_expanded()
+                && gtk::prelude::RootExt::focus(self)
+                    .is_some_and(|w| w.is_ancestor(&*self.imp().filter_entry)),
+            format!(
+                "advanced={} filters={} focus={:?}",
+                self.imp().advanced_row.is_expanded(),
+                self.imp().filters_row.is_expanded(),
+                gtk::prelude::RootExt::focus(self).map(|w| w.type_().name())
+            ),
+        );
+
+        // The menu item this all started with.
+        let fallback = shortcuts::build_window();
+        check(
+            "the GtkShortcutsWindow fallback builds from the table",
+            fallback.is_ok(),
+            format!("{:?}", fallback.as_ref().err()),
+        );
+        if let Ok(window) = fallback {
+            window.destroy();
+        }
+        let toplevels = || gtk::Window::list_toplevels().len();
+        let before = toplevels();
+        activate(self, "show-help-overlay");
+        pump(200);
+        let dialog = self.visible_dialog();
+        check(
+            "Keyboard Shortcuts opens something",
+            dialog.is_some() || toplevels() > before,
+            "win.show-help-overlay still does nothing".into(),
+        );
+        if let Some(dialog) = dialog {
+            check(
+                "an open dialog takes the keys away from the window",
+                !enabled(self, "start-sync")
+                    && !enabled(self, "dry-run")
+                    && !enabled(self, "show-help-overlay"),
+                "an action is still live behind the dialog".into(),
+            );
+            dialog.force_close();
+            pump(600);
+            check(
+                "closing the dialog hands the keys back",
+                self.visible_dialog().is_none()
+                    && enabled(self, "start-sync")
+                    && disagree(self).is_empty(),
+                format!("disagree: {:?}", disagree(self)),
+            );
+        } else {
+            for w in gtk::Window::list_toplevels() {
+                if w.type_().name() == "GtkShortcutsWindow" {
+                    w.downcast::<gtk::Window>().unwrap().destroy();
+                }
+            }
+        }
+
+        // Start by key, with Mirror deletions on and something to delete. It
+        // has to end at the confirmation with the file still there — the same
+        // place the button ends — and the confirmation has to hold the keys.
+        let stale = dir.join("dst/src/stale.txt");
+        let _ = std::fs::create_dir_all(dir.join("dst/src"));
+        let _ = std::fs::write(&stale, "only in the destination");
+        self.imp().delete_row.set_active(true);
+        activate(self, "start-sync");
+        check(
+            "Start by key with Mirror deletions on begins with a dry run",
+            self.is_running()
+                && self.imp().main_stack.visible_child_name().as_deref() == Some("preview"),
+            format!(
+                "running={} page={:?}",
+                self.is_running(),
+                self.imp().main_stack.visible_child_name()
+            ),
+        );
+        for _ in 0..100 {
+            if !self.is_running() {
+                break;
+            }
+            pump(100);
+        }
+        pump(200);
+        check(
+            "…and stops at the confirmation, nothing deleted",
+            !self.is_running()
+                && self.visible_dialog().is_some()
+                && stale.exists()
+                && self.imp().main_stack.visible_child_name().as_deref() == Some("preview"),
+            format!(
+                "running={} dialog={} file={} deletions={:?}",
+                self.is_running(),
+                self.visible_dialog().is_some(),
+                stale.exists(),
+                self.imp().deletions.borrow()
+            ),
+        );
+        activate(self, "start-sync");
+        check(
+            "Start cannot be activated again from behind the confirmation",
+            !enabled(self, "start-sync") && !self.is_running(),
+            "a second run started under the dialog".into(),
+        );
+        if let Some(dialog) = self.visible_dialog() {
+            // Closing is the "cancel" response.
+            dialog.close();
+            pump(600);
+        }
+        check(
+            "dismissing the confirmation leaves the destination untouched",
+            !self.is_running() && stale.exists() && self.visible_dialog().is_none(),
+            format!("running={} file={}", self.is_running(), stale.exists()),
+        );
+        let _ = std::fs::remove_file(&stale);
+        self.clear_job();
 
         (pass, fail)
     }

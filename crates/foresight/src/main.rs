@@ -12,6 +12,7 @@ mod job;
 mod log_object;
 mod profiles;
 mod remote_dialog;
+mod shortcuts;
 mod ssh;
 mod window;
 
@@ -34,6 +35,7 @@ fn main() -> glib::ExitCode {
 
     app.connect_startup(|app| {
         setup_actions(app);
+        shortcuts::register(app);
         load_css();
     });
     app.connect_activate(|app| {
@@ -128,4 +130,20 @@ fn setup_actions(app: &adw::Application) {
         }
     ));
     app.add_action(&about);
+
+    // Quit closes the windows rather than calling `app.quit()`, which tears
+    // the application down without asking them. Closing is what the window's
+    // own close button does, so whatever a window comes to say about being
+    // closed — mid-transfer, say — applies to Ctrl+Q as well.
+    let quit = gio::SimpleAction::new("quit", None);
+    quit.connect_activate(glib::clone!(
+        #[weak]
+        app,
+        move |_, _| {
+            for window in app.windows() {
+                window.close();
+            }
+        }
+    ));
+    app.add_action(&quit);
 }

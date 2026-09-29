@@ -4,6 +4,10 @@
 //! and present the composite-template window. Milestone 3 wires the bundled
 //! rsync engine to the Preview and Transfer pages.
 
+// One function in this crate is allowed `unsafe`, and says so where it is:
+// `job::tie_to_this_process`. Anything else has to ask.
+#![deny(unsafe_code)]
+
 mod capabilities;
 mod change_object;
 mod endpoint;
@@ -25,7 +29,6 @@ use adw::prelude::*;
 use gtk::gio;
 use gtk::glib;
 use std::path::PathBuf;
-use std::rc::Rc;
 use window::ForesightWindow;
 
 fn main() -> glib::ExitCode {
@@ -71,41 +74,21 @@ fn main() -> glib::ExitCode {
         }
     });
 
-    // SIGTERM, SIGINT and SIGHUP take the same way out as everything else:
-    // the application quits, which leads to the shutdown below. Quitting
-    // rather than closing the windows, because closing asks — and whoever
-    // sent the signal is not going to answer, and may have taken the display
-    // away already. See `signals` for what a second signal does.
-    let signals = Rc::new(signals::watch(glib::clone!(
-        #[weak]
-        app,
-        move |_| app.quit()
-    )));
-
     // Quitting the application closes no window, so it asks nothing and
-    // passes no guard: `close-request` never fires. Whatever leads here, a run
-    // that is still live is stopped before the process that started it goes.
-    app.connect_shutdown(glib::clone!(
-        #[strong]
-        signals,
-        move |app| {
-            let runs: Vec<job::Runner> = app
-                .windows()
-                .into_iter()
-                .filter_map(|window| window.downcast::<ForesightWindow>().ok())
-                .filter_map(|window| window.take_run_for_shutdown())
-                .collect();
-            signals::stop_all(&runs, &|| signals.repeated());
-        }
-    ));
+    // passes no guard: `close-request` never fires. A run that is still live
+    // is stopped before the process that started it goes. (A signal, a kill
+    // and a crash do not come through here or anywhere else of ours; what
+    // stops rsync then is the kernel — see `signals`.)
+    app.connect_shutdown(|app| {
+        let runs: Vec<job::Runner> = app
+            .windows()
+            .into_iter()
+            .filter_map(|window| window.downcast::<ForesightWindow>().ok())
+            .filter_map(|window| window.take_run_for_shutdown())
+            .collect();
+        signals::stop_all(&runs);
+    });
     let code = app.run();
-
-    // Told to go, and now free to: nothing is running that this process
-    // started. It ends by the signal it was sent, so that whatever is waiting
-    // for it sees a process that was terminated and not one that was done.
-    if let Some(signum) = signals.received() {
-        signals::die_of(signum);
-    }
 
     // A non-zero exit is what makes CI notice a widget regression.
     #[cfg(feature = "selftest")]

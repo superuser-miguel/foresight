@@ -1909,7 +1909,7 @@ impl ForesightWindow {
     #[cfg(feature = "selftest")]
     pub(crate) fn stop_run_for_shutdown(&self) {
         let runs: Vec<Runner> = self.take_run_for_shutdown().into_iter().collect();
-        crate::signals::stop_all(&runs, &|| false);
+        crate::signals::stop_all(&runs);
     }
 
     /// For the check that signals a real `foresight`: a throttled transfer

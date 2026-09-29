@@ -15,8 +15,8 @@
 Releases; signed OSTree repo live at `superuser-miguel.github.io/foresight-repo`.
 Engine: rsync **3.5.0**.
 
-**In flight: 1.0.2 — code complete on `main`, not yet tagged.** **174 tests**
-(`cargo test --all`), **159 headless widget checks**
+**In flight: 1.0.2 — code complete on `main`, not yet tagged.** **170 tests**
+(`cargo test --all`), **158 headless widget checks**
 (`build-aux/selftest-headless.sh`), 20 checks in the Python spec's self-check.
 What it is, is in the "1.0.2" milestone in §4. What stands between it and a tag:
 
@@ -118,7 +118,7 @@ App id is `io.github.superuser_miguel.Foresight` (named 2026-07-12; the
 │       │                               #   TransferTop / dead_anchor
 │       ├── capabilities.rs, help.rs    # flag registry (test-enforced vs build_argv) + Help dialog
 │       ├── shortcuts.rs                # THE table of keys: registers them and fills the window
-│       ├── signals.rs                  # SIGTERM/INT/HUP → the same orderly stop as a quit
+│       ├── signals.rs                  # stop_all (shutdown) + the tests that signal a process from outside
 │       ├── profiles.rs                 # presets — FROZEN format (Milestone 5)
 │       ├── endpoint.rs, ssh.rs, remote_dialog.rs   # remote sync: parsing, -e command, trust
 │       └── change_object.rs, log_object.rs         # list-model row objects
@@ -389,11 +389,17 @@ five weeks. 1.0.2 is those reports, plus what fixing them turned up.
       that asks during a transfer and stops a dry run unasked; `Runner::stop`
       (SIGTERM → 5 s → SIGKILL → 2 s → given up on); `Drop for Runner` stops a
       live process, so a `Runner` must now be **held** for its run to continue.
-- [x] **…and so did a signal to the app, and so did killing it.** SIGTERM,
-      SIGINT and SIGHUP lead to the same orderly stop (`signals.rs`, a GLib
-      signal source — nothing runs in handler context). What no handler can
-      catch — SIGKILL, a crash, GDK exiting when the compositor goes — is
-      covered by `PR_SET_PDEATHSIG`, set in the child (§6 item 19).
+- [x] **…and so did a signal to the app, and so did killing it.** Every rsync
+      is started with `PR_SET_PDEATHSIG` (§6 item 19), so when Foresight goes —
+      by SIGTERM, SIGINT, SIGHUP, SIGKILL, a crash, or GDK exiting when the
+      compositor does — the kernel sends rsync SIGTERM. Quitting is still ours
+      (`signals::stop_all`, from the shutdown hook).
+      *Signal handlers were written first and then removed.* With the kernel's
+      mechanism in, every test that signals a process holding a real rsync
+      passed with the handlers disabled; what they added was the wait and a
+      SIGKILL for a run that ignores SIGTERM, which rsync does not, and what
+      they cost was ten `unsafe` blocks. That one uncovered case is kept as a
+      test, so it stays a known limit.
 - [x] **#3 — a dry run that did not finish confirmed things anyway.** Refused
       on the Start path; its hit counts and deletions are discarded (§6 item 13).
 - [x] **#5, and its read-side sibling** — a failed preset save reported
@@ -411,6 +417,10 @@ five weeks. 1.0.2 is those reports, plus what fixing them turned up.
       14), and the summary it glues to its last progress update (§6 item 16).
 - [x] **The locale rsync runs in is pinned** (§6 item 17). It was part of the
       output format all along and was whatever the desktop happened to be.
+- [x] **`unsafe` is denied crate-wide**, with one named exception:
+      `job::tie_to_this_process`, two libc calls. `rsync-events` forbids it
+      outright. 1.0.2 had grown fourteen `unsafe` sites on its way here; twelve
+      guarded against things that do not happen (guardrail 13).
 - [x] `LICENSE`. It had been declared in four places and present in none.
 
 How it was done is worth keeping: each fix in its own worktree and branch,
@@ -609,10 +619,11 @@ These were discovered by building the pinned rsync and capturing transcripts
     progress line — under `de_DE` or `fr_FR` it is
     `3.500.001  74%    1,09GB/s`, which `PROGRESS_RE` does not match from 1,000
     bytes up. rsync's messages and errno texts are **not** translated in any
-    locale. The child therefore runs with `LC_ALL=C.UTF-8` and no `LANGUAGE`
-    (falling back to `en_US.UTF-8`, then to pinning only the numbers). The
-    Flatpak runtime has `C.utf8` and `en_*` in the base; every other language
-    is a Locale extension, and a locale that is not installed behaves as C.
+    locale. The child therefore runs with `LC_ALL=C.UTF-8` and no `LANGUAGE`,
+    unconditionally. The Flatpak runtime has `C.utf8` and `en_*` in the base
+    (and glibc has had `C.UTF-8` built in since 2.35); every other language is
+    a Locale extension, and a locale that is not installed behaves as C — in
+    which the numbers are still the ones the parser reads.
 18. **On a pull, names and progress are still printed locally.** The far
     side's locale makes no difference to itemized lines or progress; the local
     one decides both. What the far side does write — error messages — carries
@@ -624,7 +635,10 @@ These were discovered by building the pinned rsync and capturing transcripts
     spawned from the main thread and must stay there. It works inside the
     Flatpak's PID namespace (measured in the installed app's sandbox). It is
     not inherited by rsync's own children, which do not need it for a local
-    run: rsync's SIGTERM handler takes them with it.
+    run: rsync's SIGTERM handler takes them with it. It covers a signal to the
+    parent as well as its death by any other cause, which is why the app
+    handles no signals of its own. It does not cover a child that ignores
+    SIGTERM.
 
 ## 7. Claude Code operating notes
 
@@ -707,3 +721,10 @@ Conventions and guardrails:
     command doing the signalling also matches.
 12. One layout is not a measurement. A fact about rsync goes into §6 after it
     has been produced more than one way; item 13 is there as the reminder.
+13. `unsafe` is denied in the app crate and forbidden in the parser. One
+    function is excepted by name. Before adding another, in this order: is the
+    thing it guards against something that happens where the app ships? does
+    something already in place cover it? is there a safe call in std? A crate
+    that wraps the call safely is a new package in the offline release build,
+    and is weighed as one. What survives that is one call, commented, with the
+    measurement that justifies it — as Vitrine's `mallopt` is.

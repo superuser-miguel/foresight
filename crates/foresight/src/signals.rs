@@ -1,247 +1,68 @@
-//! What happens when Foresight itself is told to go: SIGTERM (`kill`, a
-//! session ending), SIGINT (Ctrl+C in the terminal it was started from) and
-//! SIGHUP (that terminal closing).
+//! What happens to a run when Foresight itself goes: by quitting, by a signal
+//! (SIGTERM from `kill` or a session ending, SIGINT from Ctrl+C in the
+//! terminal it was started from, SIGHUP from that terminal closing), by being
+//! killed outright, or by crashing.
 //!
-//! Left alone, each of these ends the process on the spot. No `shutdown` is
-//! emitted and no `Drop` runs, so an rsync that was transferring carries on
-//! with nothing to stop it — and with Move or Mirror deletions on, carries on
-//! deleting. Here they are turned into the ordinary way out instead: the
-//! application quits, its shutdown stops every live run ([`stop_all`]), and
-//! only then does the process end ([`die_of`]).
+//! There are two mechanisms, and between them nothing is left running:
 //!
-//! **Nothing is done in signal context.** The signals are watched with GLib's
-//! own unix-signal source: its handler only sets a flag and wakes GLib's
-//! worker thread, and what is written here runs later as a main-loop callback,
-//! like a timeout would. The gtk-rs bindings this crate is locked to (glib and
-//! glib-sys 0.22.8) have no `unix_signal_*` and no `g_unix_signal_*` in them,
-//! and a crate that does would be a new package, which the offline release
-//! build rules out. The function itself is in the libglib this links against
-//! whatever the bindings say, so it is declared here and nothing is added.
+//! - **Quitting** is ours. The application's shutdown stops every live run
+//!   and waits for it ([`stop_all`]), with each run's own bounded escalation.
+//! - **Everything else** is the kernel's. A signal ends the process on the
+//!   spot: no `shutdown` is emitted and no `Drop` runs. But every rsync was
+//!   started with `PR_SET_PDEATHSIG` (`job::tie_to_this_process`), so the
+//!   moment this process is gone the kernel sends rsync SIGTERM, on which
+//!   rsync removes its temporary file, takes its own children with it, and
+//!   exits.
 //!
-//! **A second signal** while the runs are being stopped means "now": they are
-//! killed rather than waited for, and the process follows as soon as they have
-//! gone. It does not mean "leave rsync behind" — there is no signal that makes
-//! Foresight exit with rsync running, short of the one that cannot be caught.
+//! An earlier version handled SIGTERM, SIGINT and SIGHUP itself, through a
+//! GLib signal source declared by hand, and ended the process by re-raising
+//! the signal. It was removed once the kernel's mechanism was in: with the
+//! handlers disabled, every test that signals a process holding a real rsync
+//! still passed. What the handlers added was the wait, and a SIGKILL for a
+//! run that ignores SIGTERM — which rsync does not. What they cost was ten
+//! `unsafe` blocks. The one case they covered and this does not is kept as a
+//! test below, so that it stays a known limit rather than a forgotten one.
 //!
-//! **What this cannot cover.** SIGKILL, a crash, and a display connection that
-//! goes away under GTK (which exits the process itself) run none of this. And
-//! the wait below is bounded by [`STOP_GRACE`] + [`KILL_GRACE`], seven seconds
-//! at worst, against a deadline that belongs to whoever sent the signal:
-//! systemd allows a unit 90 s by default before it kills, which is ample, but
-//! a session manager configured for less than it takes rsync to leave —
-//! milliseconds normally, the full seven only for an rsync that ignores
-//! SIGTERM or is stuck in the kernel — will kill Foresight mid-wait, and
-//! whatever rsync had not yet exited is then on its own. Only the kernel can
-//! close that gap (`PR_SET_PDEATHSIG` on the child), not this module.
+//! The rest of this module is the means of checking all that from outside: a
+//! process is started holding a run, signalled by pid, and what is left of its
+//! process tree is looked for in `/proc`.
 
 use crate::job::{Runner, KILL_GRACE, STOP_GRACE};
 use gtk::glib;
-use gtk::glib::translate::from_glib_full;
-use std::cell::Cell;
-use std::rc::Rc;
 use std::time::{Duration, Instant};
-
-/// The signals that ask a process to end and can be answered.
-pub const WATCHED: [i32; 3] = [libc::SIGTERM, libc::SIGINT, libc::SIGHUP];
 
 /// The main loop's own latency, allowed on top of the two graces — the same
 /// margin `Runner::stop_and_wait` allows.
 const MARGIN: Duration = Duration::from_secs(1);
 
-extern "C" {
-    // In libglib-2.0 since 2.30; not declared by glib-sys 0.22.8. Linked
-    // already: glib-sys links the library.
-    fn g_unix_signal_source_new(signum: std::ffi::c_int) -> *mut glib::ffi::GSource;
-}
-
-/// The signals being watched, and what has arrived so far. Dropping it stops
-/// the watching, which gives the signals their default meaning back.
-pub struct Watch {
-    first: Rc<Cell<Option<i32>>>,
-    count: Rc<Cell<u32>>,
-    sources: Vec<glib::Source>,
-}
-
-impl Watch {
-    /// The signal that started the shutdown, if one did. It is the one the
-    /// process should be seen to have ended by.
-    pub fn received(&self) -> Option<i32> {
-        self.first.get()
-    }
-
-    /// Asked more than once: stop waiting for rsync to leave by itself.
-    pub fn repeated(&self) -> bool {
-        self.count.get() > 1
-    }
-}
-
-impl Drop for Watch {
-    fn drop(&mut self) {
-        for source in &self.sources {
-            source.destroy();
-        }
-    }
-}
-
-/// Watch [`WATCHED`] on this thread's main context. `on_first` is called, from
-/// the main loop, for the first signal to arrive; later ones are only counted
-/// (see [`Watch::repeated`]).
-///
-/// A signal that was being ignored when the process started is left ignored:
-/// that is how `nohup`, and a shell starting a job in the background, say that
-/// the signal is not meant for this process, and a handler would overrule them.
-pub fn watch(on_first: impl Fn(i32) + 'static) -> Watch {
-    let first = Rc::new(Cell::new(None));
-    let count = Rc::new(Cell::new(0u32));
-    let on_first: Rc<dyn Fn(i32)> = Rc::new(on_first);
-    let context = glib::MainContext::ref_thread_default();
-    let sources = WATCHED
-        .into_iter()
-        .filter(|signum| !is_ignored(*signum))
-        .map(|signum| {
-            let source = signal_source(
-                signum,
-                glib::clone!(
-                    #[strong]
-                    first,
-                    #[strong]
-                    count,
-                    #[strong]
-                    on_first,
-                    move || {
-                        count.set(count.get().saturating_add(1));
-                        if first.get().is_none() {
-                            first.set(Some(signum));
-                            on_first(signum);
-                        }
-                    }
-                ),
-            );
-            source.attach(Some(&context));
-            source
-        })
-        .collect();
-    Watch {
-        first,
-        count,
-        sources,
-    }
-}
-
-fn is_ignored(signum: i32) -> bool {
-    // SAFETY: a null `act` makes this a query; `old` is ours to be written to.
-    unsafe {
-        let mut old: libc::sigaction = std::mem::zeroed();
-        libc::sigaction(signum, std::ptr::null(), &mut old) == 0
-            && old.sa_sigaction == libc::SIG_IGN
-    }
-}
-
-/// A GLib source that calls `f` on the main loop it is attached to each time
-/// `signum` has been delivered to the process. GLib coalesces: several
-/// deliveries before the loop comes round are one call.
-fn signal_source<F: Fn() + 'static>(signum: i32, f: F) -> glib::Source {
-    use glib::thread_guard::ThreadGuard;
-
-    unsafe extern "C" fn call<F: Fn() + 'static>(data: glib::ffi::gpointer) -> glib::ffi::gboolean {
-        // SAFETY: `data` is the box made below, alive until `free`.
-        let f = unsafe { &*(data as *const ThreadGuard<F>) };
-        (f.get_ref())();
-        glib::ffi::G_SOURCE_CONTINUE
-    }
-    unsafe extern "C" fn free<F: Fn() + 'static>(data: glib::ffi::gpointer) {
-        // SAFETY: called once by GLib, with the pointer it was given.
-        drop(unsafe { Box::from_raw(data as *mut ThreadGuard<F>) });
-    }
-
-    // The closure is not `Send`, and need not be: the source is attached to
-    // this thread's context and dispatched there. The guard turns a mistake
-    // about that into a panic instead of a data race.
-    let data = Box::into_raw(Box::new(ThreadGuard::new(f)));
-    // SAFETY: the source is new and owned here; the callback and its data
-    // have the types `call` and `free` expect.
-    unsafe {
-        let source = g_unix_signal_source_new(signum);
-        glib::ffi::g_source_set_callback(
-            source,
-            Some(call::<F>),
-            data as glib::ffi::gpointer,
-            Some(free::<F>),
-        );
-        from_glib_full(source)
-    }
-}
-
 /// Stop every run and do not return until they have all ended: what the
-/// application's shutdown does, signal or no signal.
+/// application's shutdown does.
 ///
 /// All of them are asked at once, so the wait is one bounded wait — about
 /// [`STOP_GRACE`] + [`KILL_GRACE`] whatever the number of windows — rather
 /// than one per run. The escalation is each `Runner`'s own; this only keeps
 /// the loop turning for it, as `Runner::stop_and_wait` does for one.
 ///
-/// When `hurried` turns true the runs still live are killed at once, and the
-/// wait that is left is cut to what a kill is given to show results.
-///
 /// `on_done` fires for each run from inside this call. The caller holds the
 /// runs (they were taken out of their windows), so nothing a completion
 /// handler borrows is borrowed here.
-pub fn stop_all(runs: &[Runner], hurried: &dyn Fn() -> bool) {
+pub fn stop_all(runs: &[Runner]) {
     for run in runs {
         run.stop();
     }
     let context = glib::MainContext::ref_thread_default();
-    let mut deadline = Instant::now() + STOP_GRACE + KILL_GRACE + MARGIN;
-    let mut killed = false;
+    let deadline = Instant::now() + STOP_GRACE + KILL_GRACE + MARGIN;
     while runs.iter().any(Runner::is_live) && Instant::now() < deadline {
-        if !killed && hurried() {
-            killed = true;
-            for run in runs {
-                run.kill();
-            }
-            deadline = deadline.min(Instant::now() + KILL_GRACE);
-        }
         if !context.iteration(false) {
             std::thread::sleep(Duration::from_millis(5));
         }
     }
 }
 
-/// End the process as having died of `signum`, which is what happened.
-///
-/// By the signal itself, with its default meaning restored, rather than by an
-/// exit status: whoever is waiting — a shell, systemd, `flatpak run` — then
-/// sees a process that was terminated, not one that finished its work (0) or
-/// failed at it (1). A shell needs exactly this to stop a script on Ctrl+C,
-/// and systemd counts a unit that dies of the SIGTERM it sent as stopped
-/// cleanly. Nothing that starts the app reads more into it: D-Bus activation
-/// and the desktop launcher do not look at how it ended.
-///
-/// Call it only once there is nothing left to stop. It does not return; if
-/// the signal somehow does not end the process (as PID 1 of a namespace, where
-/// default actions do not apply), the exit status says the same thing the way
-/// a shell would: 128 + the signal's number.
-pub fn die_of(signum: i32) -> ! {
-    use std::io::Write;
-    let _ = std::io::stdout().flush();
-    let _ = std::io::stderr().flush();
-    // SAFETY: plain libc calls on a set that is ours; from here on the
-    // process is ending and nothing else is running on this thread.
-    unsafe {
-        libc::signal(signum, libc::SIG_DFL);
-        let mut set: libc::sigset_t = std::mem::zeroed();
-        libc::sigemptyset(&mut set);
-        libc::sigaddset(&mut set, signum);
-        libc::pthread_sigmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut());
-        libc::raise(signum);
-    }
-    std::process::exit(128 + signum)
-}
-
 /// Signalling a process from outside and looking at what is left: the half of
 /// the tests that is the same whether the process is the real application on
-/// a headless display (the widget checks) or the handlers alone on a bare main
-/// loop (`cargo test`).
+/// a headless display (the widget checks) or a run held on a bare main loop
+/// (`cargo test`).
 #[cfg(any(test, feature = "selftest"))]
 pub(crate) mod drive {
     use crate::job::procs;
@@ -308,8 +129,7 @@ pub(crate) mod drive {
         ]
     }
 
-    /// Said by the process under test once its handlers are in place and its
-    /// run has been started.
+    /// Said by the process under test once its run has been started.
     pub fn say_ready(dir: &Path) {
         let _ = std::fs::write(dir.join(READY), b"");
     }
@@ -366,12 +186,30 @@ pub(crate) mod drive {
         }
     }
 
+    /// By `kill(1)` rather than `kill(2)`: the program does what the call
+    /// does, and std has no way to send a signal other than SIGKILL. Only to
+    /// pids this module started and has not yet waited for, so the number
+    /// cannot have been given to anything else.
     pub fn send(pid: u32, signum: i32) {
-        // SAFETY: a pid this module started, and has not yet waited for — so
-        // the number cannot have been given to anything else.
-        unsafe {
-            libc::kill(pid as libc::pid_t, signum);
-        }
+        let _ = Command::new("kill")
+            .arg(format!("-{signum}"))
+            .arg(pid.to_string())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+
+    /// `program`, started with SIGTERM, SIGINT and SIGHUP meaning what they
+    /// mean by default. A test runner may itself have been started with some
+    /// of them ignored — a shell starts a background job with SIGINT ignored —
+    /// and a process inherits that; one that ignores the signal it is about to
+    /// be sent has nothing to show. `env` resets them and then becomes the
+    /// program, so the pid is the program's.
+    pub fn command(program: &std::ffi::OsStr) -> Command {
+        let mut cmd = Command::new("env");
+        cmd.arg("--default-signal=TERM,INT,HUP").arg(program);
+        cmd
     }
 
     #[derive(Debug)]
@@ -423,8 +261,7 @@ pub(crate) mod drive {
         if ready {
             for (i, signum) in signals.iter().enumerate() {
                 if i > 0 {
-                    // Apart, so that each is a signal of its own: GLib (like
-                    // the kernel) makes one of several that arrive together.
+                    // Apart, so that each is a signal of its own.
                     std::thread::sleep(Duration::from_millis(400));
                 }
                 send(pid, *signum);
@@ -460,13 +297,11 @@ pub(crate) mod drive {
 }
 
 /// The real application, signalled: what `cargo test` cannot reach, because
-/// what is under test is `main` — the signal leading to `quit`, `quit` to the
-/// shutdown, the shutdown to the windows' runs, and the process ending by the
-/// signal once they have gone. Each check starts another `foresight` on the
-/// same (headless) display, holding a run in a window of its own.
+/// what is under test is the application itself, holding a run in a window the
+/// way it does in use. Each check starts another `foresight` on the same
+/// (headless) display and signals it.
 #[cfg(feature = "selftest")]
 pub(crate) fn selftest() -> (u32, u32) {
-    use crate::job::{KILL_GRACE, STOP_GRACE};
     use drive::Holding;
 
     let (mut pass, mut fail) = (0u32, 0u32);
@@ -484,7 +319,7 @@ pub(crate) fn selftest() -> (u32, u32) {
     );
     let exe = std::env::current_exe().expect("own path");
     let run = |tag: &str, holding: Holding, signals: &[i32]| {
-        let cmd = std::process::Command::new(&exe);
+        let cmd = drive::command(exe.as_os_str());
         drive::signalled(cmd, holding, &base.join(format!("signal-{tag}")), signals)
     };
     let stopped = |o: &drive::Outcome, signum: i32, processes: usize| {
@@ -495,38 +330,25 @@ pub(crate) fn selftest() -> (u32, u32) {
         ("SIGTERM", libc::SIGTERM),
         ("SIGINT", libc::SIGINT),
         ("SIGHUP", libc::SIGHUP),
+        ("SIGKILL", libc::SIGKILL),
     ] {
         let o = run(name, Holding::Transfer, &[signum]);
         check(
-            &format!("{name} with a transfer live stops rsync, then ends foresight"),
-            stopped(&o, signum, 3) && o.took < STOP_GRACE,
+            &format!("{name} to foresight with a transfer live leaves no rsync"),
+            stopped(&o, signum, 3),
             format!("{o:?}"),
         );
     }
     let o = run("dry-run", Holding::DryRun, &[libc::SIGTERM]);
     check(
-        "SIGTERM with a dry run live stops rsync, then ends foresight",
-        stopped(&o, libc::SIGTERM, 3) && o.took < STOP_GRACE,
+        "SIGTERM to foresight with a dry run live leaves no rsync",
+        stopped(&o, libc::SIGTERM, 3),
         format!("{o:?}"),
     );
     let o = run("idle", Holding::Nothing, &[libc::SIGTERM]);
     check(
         "SIGTERM with nothing running ends foresight at once",
         stopped(&o, libc::SIGTERM, 1) && o.took < std::time::Duration::from_secs(2),
-        format!("{o:?}"),
-    );
-    let o = run("deaf", Holding::Deaf, &[libc::SIGTERM]);
-    check(
-        "a run that ignores SIGTERM is killed after the grace, and foresight ends",
-        stopped(&o, libc::SIGTERM, 2)
-            && o.took >= STOP_GRACE
-            && o.took < STOP_GRACE + KILL_GRACE + MARGIN,
-        format!("{o:?}"),
-    );
-    let o = run("twice", Holding::Deaf, &[libc::SIGINT, libc::SIGINT]);
-    check(
-        "a second signal kills the run instead of waiting for it",
-        stopped(&o, libc::SIGINT, 2) && o.took < KILL_GRACE,
         format!("{o:?}"),
     );
     (pass, fail)
@@ -546,62 +368,45 @@ mod tests {
     }
 
     /// Not a test: the process the tests below signal. It is this test binary
-    /// started again with [`drive::HOLD`] set, and does what `main` does with
-    /// the application taken out — the handlers on a bare main loop, a run
-    /// held, and the same three steps on the way out. Without the variable it
-    /// returns at once, which is all `cargo test` sees of it.
+    /// started again with [`drive::HOLD`] set, holding a run on a bare main
+    /// loop and doing nothing about any signal — as the application does
+    /// nothing. Without the variable it returns at once, which is all
+    /// `cargo test` sees of it.
     #[test]
     fn the_process_under_test() {
         let Some((holding, dir)) = Holding::from_env() else {
             return;
         };
-        // The test runner may itself have been started with some of these
-        // ignored (a background job has SIGINT ignored); the process under
-        // test must not inherit that, or there is nothing to test.
-        for signum in WATCHED {
-            // SAFETY: restoring a default disposition.
-            unsafe {
-                libc::signal(signum, libc::SIG_DFL);
-            }
-        }
         let ctx = glib::MainContext::new();
-        let received = ctx
-            .with_thread_default(|| {
-                let main_loop = glib::MainLoop::new(Some(&ctx), false);
-                let watch = watch(glib::clone!(
-                    #[strong]
-                    main_loop,
-                    move |_| main_loop.quit()
-                ));
-                let runs: Vec<Runner> = match holding {
-                    Holding::Nothing => Vec::new(),
-                    _ => vec![spawn_rsync(drive::argv(&dir), |_| {}, |_| {}).expect("spawn")],
-                };
-                drive::say_ready(&dir);
-                // Nothing here may outlive the suite, signalled or not.
-                glib::spawn_future_local(glib::clone!(
-                    #[strong]
-                    main_loop,
-                    async move {
-                        glib::timeout_future(Duration::from_secs(60)).await;
-                        main_loop.quit();
-                    }
-                ));
-                main_loop.run();
-                stop_all(&runs, &|| watch.repeated());
-                watch.received()
-            })
-            .expect("run with thread-default context");
-        match received {
-            Some(signum) => die_of(signum),
-            None => std::process::exit(3),
-        }
+        ctx.with_thread_default(|| {
+            let main_loop = glib::MainLoop::new(Some(&ctx), false);
+            let runs: Vec<Runner> = match holding {
+                Holding::Nothing => Vec::new(),
+                _ => vec![spawn_rsync(drive::argv(&dir), |_| {}, |_| {}).expect("spawn")],
+            };
+            drive::say_ready(&dir);
+            // Nothing here may outlive the suite, signalled or not.
+            glib::spawn_future_local(glib::clone!(
+                #[strong]
+                main_loop,
+                async move {
+                    glib::timeout_future(Duration::from_secs(60)).await;
+                    main_loop.quit();
+                }
+            ));
+            main_loop.run();
+            stop_all(&runs);
+        })
+        .expect("run with thread-default context");
+        // Reached only if nothing signalled it.
+        std::process::exit(3)
     }
 
     fn signal(tag: &str, holding: Holding, signals: &[i32]) -> Outcome {
         let dir =
             std::env::temp_dir().join(format!("foresight-signal-{tag}-{}", std::process::id()));
-        let mut cmd = std::process::Command::new(std::env::current_exe().expect("own path"));
+        let exe = std::env::current_exe().expect("own path");
+        let mut cmd = drive::command(exe.as_os_str());
         cmd.args([
             "signals::tests::the_process_under_test",
             "--exact",
@@ -611,7 +416,11 @@ mod tests {
         drive::signalled(cmd, holding, &dir, signals)
     }
 
-    fn a_live_transfer_is_stopped_by(tag: &str, signum: i32) {
+    /// Nothing of ours runs when the process is signalled — no handler, no
+    /// shutdown, no `Drop` — so whatever stops rsync is not code in this
+    /// process. It is the kernel, asked to by `tie_to_this_process` when the
+    /// run was spawned.
+    fn a_live_transfer_does_not_outlive(tag: &str, signum: i32) {
         if !rsync_available() {
             eprintln!("skipping: rsync not on PATH");
             return;
@@ -623,29 +432,7 @@ mod tests {
             "the process and a local transfer's two, found {:?}",
             o.tree
         );
-        assert!(o.left.is_empty(), "still running: {o:?}");
         assert_eq!(o.died_of(), Some(signum), "{o:?}");
-        assert!(o.took < STOP_GRACE, "rsync should leave on SIGTERM: {o:?}");
-    }
-
-    /// What no handler can see coming: the process killed outright. Nothing
-    /// of ours runs — no handler, no shutdown, no `Drop` — so whatever stops
-    /// rsync here is not code in this process. It is the kernel, asked to by
-    /// `tie_to_this_process` when the run was spawned.
-    #[test]
-    fn a_hard_kill_of_the_process_still_stops_its_transfer() {
-        if !rsync_available() {
-            eprintln!("skipping: rsync not on PATH");
-            return;
-        }
-        let o = signal("hard-kill", Holding::Transfer, &[libc::SIGKILL]);
-        assert!(o.ready, "the transfer never got going: {o:?}");
-        assert!(
-            o.tree.len() >= 3,
-            "the process and a local transfer's two, found {:?}",
-            o.tree
-        );
-        assert_eq!(o.died_of(), Some(libc::SIGKILL), "{o:?}");
         assert!(
             o.left.is_empty(),
             "rsync outlived the process that started it: {o:?}"
@@ -653,18 +440,24 @@ mod tests {
     }
 
     #[test]
-    fn sigterm_stops_a_live_transfer_before_the_process_ends() {
-        a_live_transfer_is_stopped_by("term", libc::SIGTERM);
+    fn a_transfer_does_not_outlive_a_process_sent_sigterm() {
+        a_live_transfer_does_not_outlive("term", libc::SIGTERM);
     }
 
     #[test]
-    fn sigint_stops_a_live_transfer_before_the_process_ends() {
-        a_live_transfer_is_stopped_by("int", libc::SIGINT);
+    fn a_transfer_does_not_outlive_a_process_sent_sigint() {
+        a_live_transfer_does_not_outlive("int", libc::SIGINT);
     }
 
     #[test]
-    fn sighup_stops_a_live_transfer_before_the_process_ends() {
-        a_live_transfer_is_stopped_by("hup", libc::SIGHUP);
+    fn a_transfer_does_not_outlive_a_process_sent_sighup() {
+        a_live_transfer_does_not_outlive("hup", libc::SIGHUP);
+    }
+
+    /// The one no handler could ever have seen coming.
+    #[test]
+    fn a_transfer_does_not_outlive_a_process_killed_outright() {
+        a_live_transfer_does_not_outlive("kill", libc::SIGKILL);
     }
 
     #[test]
@@ -682,30 +475,22 @@ mod tests {
         }
     }
 
-    /// The escalation is still there behind a signal: the run is killed when
-    /// the grace is up — not before — and the process ends inside the bound.
+    /// The known limit, kept as a test so that it stays known. What the kernel
+    /// sends the run is SIGTERM, and a process that ignores SIGTERM is not
+    /// stopped by it. rsync does not ignore it; this stand-in does, and is
+    /// still there afterwards. (Closing the window is another matter: that
+    /// path is ours, and escalates to SIGKILL — see `Runner::stop`.)
+    ///
+    /// If this ever fails, the limit has gone and the module's opening
+    /// comment should say so.
     #[test]
-    fn a_run_that_ignores_sigterm_is_killed_and_the_process_still_ends() {
+    fn a_run_that_ignores_sigterm_is_the_one_thing_left_behind() {
         let o = signal("deaf", Holding::Deaf, &[libc::SIGTERM]);
         assert!(o.ready, "the stand-in never started: {o:?}");
-        assert!(o.tree.len() >= 2, "{o:?}");
-        assert!(o.left.is_empty(), "still running: {o:?}");
         assert_eq!(o.died_of(), Some(libc::SIGTERM), "{o:?}");
         assert!(
-            o.took >= STOP_GRACE,
-            "gone before the grace was up — SIGTERM was not ignored? {o:?}"
+            !o.left.is_empty(),
+            "a process that ignores SIGTERM was stopped all the same: {o:?}"
         );
-        assert!(o.took < STOP_GRACE + KILL_GRACE + MARGIN, "{o:?}");
-    }
-
-    /// Ctrl+C, twice: the run is killed there and then. The process reports
-    /// the signal that started it on its way.
-    #[test]
-    fn a_second_signal_kills_the_run_instead_of_waiting() {
-        let o = signal("twice", Holding::Deaf, &[libc::SIGINT, libc::SIGTERM]);
-        assert!(o.ready, "the stand-in never started: {o:?}");
-        assert!(o.left.is_empty(), "still running: {o:?}");
-        assert_eq!(o.died_of(), Some(libc::SIGINT), "{o:?}");
-        assert!(o.took < KILL_GRACE, "waited out the grace: {o:?}");
     }
 }

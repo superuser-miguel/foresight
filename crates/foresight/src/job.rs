@@ -602,20 +602,6 @@ impl Runner {
         self.wake.cancel();
     }
 
-    /// SIGKILL, now, with no grace: for a stop that is already under way and
-    /// has been told to hurry (the second signal to a process that is on its
-    /// way out — see `signals`). What it costs is what the watchdog's own kill
-    /// costs, a stray temporary in the destination, only sooner. The run still
-    /// ends as `Cancelled`, and the watchdog still bounds the wait for it.
-    pub fn kill(&self) {
-        if self.finished.get() {
-            return;
-        }
-        self.cancelled.set(true);
-        // GSubprocess sends this only while it still holds the pid.
-        self.proc.force_exit();
-    }
-
     /// [`stop`](Self::stop) for when there will be no main loop afterwards
     /// (application shutdown): turns the loop itself until the run has ended.
     /// Bounded by the same two waits. `on_done` fires from inside this call,
@@ -711,20 +697,23 @@ impl Drop for Runner {
 ///   taking its own children with it. A process that ignores SIGTERM is not
 ///   covered; SIGKILL would cover it and cost rsync that cleanup, which is the
 ///   wrong trade for a backstop.
+///
+/// This is the one place in the crate that is allowed `unsafe`. The call has
+/// no safe form in std, and the crates that offer one would each be a new
+/// package in the offline release build.
+#[allow(unsafe_code)]
 fn tie_to_this_process(launcher: &gio::SubprocessLauncher) {
-    // SAFETY: getpid has no preconditions and cannot fail.
-    let parent = unsafe { libc::getpid() };
+    let parent = std::process::id();
     launcher.set_child_setup(move || {
         // Between fork and exec, in a copy of a multithreaded process: only
         // async-signal-safe calls, and nothing that allocates or locks.
-        // SAFETY: prctl, getppid and _exit are all async-signal-safe, and are
-        // given plain integers.
-        unsafe {
-            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM as libc::c_ulong) != 0
-                || libc::getppid() != parent
-            {
-                libc::_exit(127);
-            }
+        // `parent_id` is getppid(2) and nothing more.
+        // SAFETY: prctl and _exit are async-signal-safe and are given plain
+        // integers; _exit does not return.
+        let armed =
+            unsafe { libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM as libc::c_ulong) } == 0;
+        if !armed || std::os::unix::process::parent_id() != parent {
+            unsafe { libc::_exit(127) }
         }
     });
 }
@@ -738,7 +727,7 @@ fn tie_to_this_process(launcher: &gio::SubprocessLauncher) {
 /// so the main loop is never blocked.
 ///
 /// rsync runs in a locale of the app's choosing, not the one the app was
-/// started in: `LC_ALL=C.UTF-8` — see [`child_locale`] for why, and for what
+/// started in: `LC_ALL=C.UTF-8` — see [`CHILD_LOCALE`] for why, and for what
 /// happens where that locale does not exist. Only the child's environment is
 /// changed; the app's own locale, and with it the language of its interface,
 /// is not.
@@ -754,22 +743,11 @@ where
     spawn_program(OsStr::new("rsync"), argv, on_event, on_done)
 }
 
-/// The locales rsync is run in, in order of preference. Both are UTF-8 and
-/// both write numbers the way the parser reads them (`3,500,001`, `1.09GB/s`).
-///
-/// `C.UTF-8` is the one that is meant: a UTF-8 codeset and the C conventions
-/// for everything else, and it is part of the runtime itself (org.gnome.Platform
-/// 49 has `C`, `C.utf8`, `POSIX` and the `en_*` family built in; every other
-/// language is an extension that is installed or not). `en_US.UTF-8` is for a
-/// host that has no `C.UTF-8` — glibc before 2.35 without a distribution's
-/// patch.
-const PINNED_LOCALES: [&str; 2] = ["C.UTF-8", "en_US.UTF-8"];
-
 /// One change to the child's environment: set `name` to the value, or remove
 /// it when there is none.
-type EnvEdit = (&'static str, Option<OsString>);
+type EnvEdit = (&'static str, Option<&'static str>);
 
-/// What to change in rsync's environment so that what it prints does not
+/// What is changed in rsync's environment so that what it prints does not
 /// depend on how the app was launched.
 ///
 /// The locale is part of the output format, as the version is. Measured on
@@ -788,88 +766,29 @@ type EnvEdit = (&'static str, Option<OsString>);
 /// them (it never sets `LC_MESSAGES`), but the child it starts for a remote job
 /// is not rsync, so that category is pinned with the rest rather than trusted.
 ///
-/// So `LC_ALL`, which overrides every category and `LANG`, to the first of
-/// [`PINNED_LOCALES`] that can be loaded here. `LANGUAGE` is removed: it is
-/// ignored under `C.UTF-8` but under `en_US.UTF-8` it would still choose the
-/// language of any message that has a translation.
+/// So `LC_ALL`, which overrides every category and `LANG`, to `C.UTF-8`: a
+/// UTF-8 codeset and the C conventions for everything else. `LANGUAGE` is
+/// removed, so that nothing on the stream is translated whatever else changes.
 ///
-/// Where neither locale exists nothing can be named that is known to be
-/// UTF-8, and naming one that is missing would turn a working setup into the C
-/// locale. Then the codeset is left as the user has it — `LC_CTYPE` is given
-/// what `LC_ALL`, `LC_CTYPE` or `LANG` said, in that order, so names are shown
-/// exactly as they were before there was a pin — and the numbers and messages
-/// are pinned to `C`, which always exists. `LC_ALL` has to go for that to take
-/// effect.
+/// `C.UTF-8` is named without first asking whether it is there. It is part of
+/// the runtime the app ships on (org.gnome.Platform has `C`, `C.utf8`, `POSIX`
+/// and the `en_*` family built in; every other language is an extension that
+/// is installed or not), and of glibc itself since 2.35. An earlier version
+/// asked libc, through `newlocale`, and fell back through `en_US.UTF-8` to the
+/// user's own codeset — which took an `unsafe` block to guard against a
+/// machine the app does not ship to. Where the locale is missing after all,
+/// libc falls back to C: the numbers are still the ones the parser reads, and
+/// names outside ASCII are shown as rsync's escapes. Nothing is misread.
 ///
 /// The environment is otherwise the app's, untouched: the `ssh` that rsync
 /// starts inherits it, `SSH_AUTH_SOCK` included.
-///
-/// `env` and `loads` are parameters so the decision can be tested without
-/// changing the environment of a process that runs its tests in parallel.
-fn locale_edits(
-    env: impl Fn(&str) -> Option<OsString>,
-    loads: impl Fn(&str) -> bool,
-) -> Vec<EnvEdit> {
-    if let Some(name) = PINNED_LOCALES.into_iter().find(|name| loads(name)) {
-        return vec![("LC_ALL", Some(name.into())), ("LANGUAGE", None)];
-    }
-
-    let mut edits: Vec<EnvEdit> = vec![("LC_ALL", None)];
-    let theirs = ["LC_ALL", "LC_CTYPE", "LANG"]
-        .into_iter()
-        .find_map(|name| env(name).filter(|value| !value.is_empty()));
-    if let Some(ctype) = theirs {
-        edits.push(("LC_CTYPE", Some(ctype)));
-    }
-    edits.push(("LC_NUMERIC", Some("C".into())));
-    edits.push(("LC_MESSAGES", Some("C".into())));
-    edits.push(("LANGUAGE", None));
-    edits
-}
-
-/// Whether libc can load the locale `name`, asked without changing the locale
-/// of this process: `newlocale` builds a locale object and touches nothing
-/// global, where `setlocale` would change the app's own locale under every
-/// other thread. rsync is started with the same libc and the same environment,
-/// so what loads here loads there.
-fn locale_loads(name: &str) -> bool {
-    use std::ffi::{c_char, c_int, c_void, CString};
-
-    extern "C" {
-        fn newlocale(mask: c_int, locale: *const c_char, base: *mut c_void) -> *mut c_void;
-        fn freelocale(locale: *mut c_void);
-    }
-    // `1 << LC_CTYPE | 1 << LC_NUMERIC`, the two categories rsync reads. The
-    // category numbers are 0 and 1 on Linux, in glibc and musl alike.
-    const CTYPE_AND_NUMERIC: c_int = 0b11;
-
-    let Ok(name) = CString::new(name) else {
-        return false;
-    };
-    // SAFETY: `name` is a NUL-terminated string that outlives the call, a null
-    // base asks for a new object, and the object is freed once and not used.
-    unsafe {
-        let locale = newlocale(CTYPE_AND_NUMERIC, name.as_ptr(), std::ptr::null_mut());
-        if locale.is_null() {
-            return false;
-        }
-        freelocale(locale);
-    }
-    true
-}
-
-/// [`locale_edits`] for this process, worked out once: which locales are
-/// installed does not change while the app runs.
-fn child_locale() -> &'static [EnvEdit] {
-    static EDITS: std::sync::OnceLock<Vec<EnvEdit>> = std::sync::OnceLock::new();
-    EDITS.get_or_init(|| locale_edits(|name| std::env::var_os(name), locale_loads))
-}
+const CHILD_LOCALE: [EnvEdit; 2] = [("LC_ALL", Some("C.UTF-8")), ("LANGUAGE", None)];
 
 /// [`spawn_rsync`] with the program named, so the tests can put something in
 /// rsync's place that behaves as rsync must never be assumed not to: ignoring
 /// SIGTERM, or leaving a process behind that holds the output open.
 ///
-/// The child gets the app's environment with [`child_locale`] applied to it,
+/// The child gets the app's environment with [`CHILD_LOCALE`] applied to it,
 /// and nothing else changed.
 fn spawn_program<F, D>(
     program: &OsStr,
@@ -888,7 +807,7 @@ where
     let launcher = gio::SubprocessLauncher::new(
         gio::SubprocessFlags::STDOUT_PIPE | gio::SubprocessFlags::STDERR_MERGE,
     );
-    for (name, value) in child_locale() {
+    for (name, value) in CHILD_LOCALE {
         match value {
             Some(value) => launcher.setenv(name, value, true),
             None => launcher.unsetenv(name),
@@ -2174,95 +2093,14 @@ mod tests {
 
     // -- the locale rsync runs in -------------------------------------------
 
-    fn env_of(vars: &[(&'static str, &'static str)]) -> impl Fn(&str) -> Option<OsString> {
-        let vars = vars.to_vec();
-        move |name| {
-            vars.iter()
-                .find(|(n, _)| *n == name)
-                .map(|(_, v)| OsString::from(v))
-        }
-    }
-
-    fn set(name: &'static str, value: &str) -> EnvEdit {
-        (name, Some(OsString::from(value)))
-    }
-
+    /// The pin does not depend on anything: not on what the app was started
+    /// in, and not on what is installed. It is these two edits, always.
     #[test]
-    fn the_locale_is_pinned_whole_whatever_the_app_was_started_in() {
-        for theirs in [
-            &[][..],
-            &[("LC_ALL", "C")],
-            &[("LANG", "de_DE.UTF-8"), ("LANGUAGE", "de")],
-            &[("LANG", "xx_XX.UTF-8")],
-        ] {
-            assert_eq!(
-                locale_edits(env_of(theirs), |_| true),
-                [set("LC_ALL", "C.UTF-8"), ("LANGUAGE", None)],
-                "{theirs:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn a_host_without_c_utf8_gets_the_next_utf8_locale() {
+    fn the_locale_is_pinned_whole_and_unconditionally() {
         assert_eq!(
-            locale_edits(env_of(&[("LC_ALL", "C")]), |name| name == "en_US.UTF-8"),
-            [set("LC_ALL", "en_US.UTF-8"), ("LANGUAGE", None)]
+            CHILD_LOCALE,
+            [("LC_ALL", Some("C.UTF-8")), ("LANGUAGE", None)]
         );
-    }
-
-    /// Nothing known to be UTF-8 can be named, so the codeset stays the
-    /// user's — the names are shown as they were before there was a pin — and
-    /// what can be pinned without one is: `C` always loads.
-    #[test]
-    fn with_no_locale_to_pin_to_the_codeset_is_left_as_the_user_has_it() {
-        let none = |_: &str| false;
-        let rest = [
-            set("LC_NUMERIC", "C"),
-            set("LC_MESSAGES", "C"),
-            ("LANGUAGE", None),
-        ];
-        let expect = |ctype: Option<&str>| -> Vec<EnvEdit> {
-            let mut edits: Vec<EnvEdit> = vec![("LC_ALL", None)];
-            edits.extend(ctype.map(|c| set("LC_CTYPE", c)));
-            edits.extend(rest.clone());
-            edits
-        };
-
-        // In the order libc reads them: LC_ALL, then LC_CTYPE, then LANG.
-        let all = [
-            ("LANG", "fr_FR.UTF-8"),
-            ("LC_CTYPE", "ja_JP.UTF-8"),
-            ("LC_ALL", "de_DE.UTF-8"),
-        ];
-        assert_eq!(
-            locale_edits(env_of(&all), none),
-            expect(Some("de_DE.UTF-8"))
-        );
-        assert_eq!(
-            locale_edits(env_of(&all[..2]), none),
-            expect(Some("ja_JP.UTF-8"))
-        );
-        assert_eq!(
-            locale_edits(env_of(&all[..1]), none),
-            expect(Some("fr_FR.UTF-8"))
-        );
-        // Set but empty is not set, to libc and here.
-        assert_eq!(
-            locale_edits(env_of(&[("LC_ALL", ""), ("LANG", "fr_FR.UTF-8")]), none),
-            expect(Some("fr_FR.UTF-8"))
-        );
-        assert_eq!(locale_edits(env_of(&[]), none), expect(None));
-    }
-
-    #[test]
-    fn a_locale_that_is_not_installed_is_known_not_to_load() {
-        assert!(locale_loads("C"));
-        assert!(locale_loads("POSIX"));
-        assert!(!locale_loads("xx_XX.UTF-8"));
-        assert!(!locale_loads("C.UTF-8\0oops"));
-        // Asking did not change the locale of this process.
-        assert!(locale_loads("C"));
     }
 
     /// Runs `program argv…` through the real spawn and read loop and returns
@@ -2322,9 +2160,9 @@ mod tests {
             .map(|(name, value)| (name.to_string(), value.to_string()))
             .collect();
 
-        for (name, value) in child_locale() {
-            let value = value.as_ref().map(|v| v.to_string_lossy().into_owned());
-            assert_eq!(theirs.get(*name), value.as_ref(), "{name}");
+        for (name, value) in CHILD_LOCALE {
+            let value = value.map(str::to_string);
+            assert_eq!(theirs.get(name), value.as_ref(), "{name}");
         }
 
         let mut compared = 0;
@@ -2334,7 +2172,7 @@ mod tests {
             };
             // `env` prints a line per variable, so one whose value has lines
             // of its own cannot be read back; `_` is the shell's, not ours.
-            let pinned = child_locale().iter().any(|(n, _)| *n == name);
+            let pinned = CHILD_LOCALE.iter().any(|(n, _)| *n == name);
             if pinned || name == "_" || value.contains(['\n', '\r']) {
                 continue;
             }
@@ -2476,11 +2314,20 @@ mod tests {
             std::fs::read_dir(&locked).is_err()
         };
 
-        // Whether names can be promised: not on a host with no UTF-8 locale
-        // to pin to, where the codeset is left as it was found — hostile.
-        let whole = matches!(child_locale().first(), Some(("LC_ALL", Some(_))));
+        // Whether names can be promised: only where the locale that is pinned
+        // exists. Where it does not, libc gives rsync C and the names arrive
+        // escaped — which is what the pin is documented to do there.
+        let whole = std::process::Command::new("locale")
+            .arg("-a")
+            .output()
+            .map(|out| {
+                String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .any(|l| l.eq_ignore_ascii_case("C.utf8") || l.eq_ignore_ascii_case("C.UTF-8"))
+            })
+            .unwrap_or(false);
         if !whole {
-            eprintln!("no C.UTF-8 or en_US.UTF-8 here: names are not checked");
+            eprintln!("no C.UTF-8 here: names are not checked");
         }
 
         let job = Job {

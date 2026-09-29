@@ -194,6 +194,8 @@
 //! rsync's padding, there being no telling them from an indent: a glued line
 //! that began with spaces of its own is classified without them.
 
+#![forbid(unsafe_code)]
+
 use once_cell::sync::Lazy;
 use regex::Regex;
 use std::collections::BTreeSet;

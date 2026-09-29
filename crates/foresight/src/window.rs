@@ -1894,15 +1894,48 @@ impl ForesightWindow {
         false
     }
 
-    /// For application shutdown, which closes nothing and asks nothing: stop
-    /// the run and do not return until it has ended. Bounded, like `stop`.
+    /// For application shutdown, which closes nothing and asks nothing: the
+    /// run is handed over to be stopped, and with it the duty to hold it until
+    /// it has ended (`signals::stop_all`, which stops every window's run at
+    /// once rather than one after another). Taken out of the cell because the
+    /// run's completion handler fires from inside that wait and borrows the
+    /// cell itself.
+    pub(crate) fn take_run_for_shutdown(&self) -> Option<Runner> {
+        self.imp().runner.borrow_mut().take()
+    }
+
+    /// This window's share of the application's shutdown, for the checks:
+    /// stop the run and do not return until it has ended. Bounded, like `stop`.
+    #[cfg(feature = "selftest")]
     pub(crate) fn stop_run_for_shutdown(&self) {
-        // Taken out first: the run's completion handler fires from inside
-        // `stop_and_wait` and borrows this cell itself.
-        let runner = self.imp().runner.borrow_mut().take();
-        if let Some(runner) = runner {
-            runner.stop_and_wait();
-        }
+        let runs: Vec<Runner> = self.take_run_for_shutdown().into_iter().collect();
+        crate::signals::stop_all(&runs, &|| false);
+    }
+
+    /// For the check that signals a real `foresight`: a throttled transfer
+    /// held by this window as one started from it would be, wired to the
+    /// window's own handlers. `rsync` is whatever PATH says it is, which is
+    /// how that check puts a process that ignores SIGTERM in its place.
+    #[cfg(feature = "selftest")]
+    pub(crate) fn hold_run_for_selftest(&self, kind: RunKind, argv: Vec<std::ffi::OsString>) {
+        let on_event = glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |ev: Event| win.on_sync_event(ev)
+        );
+        let on_done = glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |c: Completion| match kind {
+                RunKind::DryRun => win.on_preview_done(c, false),
+                RunKind::Transfer { .. } => win.on_sync_done(c),
+            }
+        );
+        let runner = spawn_rsync(argv, on_event, on_done)
+            .expect("rsync spawns")
+            .with_kind(kind);
+        *self.imp().runner.borrow_mut() = Some(runner);
+        self.refresh_action_sensitivity();
     }
 
     fn on_start_clicked(&self) {

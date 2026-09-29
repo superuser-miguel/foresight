@@ -21,3 +21,7 @@ selftest = []
 gtk = { package = "gtk4", version = "0.11", features = ["v4_12"] }  # ListView sections
 adw = { package = "libadwaita", version = "0.9", features = ["v1_5"] }  # SwitchRow 1.4, AboutDialog 1.5
 rsync-events = { path = "../rsync-events" }
+# Already in Cargo.lock (glib depends on it), so naming it adds no package to
+# the lock or to cargo-sources.json. For sigaction/raise in `signals`: std has
+# no way to restore a signal's default disposition or to die of one.
+libc = "0.2"

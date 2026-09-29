@@ -13,6 +13,7 @@ mod log_object;
 mod profiles;
 mod remote_dialog;
 mod shortcuts;
+mod signals;
 mod ssh;
 mod window;
 
@@ -24,6 +25,7 @@ use adw::prelude::*;
 use gtk::gio;
 use gtk::glib;
 use std::path::PathBuf;
+use std::rc::Rc;
 use window::ForesightWindow;
 
 fn main() -> glib::ExitCode {
@@ -32,13 +34,21 @@ fn main() -> glib::ExitCode {
     let app = adw::Application::builder()
         .application_id(config::APP_ID)
         .build();
+    // A process started by the signal checks to be signalled. It is an
+    // application of its own, not a second window of the one running them.
+    #[cfg(feature = "selftest")]
+    let held = signals::drive::Holding::from_env();
+    #[cfg(feature = "selftest")]
+    if held.is_some() {
+        app.set_flags(gio::ApplicationFlags::NON_UNIQUE);
+    }
 
     app.connect_startup(|app| {
         setup_actions(app);
         shortcuts::register(app);
         load_css();
     });
-    app.connect_activate(|app| {
+    app.connect_activate(move |app| {
         let window = ForesightWindow::new(app);
         if config::PROFILE == "development" {
             // libadwaita renders the striped "devel" header for unreleased builds.
@@ -47,24 +57,55 @@ fn main() -> glib::ExitCode {
         window.present();
         #[cfg(feature = "selftest")]
         {
-            let (pass, fail) = window.run_selftest();
+            if let Some((holding, dir)) = &held {
+                hold_for_the_signal_checks(app, &window, *holding, dir);
+                return;
+            }
+            let (mut pass, mut fail) = window.run_selftest();
+            let (p, f) = signals::selftest();
+            pass += p;
+            fail += f;
             println!("\n----- selftest: {pass} passed, {fail} failed -----");
             SELFTEST_FAILED.store(fail > 0, std::sync::atomic::Ordering::SeqCst);
             app.quit();
         }
     });
 
+    // SIGTERM, SIGINT and SIGHUP take the same way out as everything else:
+    // the application quits, which leads to the shutdown below. Quitting
+    // rather than closing the windows, because closing asks — and whoever
+    // sent the signal is not going to answer, and may have taken the display
+    // away already. See `signals` for what a second signal does.
+    let signals = Rc::new(signals::watch(glib::clone!(
+        #[weak]
+        app,
+        move |_| app.quit()
+    )));
+
     // Quitting the application closes no window, so it asks nothing and
     // passes no guard: `close-request` never fires. Whatever leads here, a run
     // that is still live is stopped before the process that started it goes.
-    app.connect_shutdown(|app| {
-        for window in app.windows() {
-            if let Ok(window) = window.downcast::<ForesightWindow>() {
-                window.stop_run_for_shutdown();
-            }
+    app.connect_shutdown(glib::clone!(
+        #[strong]
+        signals,
+        move |app| {
+            let runs: Vec<job::Runner> = app
+                .windows()
+                .into_iter()
+                .filter_map(|window| window.downcast::<ForesightWindow>().ok())
+                .filter_map(|window| window.take_run_for_shutdown())
+                .collect();
+            signals::stop_all(&runs, &|| signals.repeated());
         }
-    });
+    ));
     let code = app.run();
+
+    // Told to go, and now free to: nothing is running that this process
+    // started. It ends by the signal it was sent, so that whatever is waiting
+    // for it sees a process that was terminated and not one that was done.
+    if let Some(signum) = signals.received() {
+        signals::die_of(signum);
+    }
 
     // A non-zero exit is what makes CI notice a widget regression.
     #[cfg(feature = "selftest")]
@@ -72,6 +113,37 @@ fn main() -> glib::ExitCode {
         return glib::ExitCode::FAILURE;
     }
     code
+}
+
+/// What a process started by the signal checks does instead of running the
+/// checks: holds a run in its window, says so, and waits to be signalled.
+#[cfg(feature = "selftest")]
+fn hold_for_the_signal_checks(
+    app: &adw::Application,
+    window: &ForesightWindow,
+    holding: signals::drive::Holding,
+    dir: &std::path::Path,
+) {
+    use signals::drive::{self, Holding};
+    let plain = job::RunKind::Transfer {
+        moves: false,
+        deletes: false,
+    };
+    match holding {
+        Holding::Nothing => {}
+        Holding::DryRun => window.hold_run_for_selftest(job::RunKind::DryRun, drive::argv(dir)),
+        Holding::Transfer | Holding::Deaf => window.hold_run_for_selftest(plain, drive::argv(dir)),
+    }
+    drive::say_ready(dir);
+    // Nothing here may outlive the checks, signalled or not.
+    glib::timeout_add_seconds_local_once(
+        60,
+        glib::clone!(
+            #[weak]
+            app,
+            move || app.quit()
+        ),
+    );
 }
 
 #[cfg(feature = "selftest")]

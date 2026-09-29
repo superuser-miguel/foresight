@@ -504,7 +504,7 @@ const SIGTERM: i32 = 15;
 /// `.name.XXXXXX` temporary in the destination — debris, not damage — which is
 /// why waiting much longer than this to avoid one is not worth a window that
 /// will not go.
-const STOP_GRACE: Duration = Duration::from_secs(5);
+pub(crate) const STOP_GRACE: Duration = Duration::from_secs(5);
 
 /// How long SIGKILL gets to show results before the run is given up on.
 ///
@@ -514,7 +514,7 @@ const STOP_GRACE: Duration = Duration::from_secs(5);
 /// comes. Neither is something another signal would fix, so after this the
 /// run is reported as over — with the kill still pending against the process
 /// for whenever the kernel lets go of it.
-const KILL_GRACE: Duration = Duration::from_secs(2);
+pub(crate) const KILL_GRACE: Duration = Duration::from_secs(2);
 
 /// The outcome of a run, mapped through [`classify_exit`].
 #[derive(Debug, Clone)]
@@ -600,6 +600,20 @@ impl Runner {
         self.graces.set((term_grace, kill_grace));
         self.cancel();
         self.wake.cancel();
+    }
+
+    /// SIGKILL, now, with no grace: for a stop that is already under way and
+    /// has been told to hurry (the second signal to a process that is on its
+    /// way out — see `signals`). What it costs is what the watchdog's own kill
+    /// costs, a stray temporary in the destination, only sooner. The run still
+    /// ends as `Cancelled`, and the watchdog still bounds the wait for it.
+    pub fn kill(&self) {
+        if self.finished.get() {
+            return;
+        }
+        self.cancelled.set(true);
+        // GSubprocess sends this only while it still holds the pid.
+        self.proc.force_exit();
     }
 
     /// [`stop`](Self::stop) for when there will be no main loop afterwards

@@ -15,6 +15,15 @@
 //! rules matched anything. They are extra lines, never a change to the two
 //! formats above.
 //!
+//! rsync does not put `rsync:` in front of everything that went wrong. A
+//! handful of lines arrive bare — `IO error encountered -- skipping file
+//! deletion` is the one that matters most, because it is the only statement
+//! that `--delete` stopped deleting — and they are collected as errors
+//! ([`Message::is_error`]) alongside the prefixed ones, so they reach whatever
+//! the app shows when a run did not finish cleanly. The list is short and
+//! closed; see `UNPREFIXED_ERROR_RE` in the source for what is on it, what was
+//! left off, and why. Captured in `tests/fixtures/dry_run_io_error.txt`.
+//!
 //! Whether `SRC` carries a trailing `/` is the app's choice and does not affect
 //! this contract — it only shifts where the paths in [`ItemizedChange`] are
 //! rooted (`SRC` yields `dir/file`, `SRC/` yields `file`). The event *format* is
@@ -318,6 +327,67 @@ static SSH_ERROR_RE: Lazy<Regex> = Lazy::new(|| {
     .unwrap()
 });
 
+/// rsync's own lines that report a failure and do *not* start with `rsync:`.
+///
+/// [`ERROR_RE`] is rsync's error prefix and nothing else. But the prefix is
+/// added by one function in rsync (`rsyserr`, which appends the errno text);
+/// what rsync prints through plain `rprintf` arrives bare, whatever its log
+/// level. The summary line then says "see previous errors" about lines this
+/// crate had classified as chatter. Each line below was read in the source of
+/// rsync 3.5.0 and, except where a test says otherwise, produced with it:
+///
+/// - `IO error encountered -- skipping file deletion` (`delete_in_dir`,
+///   generator.c, logged as mere FINFO). With `--delete`, once any part of the
+///   source could not be read rsync stops deleting, because it can no longer
+///   tell "gone from the source" from "could not be looked at". It is said
+///   once per run and nowhere else: the mirror did not mirror. Deletions made
+///   *before* the error was met have still happened — the line means "not all
+///   of them", not "none".
+/// - `Deletions stopped due to --max-delete limit (N skipped)`
+///   (`generate_files`, FWARNING). The same consequence by another road, and
+///   the only line that carries the count. Exit 25 repeats it in the summary
+///   only when nothing worse happened; beside an exit 23 this is all there is.
+/// - `ERROR: …` — rsync's second error marker. Every use of it in 3.5.0 is at
+///   error level (FERROR / FERROR_XFER). Seen here as `ERROR: Skipping sender
+///   remove of destination file: …`, where `--remove-source-files` left a file
+///   in the source, and as `ERROR: destination must be a directory when
+///   copying more than 1 file`. `WARNING: …` is deliberately not its twin:
+///   rsync uses that for things it goes on to retry.
+/// - `symlink has no referent: …` (`make_file`, flist.c, FERROR_XFER) and
+///   `could not make way for …` (`delete_item`, delete.c, FERROR_XFER): the
+///   *cause* of an exit 23 that has no other. The first also sets the I/O
+///   error flag, so it is what stands behind a skipped deletion.
+///
+/// Held to the bar [`SSH_ERROR_RE`] sets: lines known to mean something went
+/// wrong, not lines that look as if they might. What is left off on purpose,
+/// each of it asserted in the tests:
+///
+/// - `skipping non-regular file`, `skipping directory`, `cannot delete
+///   non-empty directory`: all FINFO, all printed by runs that exit 0 (a
+///   symlink under `--no-links`; a destination directory still holding
+///   excluded files). Routine.
+/// - `file has vanished: …` and `rsync warning: some files vanished …`: rsync
+///   itself calls this "not an error, only a warning", deletion carries on,
+///   and the exit code (24) already says all of it. A source in use loses
+///   files mid-run as a matter of course; one "error" per file would bury
+///   whatever else happened.
+/// - `WARNING: … failed verification -- update discarded (will try again).`:
+///   rsync retries, and says `ERROR:` if the retry fails too.
+static UNPREFIXED_ERROR_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        r"(?x)
+        ^(
+            IO\ error\ encountered\ --\ skipping\ file\ deletion
+          | Deletions\ stopped\ due\ to\ --max-delete\ limit
+          | ERROR:\x20
+          | symlink\ has\ no\ referent:
+          | could\ not\ make\ way\ for\x20
+        )
+        ",
+    )
+    .unwrap()
+});
+
 fn parse_u64(s: &str) -> u64 {
     s.replace(',', "").parse().unwrap_or(0)
 }
@@ -492,8 +562,11 @@ impl StreamParser {
         Some(Event::Message(Message {
             text: line.trim_end().to_string(),
             // A remote job's stream carries ssh's stderr as well as rsync's,
-            // and for those failures ssh is the one that says why.
-            is_error: ERROR_RE.is_match(line) || SSH_ERROR_RE.is_match(line),
+            // and for those failures ssh is the one that says why. And not
+            // every failure rsync reports carries its prefix.
+            is_error: ERROR_RE.is_match(line)
+                || UNPREFIXED_ERROR_RE.is_match(line)
+                || SSH_ERROR_RE.is_match(line),
         }))
     }
 }
@@ -636,5 +709,106 @@ mod ssh_error_tests {
         ));
         assert!(!is_error("sending incremental file list"));
         assert!(!is_error("total size is 1,234  speedup is 5.67"));
+    }
+}
+
+#[cfg(test)]
+mod unprefixed_error_tests {
+    use super::*;
+
+    /// Through the public streaming API, exactly as the app consumes it.
+    fn is_error(line: &str) -> bool {
+        let mut parser = StreamParser::new();
+        match parser.feed(&format!("{line}\n")).into_iter().next() {
+            Some(Event::Message(m)) => m.is_error,
+            other => panic!("{line:?} did not parse as a Message: {other:?}"),
+        }
+    }
+
+    /// Lines copied out of real rsync 3.5.0 runs (paths shortened). None of
+    /// them starts with `rsync:`, and each is the only statement of what it
+    /// reports.
+    #[test]
+    fn failures_rsync_does_not_prefix_are_collected_as_errors() {
+        for line in [
+            // --delete, part of the source unreadable.
+            "IO error encountered -- skipping file deletion",
+            // --delete --max-delete=1, three files to delete.
+            "Deletions stopped due to --max-delete limit (2 skipped)",
+            // --remove-source-files with the source as its own destination.
+            "ERROR: Skipping sender remove of destination file: a",
+            // Two sources, and a destination that is a file.
+            "ERROR: destination must be a directory when copying more than 1 file",
+            // --copy-links and a dangling symlink; sets the I/O error flag.
+            "symlink has no referent: \"/x/src/dangling\"",
+            // A file where the destination has a non-empty directory.
+            "could not make way for new regular file: x",
+        ] {
+            assert!(is_error(line), "should be collected as an error: {line:?}");
+        }
+    }
+
+    /// What rsync prints on runs that went well, or prints about something the
+    /// exit code already reports. The first four were captured from runs that
+    /// exited 0.
+    #[test]
+    fn routine_rsync_notices_are_not_errors() {
+        for line in [
+            // --no-links / --no-D: exit 0.
+            "skipping non-regular file \"link\"",
+            "skipping non-regular file \"fifo\"",
+            // --no-r: exit 0.
+            "skipping directory sub",
+            // --delete with an exclude protecting a file inside: exit 0.
+            "cannot delete non-empty directory: gone",
+            // Exit 24, which classify_exit reports as Partial in its own words.
+            "file has vanished: \"/x/src/z_late.txt\"",
+            "directory has vanished: \"/x/src/sub\"",
+            "rsync warning: some files vanished before they could be transferred (code 24) at main.c(1394) [sender=3.5.0-g483b5efc]",
+            // From rsync's source, not from a run: it goes on to retry.
+            "WARNING: a.bin failed verification -- update discarded (will try again).",
+            // -v on a healthy run.
+            "sending incremental file list",
+            "sent 125 bytes  received 33 bytes  316.00 bytes/sec",
+            "total size is 2  speedup is 0.01 (DRY RUN)",
+        ] {
+            assert!(!is_error(line), "should NOT be an error: {line:?}");
+        }
+    }
+
+    /// The list is anchored: the words turning up inside some other line — a
+    /// file name echoed by `-v`, say — promote nothing.
+    #[test]
+    fn the_words_inside_another_line_promote_nothing() {
+        for line in [
+            "notes/IO error encountered -- skipping file deletion.txt",
+            "building file list ... ERROR: not really",
+            " ERROR: indented",
+            "ERROR:no space",
+        ] {
+            assert!(!is_error(line), "should NOT be an error: {line:?}");
+        }
+    }
+
+    /// Every classification that existed before is as it was.
+    #[test]
+    fn earlier_classifications_are_unchanged() {
+        for line in [
+            "rsync: [sender] opendir \"/x/src/locked\" failed: Permission denied (13)",
+            "rsync error: some files/attrs were not transferred (see previous errors) (code 23) at main.c(1394) [sender=3.5.0]",
+            "rsync error: the --max-delete limit stopped deletions (code 25) at main.c(1394) [sender=3.5.0-g483b5efc]",
+            "user@nas.local: Permission denied (publickey).",
+            "Host key verification failed.",
+            "ssh: connect to host nas.local port 22: Connection refused",
+        ] {
+            assert!(is_error(line), "should still be an error: {line:?}");
+        }
+        for line in [
+            "Warning: Permanently added '[127.0.0.1]:2222' (ED25519) to the list of known hosts.",
+            "rsync warning: some files vanished before they could be transferred (code 24)",
+            "exit=23",
+        ] {
+            assert!(!is_error(line), "should still not be an error: {line:?}");
+        }
     }
 }

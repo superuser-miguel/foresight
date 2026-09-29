@@ -3401,6 +3401,94 @@ impl ForesightWindow {
         );
         self.clear_job();
 
+        // -- what rsync reports without its prefix ----------------------------
+        //
+        // With Mirror deletions on and part of the source unreadable, rsync
+        // stops deleting and says so in a line that does not start with
+        // `rsync:`. It is the one line that says the mirror did not mirror,
+        // so it has to be among the errors the refusal shows. The lines are
+        // tests/fixtures/dry_run_io_error.txt with the temp path shortened.
+        const MIRROR_UNREADABLE: &str = "rsync: [sender] opendir \"/x/io/src/locked\" failed: Permission denied (13)\n\
+             *deleting   src/top-stale.txt\n\
+             IO error encountered -- skipping file deletion\n\
+             cd+++++++++ src/locked/\n\
+             >f+++++++++ src/ok/a.txt\n\
+             rsync error: some files/attrs were not transferred (see previous errors) (code 23) at main.c(1394) [sender=3.5.0-g483b5efc]\n";
+        const SKIPPED: &str = "IO error encountered -- skipping file deletion";
+        self.add_source(&gio::File::for_path(dir.join("src")));
+        self.set_dest(&gio::File::for_path(dir.join("dst")));
+        self.imp().delete_row.set_active(true);
+
+        dry_run(self, MIRROR_UNREADABLE);
+        let outcome = self.settle_preview(&done(Severity::Partial, Some(23)), true);
+        let collected = self.imp().run_errors.borrow().clone();
+        check(
+            "a Mirror dry run that met an unreadable folder is refused",
+            outcome == PreviewOutcome::Refused && self.imp().deletions.borrow().is_empty(),
+            format!("{outcome:?} {}", state(self)),
+        );
+        check(
+            "the skipped-deletion line is collected between rsync's own errors",
+            collected.len() == 3
+                && collected[0].contains("opendir")
+                && collected[1] == SKIPPED
+                && collected[2].starts_with("rsync error:"),
+            format!("{collected:?}"),
+        );
+        let body = refused_start_body(
+            self.imp().delete_row.is_active(),
+            self.imp().remove_source_row.is_active(),
+            Some(23),
+            &collected,
+        );
+        check(
+            "the refusal says that deletions were skipped",
+            body.contains(SKIPPED)
+                && body.contains("Mirror deletions")
+                && body.contains("opendir")
+                && body.contains("rsync exit code 23"),
+            body.clone(),
+        );
+        check(
+            "the refusal shows no itemized line as an error",
+            !body.contains("*deleting") && !body.contains("src/ok/a.txt"),
+            body,
+        );
+
+        // The same run as a plain Dry Run: the banner counts it.
+        dry_run(self, MIRROR_UNREADABLE);
+        let outcome = self.settle_preview(&done(Severity::Partial, Some(23)), false);
+        self.present_preview(outcome, done(Severity::Partial, Some(23)));
+        let banner = self.imp().result_banner.get();
+        check(
+            "an incomplete plain Mirror dry run counts the skipped-deletion line",
+            outcome == PreviewOutcome::Incomplete
+                && banner.title().contains("rsync reported 3 errors"),
+            format!("{outcome:?} {}", banner.title()),
+        );
+
+        // A healthy Mirror dry run collects nothing, whatever rsync remarks on.
+        dry_run(
+            self,
+            "*deleting   src/gone/other\n\
+             cannot delete non-empty directory: src/gone\n\
+             skipping non-regular file \"src/link\"\n\
+             >f+++++++++ src/a.txt\n",
+        );
+        let outcome = self.settle_preview(&done(Severity::Success, Some(0)), true);
+        check(
+            "rsync's routine notices are not collected as errors",
+            outcome == PreviewOutcome::Confirm
+                && self.imp().run_errors.borrow().is_empty()
+                && *self.imp().deletions.borrow() == ["src/gone/other"],
+            format!(
+                "{outcome:?} {:?} {}",
+                self.imp().run_errors.borrow(),
+                state(self)
+            ),
+        );
+        self.clear_job();
+
         // Regression guard: a name a KeyFile group could never hold used to be
         // dropped on save while the UI reported success.
         self.set_filters(&[FilterRule::exclude("*.tmp")]);

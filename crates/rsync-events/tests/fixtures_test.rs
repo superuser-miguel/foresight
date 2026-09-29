@@ -239,3 +239,78 @@ fn filter_line_splits_on_the_last_because_of_pattern() {
     assert!(parse_filter_line("[sender] pushing local filters for /tmp/x/").is_none());
     assert!(parse_filter_line("hiding file a because of pattern b").is_none());
 }
+
+// ---------------------------------------------------------------- unprefixed
+
+/// Captured from rsync 3.5.0: `--delete` with a source directory that cannot
+/// be read. The opendir line carries the capture's temp path, so nothing here
+/// depends on it.
+#[test]
+fn io_error_under_delete_is_collected_as_an_error() {
+    let text = load("dry_run_io_error.txt");
+    // The classification must not depend on where the chunks fall.
+    for chunk in [1, 7, 11, 4096] {
+        let evs = events_of(&text, chunk);
+
+        let errors: Vec<&str> = evs
+            .iter()
+            .filter_map(|e| match e {
+                Event::Message(m) if m.is_error => Some(m.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(errors.len(), 3, "{errors:?}");
+        assert!(errors[0].starts_with("rsync: [sender] opendir \""));
+        assert!(errors[0].ends_with("/io/src/locked\" failed: Permission denied (13)"));
+        // The line this fixture exists for, whole: it has no variable part.
+        assert_eq!(errors[1], "IO error encountered -- skipping file deletion");
+        assert!(errors[2].starts_with("rsync error: some files/attrs were not transferred"));
+        assert!(errors[2].contains("(code 23)"));
+
+        // The only other Message is the exit line the capture script appends.
+        let plain: Vec<&str> = evs
+            .iter()
+            .filter_map(|e| match e {
+                Event::Message(m) if !m.is_error => Some(m.text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(plain, ["exit=23"]);
+
+        // The itemized lines around it are still changes, in rsync's order.
+        let ch = changes(&evs);
+        let seen: Vec<(&str, ChangeKind)> =
+            ch.iter().map(|c| (c.path.as_str(), c.kind())).collect();
+        assert_eq!(
+            seen,
+            [
+                ("src/top-stale.txt", ChangeKind::Deleted),
+                ("src/locked/", ChangeKind::Created),
+                ("src/ok/a.txt", ChangeKind::Created),
+            ]
+        );
+        assert_eq!(evs.len(), 3 + 1 + 3);
+
+        // What the line means, as the capture shows it: the deletion listed
+        // before the error was met stands, and the one that would have
+        // followed — dst/src/ok/stale.txt — is not there.
+        let io_error = evs
+            .iter()
+            .position(|e| matches!(e, Event::Message(m) if m.text.starts_with("IO error")))
+            .unwrap();
+        let deletions: Vec<usize> = evs
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| match e {
+                Event::Change(c) if c.deleted => Some(i),
+                _ => None,
+            })
+            .collect();
+        assert!(deletions.iter().all(|&i| i < io_error));
+        assert!(!ch
+            .iter()
+            .any(|c| c.path.ends_with("stale.txt") && c.path.contains("ok/")));
+    }
+
+    assert_eq!(classify_exit(23).0, Severity::Partial);
+}

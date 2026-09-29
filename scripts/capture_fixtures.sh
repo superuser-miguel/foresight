@@ -12,7 +12,9 @@ R="${1:-rsync}"
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 FIX="$HERE/tests/fixtures"
 LAB="$(mktemp -d)"
-trap 'rm -rf "$LAB"' EXIT
+# chmod first: step 7 makes a directory unreadable, and if the script dies
+# while it is, rm could not otherwise clear it away.
+trap 'chmod -R u+rwX "$LAB" 2>/dev/null; rm -rf "$LAB"' EXIT
 
 echo "capturing fixtures with: $($R --version | head -1)"
 mkdir -p "$FIX" "$LAB/src/docs" "$LAB/src/media" "$LAB/dst"
@@ -66,5 +68,24 @@ echo b > "$LAB/f/Photos/private/b.jpg"; echo z > "$LAB/f/Photos/my cache/z.tmp"
 $R -a --exclude=private --exclude=/nomatch '--exclude=my cache/' \
     '--include=*.jpg' '--exclude=*.raw' --debug=FILTER -n -i \
     "$LAB/f/Photos" "$LAB/fdst/" > "$FIX/dry_run_filter_debug.txt" 2>&1
+
+# 7. a source that cannot be read, under --delete — the lines rsync does not
+#    prefix with `rsync:`. One unreadable directory sets rsync's I/O error
+#    flag, and from there on it deletes nothing MORE and says so once: "IO error
+#    encountered -- skipping file deletion". `top-stale.txt` is listed for
+#    deletion because its directory was dealt with before the error was met;
+#    `ok/stale.txt`, met after it, is not — that absence is the point.
+#    Needs a non-root user (root reads a mode-000 directory). The opendir line
+#    carries $LAB, so this fixture differs in that path on every capture.
+mkdir -p "$LAB/io/src/locked" "$LAB/io/src/ok" "$LAB/io/dst/src/ok"
+echo a > "$LAB/io/src/ok/a.txt"
+echo s > "$LAB/io/dst/src/ok/stale.txt"
+echo t > "$LAB/io/dst/src/top-stale.txt"
+chmod 000 "$LAB/io/src/locked"
+rc=0
+(cd "$LAB/io" && $R -a -n -i --delete src dst/) \
+    > "$FIX/dry_run_io_error.txt" 2>&1 || rc=$?
+chmod 755 "$LAB/io/src/locked"
+echo "exit=$rc" >> "$FIX/dry_run_io_error.txt"
 
 echo "fixtures written to $FIX — now run: python3 -m pytest tests/"

@@ -2448,12 +2448,18 @@ mod tests {
     /// What rsync really does when a dry run cannot read part of the source,
     /// measured rather than assumed (3.5.0): exit 23, an `rsync:` line naming
     /// the directory, and — the part that matters to the confirmation built
-    /// on a dry run — **no `*deleting` lines at all**, not even for the parts
-    /// of the tree it did read. rsync says why on a line that does not start
-    /// with `rsync:`. So the deletions list of a partial dry run is not
-    /// slightly short; it is empty, and reads exactly like "nothing to delete".
+    /// on a dry run — a deletions list that **stops where the error was met**.
+    /// rsync deletes directory by directory: what it had dealt with before the
+    /// error is listed (and, in a real run, deleted); everything after it is
+    /// not, and rsync says so once, on a line that does not start with
+    /// `rsync:`. In this test's tree the stale file sits in a folder reached
+    /// after the error, so the list comes out empty and reads exactly like
+    /// "nothing to delete". `tests/fixtures/dry_run_io_error.txt` shows the
+    /// other case, one deletion listed above the error and one missing below
+    /// it. Either way the list is not the whole of what a complete run would
+    /// delete, and nothing in it says so.
     #[test]
-    fn a_dry_run_that_cannot_read_a_folder_is_partial_and_lists_no_deletions() {
+    fn a_dry_run_that_cannot_read_a_folder_is_partial_and_its_deletions_stop_short() {
         use std::os::unix::fs::PermissionsExt;
 
         if !rsync_available() {
@@ -2576,15 +2582,21 @@ mod tests {
         let partial = dry_run(&job);
         assert_eq!(partial.completion.code, Some(23), "{:?}", partial.errors);
         assert_eq!(partial.completion.severity, Severity::Partial);
-        assert_eq!(partial.errors.len(), 2, "{:?}", partial.errors);
+        assert_eq!(partial.errors.len(), 3, "{:?}", partial.errors);
         assert!(
             partial.errors[0].starts_with("rsync: [sender] opendir ")
                 && partial.errors[0].ends_with("/src/locked\" failed: Permission denied (13)"),
             "{:?}",
             partial.errors
         );
+        // Not prefixed with `rsync:`, and collected as an error all the same:
+        // it is the line that says the deletions were skipped.
+        assert_eq!(
+            partial.errors[1],
+            "IO error encountered -- skipping file deletion"
+        );
         assert!(
-            partial.errors[1].starts_with(
+            partial.errors[2].starts_with(
                 "rsync error: some files/attrs were not transferred (see previous errors) (code 23)"
             ),
             "{:?}",
@@ -2593,10 +2605,7 @@ mod tests {
         // Same destination, same stale file, in a folder that was read.
         assert!(partial.deleted.is_empty(), "{:?}", partial.deleted);
         assert!(
-            partial
-                .messages
-                .iter()
-                .any(|m| m == "IO error encountered -- skipping file deletion"),
+            !partial.messages.iter().any(|m| m.contains("IO error")),
             "{:?}",
             partial.messages
         );

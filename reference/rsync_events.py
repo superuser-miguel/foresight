@@ -219,6 +219,20 @@ _SSH_ERROR_RE = re.compile(
     # `user@host: Permission denied (publickey).`
     r"|: Permission denied \(")
 
+# rsync's own failure lines that do NOT start with `rsync:` — only rsyserr()
+# adds the prefix; plain rprintf() output arrives bare whatever its log level.
+# A short closed list, each line produced with rsync 3.5.0 and read back in its
+# source. NOT on it, on purpose: `skipping non-regular file`, `skipping
+# directory`, `cannot delete non-empty directory` (all seen on exit-0 runs),
+# `file has vanished` / `rsync warning:` (exit 24 says it), and `WARNING:`
+# (rsync retries). See UNPREFIXED_ERROR_RE in the Rust crate for the reasoning.
+_UNPREFIXED_ERROR_RE = re.compile(
+    r"^(IO error encountered -- skipping file deletion"
+    r"|Deletions stopped due to --max-delete limit"
+    r"|ERROR: "
+    r"|symlink has no referent:"
+    r"|could not make way for )")
+
 
 def _int(s: str) -> int:
     return int(s.replace(",", ""))
@@ -338,6 +352,7 @@ class StreamParser:
             return ev
         return Message(text=line.rstrip(),
                        is_error=bool(_ERROR_RE.match(line)
+                                     or _UNPREFIXED_ERROR_RE.match(line)
                                      or _SSH_ERROR_RE.search(line)))
 
 # --------------------------------------------------------------------------

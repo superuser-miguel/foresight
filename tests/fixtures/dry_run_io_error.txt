@@ -1,0 +1,7 @@
+rsync: [sender] opendir "/tmp/tmp.a5JW24tFsa/io/src/locked" failed: Permission denied (13)
+*deleting   src/top-stale.txt
+IO error encountered -- skipping file deletion
+cd+++++++++ src/locked/
+>f+++++++++ src/ok/a.txt
+rsync error: some files/attrs were not transferred (see previous errors) (code 23) at main.c(1394) [sender=3.5.0-g483b5efc]
+exit=23

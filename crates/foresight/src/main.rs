@@ -52,6 +52,16 @@ fn main() -> glib::ExitCode {
         }
     });
 
+    // Quitting the application closes no window, so it asks nothing and
+    // passes no guard: `close-request` never fires. Whatever leads here, a run
+    // that is still live is stopped before the process that started it goes.
+    app.connect_shutdown(|app| {
+        for window in app.windows() {
+            if let Ok(window) = window.downcast::<ForesightWindow>() {
+                window.stop_run_for_shutdown();
+            }
+        }
+    });
     let code = app.run();
 
     // A non-zero exit is what makes CI notice a widget regression.

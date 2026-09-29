@@ -19,8 +19,8 @@ use std::path::PathBuf;
 use crate::change_object::ChangeObject;
 use crate::endpoint::Endpoint;
 use crate::job::{
-    argv_display, spawn_rsync, Completion, FilterKind, FilterRule, Job, Mode, Remote, Runner,
-    Source, TransferTop,
+    argv_display, spawn_rsync, Completion, FilterKind, FilterRule, Job, Mode, Remote, RunKind,
+    Runner, Source, TransferTop,
 };
 use crate::log_object::LogObject;
 use crate::profiles::{self, Profile};
@@ -50,6 +50,21 @@ impl RuleHits {
     fn total(self) -> u64 {
         self.source + self.dest
     }
+}
+
+/// What has to happen before the window may close. Worked out from the run
+/// every time it is asked, by [`ForesightWindow::close_step`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CloseStep {
+    /// Nothing is running: close.
+    Close,
+    /// A dry run is live. It writes nothing, so there is nothing to ask — but
+    /// the process is stopped first, and the window closes when it has gone.
+    StopThenClose,
+    /// A transfer is live: stopping it is the user's decision.
+    Ask(RunKind),
+    /// Already stopping a run in order to close; the window goes when it ends.
+    Wait,
 }
 
 /// Which side of the transfer the remote endpoint sits on.
@@ -157,6 +172,12 @@ mod imp {
         pub log_store: OnceCell<gio::ListStore>,
         /// The live rsync process, if one is running (held so it can cancel).
         pub runner: RefCell<Option<Runner>>,
+        /// A close was asked for and is waiting on the run to end. Set only
+        /// while a run is being stopped for that reason, and never cleared:
+        /// the next thing that happens to the window is that it closes.
+        pub close_when_done: Cell<bool>,
+        /// The "stop and close?" question, while it is on screen.
+        pub close_dialog: glib::WeakRef<adw::AlertDialog>,
         /// `rsync:` error lines collected during the current run.
         pub run_errors: RefCell<Vec<String>>,
         /// Deletions itemized by the most recent dry run (for confirmation).
@@ -206,7 +227,17 @@ mod imp {
         }
     }
     impl WidgetImpl for ForesightWindow {}
-    impl WindowImpl for ForesightWindow {}
+    impl WindowImpl for ForesightWindow {
+        /// Everything that closes the window arrives here — the titlebar
+        /// button, the compositor, `window.close()` from any action — which is
+        /// why the guard for a live run is here and not on any one of them.
+        fn close_request(&self) -> glib::Propagation {
+            if self.obj().on_close_request() == glib::Propagation::Stop {
+                return glib::Propagation::Stop;
+            }
+            self.parent_close_request()
+        }
+    }
     impl ApplicationWindowImpl for ForesightWindow {}
     impl AdwApplicationWindowImpl for ForesightWindow {}
 }
@@ -1619,6 +1650,120 @@ impl ForesightWindow {
             .set_sensitive(!source_is_remote && !running);
     }
 
+    // -- closing with a run live --------------------------------------------
+
+    /// May the window close now, and if not, what has to happen first? Derived
+    /// from the run itself, so there is no "a transfer is live" flag to fall
+    /// out of step with whether one is.
+    pub(crate) fn close_step(&self) -> CloseStep {
+        match self.imp().runner.borrow().as_ref() {
+            Some(runner) if runner.is_live() => {
+                if self.imp().close_when_done.get() {
+                    CloseStep::Wait
+                } else if runner.kind() == RunKind::DryRun {
+                    CloseStep::StopThenClose
+                } else {
+                    CloseStep::Ask(runner.kind())
+                }
+            }
+            _ => CloseStep::Close,
+        }
+    }
+
+    /// The `close-request` handler. `Stop` keeps the window.
+    pub(crate) fn on_close_request(&self) -> glib::Propagation {
+        match self.close_step() {
+            CloseStep::Close => return glib::Propagation::Proceed,
+            CloseStep::StopThenClose => self.stop_then_close(),
+            CloseStep::Ask(kind) => self.confirm_stop_then_close(kind),
+            CloseStep::Wait => {}
+        }
+        glib::Propagation::Stop
+    }
+
+    /// Stop the run and close once it has ended. The closing is done by
+    /// [`Self::finish_run`], from the run's completion — that is, when the
+    /// process has exited and not when it has been asked to. `Runner::stop`
+    /// bounds how long that can take.
+    fn stop_then_close(&self) {
+        let imp = self.imp();
+        if let Some(runner) = imp.runner.borrow().as_ref() {
+            imp.close_when_done.set(true);
+            imp.overall_progress.set_text(Some("Stopping…"));
+            runner.stop();
+        }
+    }
+
+    fn confirm_stop_then_close(&self, kind: RunKind) {
+        // Asked to close twice: the question is already on screen.
+        if self.imp().close_dialog.upgrade().is_some() {
+            return;
+        }
+        let dialog = adw::AlertDialog::builder()
+            .heading("Stop the transfer and close?")
+            .body(close_question_body(kind))
+            .build();
+        dialog.add_response("keep", "Keep Transferring");
+        dialog.add_response("stop", "Stop and Close");
+        dialog.set_response_appearance("stop", adw::ResponseAppearance::Destructive);
+        dialog.set_default_response(Some("keep"));
+        dialog.set_close_response("keep");
+        dialog.connect_response(
+            None,
+            glib::clone!(
+                #[weak(rename_to = win)]
+                self,
+                move |_, response| win.on_close_response(response)
+            ),
+        );
+        self.imp().close_dialog.set(Some(&dialog));
+        dialog.present(Some(self));
+    }
+
+    /// The answer to the question, apart from the dialog that asks it, so the
+    /// headless checks can give one.
+    pub(crate) fn on_close_response(&self, response: &str) {
+        if response != "stop" {
+            return;
+        }
+        // Decided again rather than assumed: the transfer may have finished
+        // while the question was on screen.
+        match self.close_step() {
+            CloseStep::Close => self.close(),
+            CloseStep::Wait => {}
+            CloseStep::StopThenClose | CloseStep::Ask(_) => self.stop_then_close(),
+        }
+    }
+
+    /// A run has ended: let go of it. Returns `true` when the window was
+    /// waiting on that to close — it has then been closed, and the caller has
+    /// nothing left to show anyone.
+    fn finish_run(&self) -> bool {
+        let imp = self.imp();
+        *imp.runner.borrow_mut() = None;
+        self.refresh_action_sensitivity();
+        // The question was about a run that is no longer there.
+        if let Some(dialog) = imp.close_dialog.upgrade() {
+            dialog.force_close();
+        }
+        if imp.close_when_done.get() {
+            self.close();
+            return true;
+        }
+        false
+    }
+
+    /// For application shutdown, which closes nothing and asks nothing: stop
+    /// the run and do not return until it has ended. Bounded, like `stop`.
+    pub(crate) fn stop_run_for_shutdown(&self) {
+        // Taken out first: the run's completion handler fires from inside
+        // `stop_and_wait` and borrows this cell itself.
+        let runner = self.imp().runner.borrow_mut().take();
+        if let Some(runner) = runner {
+            runner.stop_and_wait();
+        }
+    }
+
     fn on_start_clicked(&self) {
         let Some(job) = self.current_job() else {
             return;
@@ -1662,9 +1807,10 @@ impl ForesightWindow {
             move |c: Completion| win.on_preview_done(c, then_confirm_start)
         );
 
+        let kind = RunKind::of(Mode::Preview, &argv);
         match spawn_rsync(argv, on_event, on_done) {
             Ok(runner) => {
-                *imp.runner.borrow_mut() = Some(runner);
+                *imp.runner.borrow_mut() = Some(runner.with_kind(kind));
                 self.refresh_action_sensitivity();
             }
             Err(e) => self.report_spawn_error(&e),
@@ -1727,6 +1873,11 @@ impl ForesightWindow {
 
     /// A dry run ended. Settle what it left behind, then show it.
     fn on_preview_done(&self, completion: Completion, then_confirm_start: bool) {
+        // The window was waiting on this run in order to close, and has: there
+        // is nobody left to settle anything for or show anything to.
+        if self.finish_run() {
+            return;
+        }
         let outcome = self.settle_preview(&completion, then_confirm_start);
         self.present_preview(outcome, completion);
     }
@@ -1743,6 +1894,8 @@ impl ForesightWindow {
     /// rather than evidence of nothing.
     fn settle_preview(&self, completion: &Completion, then_confirm_start: bool) -> PreviewOutcome {
         let imp = self.imp();
+        // Idempotent after `finish_run`; kept because the headless checks
+        // drive this function on its own.
         *imp.runner.borrow_mut() = None;
         self.refresh_action_sensitivity();
 
@@ -1920,9 +2073,10 @@ impl ForesightWindow {
             move |c: Completion| win.on_sync_done(c)
         );
 
+        let kind = RunKind::of(Mode::Sync, &argv);
         match spawn_rsync(argv, on_event, on_done) {
             Ok(runner) => {
-                *imp.runner.borrow_mut() = Some(runner);
+                *imp.runner.borrow_mut() = Some(runner.with_kind(kind));
                 self.refresh_action_sensitivity();
             }
             Err(e) => self.report_spawn_error(&e),
@@ -1936,6 +2090,9 @@ impl ForesightWindow {
                 imp.current_file_label.set_label(&change.path);
                 self.log_push(LogObject::change(&change));
             }
+            // Being stopped in order to close: the bar says so, and keeps
+            // saying so over whatever rsync had left to report.
+            Event::Progress(_) if imp.close_when_done.get() => {}
             Event::Progress(p) => {
                 imp.overall_progress
                     .set_fraction(f64::from(p.percent) / 100.0);
@@ -1959,8 +2116,9 @@ impl ForesightWindow {
 
     fn on_sync_done(&self, completion: Completion) {
         let imp = self.imp();
-        *imp.runner.borrow_mut() = None;
-        self.refresh_action_sensitivity();
+        if self.finish_run() {
+            return;
+        }
         // Completion is process exit, never percent==100 (rsync can end at 99%).
         if completion.severity == Severity::Success {
             imp.overall_progress.set_fraction(1.0);
@@ -2189,6 +2347,26 @@ fn refused_start_body(deletes: bool, moves: bool, code: Option<i32>, errors: &[S
         body.push_str(&errors[..errors.len().min(MAX)].join("\n"));
         if errors.len() > MAX {
             body.push_str(&format!("\n…and {} more", errors.len() - MAX));
+        }
+    }
+    body
+}
+
+/// The body of the "stop and close?" question. Says only what is true of the
+/// run it is asked about: the sentences on moving and deleting appear when
+/// that run is doing those things.
+fn close_question_body(kind: RunKind) -> String {
+    let mut body = String::from(
+        "A transfer is in progress. Stopping it ends rsync where it is: files \
+         already transferred stay in the destination, and the rest are not \
+         transferred.",
+    );
+    if let RunKind::Transfer { moves, deletes } = kind {
+        if moves {
+            body.push_str("\n\nFiles already moved are gone from the source.");
+        }
+        if deletes {
+            body.push_str("\n\nFiles already deleted from the destination stay deleted.");
         }
     }
     body
@@ -3285,6 +3463,193 @@ impl ForesightWindow {
                 "removed: {removed}, restored: {restored}, dir: {:?}",
                 listing()
             ),
+        );
+
+        // -- closing with a run live -----------------------------------------
+        //
+        // Closing the window used to drop the UI and leave rsync writing, with
+        // nothing left to stop it. These hold real rsync processes, throttled
+        // so that they are mid-transfer whenever anything is done to them, and
+        // judge "stopped" by the process table rather than by the window's own
+        // account. They run in windows of their own: a close that is allowed
+        // really closes, and this one has to stay for the application to.
+        use crate::job::procs;
+        use std::time::{Duration, Instant};
+        self.clear_job();
+        check(
+            "a close request with nothing running is allowed",
+            self.close_step() == CloseStep::Close
+                && self.on_close_request() == glib::Propagation::Proceed,
+            format!("{:?}", self.close_step()),
+        );
+
+        let pump = |until: &dyn Fn() -> bool, within: Duration| {
+            let ctx = glib::MainContext::default();
+            let deadline = Instant::now() + within;
+            while !until() && Instant::now() < deadline {
+                if !ctx.iteration(false) {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+        };
+        let app = self.application().expect("the window has an application");
+        let is_open = |w: &ForesightWindow| app.windows().iter().any(|o| o == w);
+        // A window holding a live, throttled rsync of the given kind, wired to
+        // the window's own completion handlers. Returns the process tree.
+        let open_with_run = |kind: RunKind, tag: &str| -> Option<(ForesightWindow, Vec<u32>)> {
+            let base = dir.join(format!("close-{tag}"));
+            let _ = std::fs::create_dir_all(base.join("src"));
+            let _ = std::fs::create_dir_all(base.join("dst"));
+            let _ = std::fs::write(base.join("src/big.bin"), vec![0u8; 4 * 1024 * 1024]);
+            let mut src = base.join("src").into_os_string();
+            src.push("/");
+            let argv = vec![
+                "-a".into(),
+                "--bwlimit=100".into(),
+                "--info=progress2".into(),
+                src,
+                base.join("dst").into_os_string(),
+            ];
+            let win: ForesightWindow = glib::Object::builder()
+                .property("application", &app)
+                .build();
+            win.present();
+            let on_event = glib::clone!(
+                #[weak]
+                win,
+                move |ev: Event| win.on_sync_event(ev)
+            );
+            let on_done = glib::clone!(
+                #[weak]
+                win,
+                move |c: Completion| match kind {
+                    RunKind::DryRun => win.on_preview_done(c, false),
+                    RunKind::Transfer { .. } => win.on_sync_done(c),
+                }
+            );
+            let runner = spawn_rsync(argv, on_event, on_done).ok()?.with_kind(kind);
+            let pid = runner.pid()?;
+            *win.imp().runner.borrow_mut() = Some(runner);
+            win.refresh_action_sensitivity();
+            // Until rsync has forked its other half it is not transferring.
+            pump(&|| procs::tree(pid).len() > 1, Duration::from_secs(5));
+            Some((win, procs::tree(pid)))
+        };
+        let plain = RunKind::Transfer {
+            moves: false,
+            deletes: false,
+        };
+
+        match open_with_run(plain, "transfer") {
+            Some((win, tree)) => {
+                win.close();
+                check(
+                    "a close request with a transfer live is refused",
+                    win.on_close_request() == glib::Propagation::Stop
+                        && is_open(&win)
+                        && win.is_visible()
+                        && procs::alive(tree[0]),
+                    format!(
+                        "open={} rsync alive={}",
+                        is_open(&win),
+                        procs::alive(tree[0])
+                    ),
+                );
+                check(
+                    "closing with a transfer live asks, once",
+                    win.imp().close_dialog.upgrade().is_some()
+                        && win.close_step() == CloseStep::Ask(plain),
+                    format!("{:?}", win.close_step()),
+                );
+                win.on_close_response("keep");
+                pump(&|| !is_open(&win), Duration::from_millis(300));
+                check(
+                    "keeping the transfer leaves the window and rsync as they were",
+                    is_open(&win)
+                        && win.is_running()
+                        && procs::survivors(&tree, Duration::ZERO) == tree,
+                    format!("open={} running={}", is_open(&win), win.is_running()),
+                );
+                win.on_close_response("stop");
+                check(
+                    "a window stopping its transfer waits for rsync to exit",
+                    is_open(&win) && win.close_step() == CloseStep::Wait,
+                    format!("open={} step={:?}", is_open(&win), win.close_step()),
+                );
+                let asked = Instant::now();
+                pump(&|| !is_open(&win), Duration::from_secs(15));
+                let left = procs::survivors(&tree, Duration::from_secs(3));
+                check(
+                    "Stop and Close leaves no rsync and then closes the window",
+                    !is_open(&win) && !win.is_running() && left.is_empty(),
+                    format!(
+                        "open={} running={} still alive={left:?} after {:?}",
+                        is_open(&win),
+                        win.is_running(),
+                        asked.elapsed()
+                    ),
+                );
+                win.stop_run_for_shutdown();
+                win.destroy();
+            }
+            None => check(
+                "rsync spawns for the close checks",
+                false,
+                "transfer".into(),
+            ),
+        }
+
+        match open_with_run(RunKind::DryRun, "dry-run") {
+            Some((win, tree)) => {
+                win.close();
+                check(
+                    "closing during a dry run asks nothing",
+                    win.imp().close_dialog.upgrade().is_none(),
+                    "a dialog was presented".into(),
+                );
+                pump(&|| !is_open(&win), Duration::from_secs(15));
+                let left = procs::survivors(&tree, Duration::from_secs(3));
+                check(
+                    "closing during a dry run stops rsync and then closes the window",
+                    !is_open(&win) && !win.is_running() && left.is_empty(),
+                    format!("open={} still alive={left:?}", is_open(&win)),
+                );
+                win.stop_run_for_shutdown();
+                win.destroy();
+            }
+            None => check("rsync spawns for the close checks", false, "dry run".into()),
+        }
+
+        // Quitting the application passes no close-request; this is what its
+        // shutdown runs on every window.
+        match open_with_run(plain, "quit") {
+            Some((win, tree)) => {
+                win.stop_run_for_shutdown();
+                let alive_on_return = procs::alive(tree[0]);
+                let left = procs::survivors(&tree, Duration::from_secs(3));
+                check(
+                    "application shutdown does not return with rsync running",
+                    !alive_on_return && !win.is_running() && left.is_empty(),
+                    format!("alive on return={alive_on_return} still alive={left:?}"),
+                );
+                win.destroy();
+            }
+            None => check("rsync spawns for the close checks", false, "quit".into()),
+        }
+        for tag in ["transfer", "dry-run", "quit"] {
+            let _ = std::fs::remove_dir_all(dir.join(format!("close-{tag}")));
+        }
+
+        let moving = close_question_body(RunKind::Transfer {
+            moves: true,
+            deletes: false,
+        });
+        check(
+            "the question mentions the source only when the run is a move",
+            moving.contains("gone from the source")
+                && !close_question_body(plain).contains("source")
+                && !moving.contains("deleted"),
+            moving,
         );
 
         (pass, fail)

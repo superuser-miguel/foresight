@@ -487,9 +487,34 @@ use gtk::prelude::*;
 use rsync_events::{classify_exit, Event, Severity, StreamParser};
 use std::cell::Cell;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 /// POSIX SIGTERM — asks rsync to stop cleanly (it exits ~20 → "cancelled").
 const SIGTERM: i32 = 15;
+
+/// How long a stopped rsync gets to leave by itself before it is killed.
+///
+/// SIGTERM is the good way out: rsync removes the temporary file it was
+/// writing, tells its other processes to go, and exits 20. Measured on a local
+/// transfer that takes a few milliseconds, so this is not a wait anyone
+/// normally sees. It is long enough for a clean exit that has real work to do
+/// (unlinking a large partial file on a slow disk, an ssh connection saying
+/// goodbye) and short enough that a window asked to close is not still there
+/// when the user has looked away and back. What a kill costs is a stray
+/// `.name.XXXXXX` temporary in the destination — debris, not damage — which is
+/// why waiting much longer than this to avoid one is not worth a window that
+/// will not go.
+const STOP_GRACE: Duration = Duration::from_secs(5);
+
+/// How long SIGKILL gets to show results before the run is given up on.
+///
+/// A killed process cannot refuse, but it can fail to *finish*: blocked inside
+/// the kernel on a dead network mount it stays until that call returns, and a
+/// descendant can hold the output pipe open so the end of the stream never
+/// comes. Neither is something another signal would fix, so after this the
+/// run is reported as over — with the kill still pending against the process
+/// for whenever the kernel lets go of it.
+const KILL_GRACE: Duration = Duration::from_secs(2);
 
 /// The outcome of a run, mapped through [`classify_exit`].
 #[derive(Debug, Clone)]
@@ -500,11 +525,54 @@ pub struct Completion {
     pub code: Option<i32>,
 }
 
-/// A live rsync process. Hold it to cancel; drop it once complete.
+/// What a live run is doing to the two ends — which is what decides whether
+/// stopping it is worth a question, and what that question has to say.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunKind {
+    /// `-n`: nothing is written anywhere.
+    DryRun,
+    /// A real transfer.
+    Transfer {
+        /// `--remove-source-files`: what has transferred has left the source.
+        moves: bool,
+        /// Any `--delete…`: the destination is losing files as it goes.
+        deletes: bool,
+    },
+}
+
+impl RunKind {
+    /// Read from the argv the run is actually started with rather than from
+    /// the [`Job`], so a flag typed into the extra arguments counts too.
+    pub fn of(mode: Mode, argv: &[OsString]) -> Self {
+        if mode == Mode::Preview {
+            return RunKind::DryRun;
+        }
+        let has = |test: &dyn Fn(&[u8]) -> bool| argv.iter().any(|a| test(a.as_bytes()));
+        RunKind::Transfer {
+            moves: has(&|a| a == b"--remove-source-files"),
+            deletes: has(&|a| a == b"--del" || a.starts_with(b"--delete")),
+        }
+    }
+}
+
+/// A live rsync process. Hold it for as long as the run should live: dropping
+/// it while the process is still running stops the process (see the `Drop`
+/// impl). Dropping it once the run has completed does nothing.
 #[derive(Debug)]
 pub struct Runner {
     proc: gio::Subprocess,
     cancelled: Rc<Cell<bool>>,
+    /// Set just before `on_done` is called; from then on nothing here signals.
+    finished: Rc<Cell<bool>>,
+    /// Cancelled to wake the watchdog: by a stop, or by the run ending.
+    wake: gio::Cancellable,
+    /// The two waits the watchdog applies: [`STOP_GRACE`] and [`KILL_GRACE`].
+    /// Held here rather than read from the constants so the tests can stop a
+    /// process without taking seven seconds over it.
+    graces: Rc<Cell<(Duration, Duration)>>,
+    /// Where the run's futures live, so a blocking stop can turn that loop.
+    context: glib::MainContext,
+    kind: RunKind,
 }
 
 impl Runner {
@@ -512,6 +580,93 @@ impl Runner {
     pub fn cancel(&self) {
         self.cancelled.set(true);
         self.proc.send_signal(SIGTERM);
+    }
+
+    /// Stop the process and make sure of it: [`cancel`](Self::cancel), then
+    /// SIGKILL if it has not gone within [`STOP_GRACE`], then — if even that
+    /// does not end the run within [`KILL_GRACE`] — the run is given up on.
+    /// Either way `on_done` fires, as `Cancelled`, within the two waits.
+    ///
+    /// Returns at once; the waiting is done by the main loop. Harmless on a
+    /// run that has finished.
+    pub fn stop(&self) {
+        self.stop_within(STOP_GRACE, KILL_GRACE);
+    }
+
+    fn stop_within(&self, term_grace: Duration, kill_grace: Duration) {
+        if self.finished.get() {
+            return;
+        }
+        self.graces.set((term_grace, kill_grace));
+        self.cancel();
+        self.wake.cancel();
+    }
+
+    /// [`stop`](Self::stop) for when there will be no main loop afterwards
+    /// (application shutdown): turns the loop itself until the run has ended.
+    /// Bounded by the same two waits. `on_done` fires from inside this call,
+    /// so the caller must not be holding a borrow that `on_done` needs.
+    pub fn stop_and_wait(&self) {
+        self.stop_and_wait_within(STOP_GRACE, KILL_GRACE);
+    }
+
+    fn stop_and_wait_within(&self, term_grace: Duration, kill_grace: Duration) {
+        self.stop_within(term_grace, kill_grace);
+        // The watchdog does the escalating; this only keeps its loop turning.
+        // The margin is for the loop's own latency — past it something is
+        // wrong with the loop, and waiting longer would not help.
+        let deadline = Instant::now() + term_grace + kill_grace + Duration::from_secs(1);
+        while !self.finished.get() && Instant::now() < deadline {
+            if !self.context.iteration(false) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
+
+    /// The run has not completed yet.
+    pub fn is_live(&self) -> bool {
+        !self.finished.get()
+    }
+
+    pub fn kind(&self) -> RunKind {
+        self.kind
+    }
+
+    /// Say what the run is. Until told otherwise a run is taken to be a plain
+    /// transfer — the assumption that errs towards asking.
+    pub fn with_kind(mut self, kind: RunKind) -> Self {
+        self.kind = kind;
+        self
+    }
+
+    /// The process id, for the tests that check it is really gone.
+    #[cfg(any(test, feature = "selftest"))]
+    pub(crate) fn pid(&self) -> Option<u32> {
+        self.proc.identifier().and_then(|id| id.parse().ok())
+    }
+}
+
+/// The last line of defence against an rsync left running with nothing to
+/// stop it: a `Runner` that goes away while its process is live takes the
+/// process with it. No caller has to remember to, which is the point — the
+/// bug this answers was a path (closing the window) that nobody had thought
+/// of as ending a run.
+///
+/// It cannot touch a run that has completed: `finished` is set before
+/// `on_done` is called and the completion is computed before that, so by the
+/// time the window lets go of the runner in its completion handler there is
+/// nothing left here to signal and nothing left to classify. GSubprocess also
+/// forgets the pid once it has reaped the child, so a late signal cannot land
+/// on a stranger that was given the same number.
+///
+/// The one thing this does change: a `Runner` can no longer be dropped early
+/// by code that wants the run to carry on. It said "hold it" before; now it
+/// means it.
+impl Drop for Runner {
+    fn drop(&mut self) {
+        // The waits are the defaults unless a test shortened them.
+        let (term_grace, kill_grace) = self.graces.get();
+        self.stop_within(term_grace, kill_grace);
     }
 }
 
@@ -531,46 +686,79 @@ where
     F: Fn(Event) + 'static,
     D: FnOnce(Completion) + 'static,
 {
-    let mut full: Vec<OsString> = Vec::with_capacity(argv.len() + 1);
-    full.push(OsString::from("rsync"));
-    full.extend(argv);
-    let full_refs: Vec<&OsStr> = full.iter().map(OsString::as_os_str).collect();
+    spawn_program(OsStr::new("rsync"), argv, on_event, on_done)
+}
+
+/// [`spawn_rsync`] with the program named, so the tests can put something in
+/// rsync's place that behaves as rsync must never be assumed not to: ignoring
+/// SIGTERM, or leaving a process behind that holds the output open.
+fn spawn_program<F, D>(
+    program: &OsStr,
+    argv: Vec<OsString>,
+    on_event: F,
+    on_done: D,
+) -> Result<Runner, glib::Error>
+where
+    F: Fn(Event) + 'static,
+    D: FnOnce(Completion) + 'static,
+{
+    let mut full: Vec<&OsStr> = Vec::with_capacity(argv.len() + 1);
+    full.push(program);
+    full.extend(argv.iter().map(OsString::as_os_str));
 
     let proc = gio::Subprocess::newv(
-        &full_refs,
+        &full,
         gio::SubprocessFlags::STDOUT_PIPE | gio::SubprocessFlags::STDERR_MERGE,
     )?;
     let stdout = proc.stdout_pipe().expect("STDOUT_PIPE requested");
     let cancelled = Rc::new(Cell::new(false));
+    let finished = Rc::new(Cell::new(false));
+    let graces = Rc::new(Cell::new((STOP_GRACE, KILL_GRACE)));
+    let wake = gio::Cancellable::new();
+    // Cancelled by the watchdog to make the reader stop waiting for a process
+    // that a kill did not end.
+    let abandon = gio::Cancellable::new();
 
     glib::spawn_future_local(glib::clone!(
         #[strong]
         proc,
         #[strong]
         cancelled,
+        #[strong]
+        finished,
+        #[strong]
+        wake,
+        #[strong]
+        abandon,
         async move {
             let mut parser = StreamParser::new();
             loop {
-                match stdout
-                    .read_bytes_future(8192, glib::Priority::DEFAULT)
-                    .await
-                {
-                    Ok(bytes) if bytes.is_empty() => break, // EOF
-                    Ok(bytes) => {
+                let read = gio::CancellableFuture::new(
+                    stdout.read_bytes_future(8192, glib::Priority::DEFAULT),
+                    abandon.clone(),
+                );
+                match read.await {
+                    Ok(Ok(bytes)) if bytes.is_empty() => break, // EOF
+                    Ok(Ok(bytes)) => {
                         let chunk = String::from_utf8_lossy(&bytes);
                         for ev in parser.feed(&chunk) {
                             on_event(ev);
                         }
                     }
-                    Err(_) => break,
+                    Ok(Err(_)) | Err(_) => break,
                 }
             }
             for ev in parser.finish() {
                 on_event(ev);
             }
 
-            let _ = proc.wait_future().await;
-            let completion = if cancelled.get() || proc.has_signaled() {
+            let reaped = gio::CancellableFuture::new(proc.wait_future(), abandon.clone())
+                .await
+                .is_ok();
+            // `cancelled` comes first and is always set on the way to an
+            // abandoned run, so the exit status is only ever asked of a process
+            // that has one.
+            let completion = if cancelled.get() || !reaped || proc.has_signaled() {
                 Completion {
                     severity: Severity::Cancelled,
                     message: "Sync was cancelled.".to_string(),
@@ -585,11 +773,117 @@ where
                     code: Some(code),
                 }
             };
+            // In this order: the outcome is settled, then the runner is
+            // disarmed, and only then does anyone hear about it — so whatever
+            // `on_done` drops or stops finds a run that is already over.
+            finished.set(true);
+            wake.cancel();
             on_done(completion);
         }
     ));
 
-    Ok(Runner { proc, cancelled })
+    // The watchdog. Asleep until a stop (or the end of the run) wakes it, then
+    // it is the bounded wait: it lives in the loop rather than in `stop` so
+    // that `stop` can be called from anywhere, `Drop` included, without
+    // needing a loop of its own or anything that can fail.
+    glib::spawn_future_local(glib::clone!(
+        #[strong]
+        proc,
+        #[strong]
+        finished,
+        #[strong]
+        wake,
+        #[strong]
+        graces,
+        async move {
+            let _ = gio::CancellableFuture::new(std::future::pending::<()>(), wake).await;
+            if finished.get() {
+                return;
+            }
+            let (term_grace, kill_grace) = graces.get();
+            glib::timeout_future(term_grace).await;
+            if finished.get() {
+                return;
+            }
+            // GSubprocess sends this only while it still holds the pid.
+            proc.force_exit();
+            glib::timeout_future(kill_grace).await;
+            if !finished.get() {
+                abandon.cancel();
+            }
+        }
+    ));
+
+    Ok(Runner {
+        proc,
+        cancelled,
+        finished,
+        wake,
+        graces,
+        context: glib::MainContext::ref_thread_default(),
+        kind: RunKind::Transfer {
+            moves: false,
+            deletes: false,
+        },
+    })
+}
+
+/// Looking at processes from outside, for the tests that have to know a
+/// process is gone rather than be told so by the code under test.
+#[cfg(any(test, feature = "selftest"))]
+pub(crate) mod procs {
+    use std::time::{Duration, Instant};
+
+    pub fn alive(pid: u32) -> bool {
+        // A zombie still has an entry; it is dead for every purpose here.
+        match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(stat) => !stat
+                .rsplit_once(") ")
+                .is_some_and(|(_, rest)| rest.starts_with('Z')),
+            Err(_) => false,
+        }
+    }
+
+    fn parent_of(pid: u32) -> Option<u32> {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        // pid (comm) state ppid … — comm may hold spaces and parentheses.
+        let (_, rest) = stat.rsplit_once(") ")?;
+        rest.split_whitespace().nth(1)?.parse().ok()
+    }
+
+    /// `pid` and everything descended from it. Taken *before* a stop: once
+    /// the parent dies its children are re-parented and cannot be found.
+    pub fn tree(pid: u32) -> Vec<u32> {
+        let all: Vec<(u32, u32)> = std::fs::read_dir("/proc")
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok())
+            .filter_map(|p| Some((p, parent_of(p)?)))
+            .collect();
+        let mut found = vec![pid];
+        let mut i = 0;
+        while i < found.len() {
+            let parent = found[i];
+            found.extend(all.iter().filter(|(_, pp)| *pp == parent).map(|(p, _)| *p));
+            i += 1;
+        }
+        found
+    }
+
+    /// Those of `pids` still alive once `within` has passed — returning early
+    /// when none are. rsync's other processes leave a moment after the one
+    /// that was signalled, so "gone" has to be allowed that moment.
+    pub fn survivors(pids: &[u32], within: Duration) -> Vec<u32> {
+        let deadline = Instant::now() + within;
+        loop {
+            let left: Vec<u32> = pids.iter().copied().filter(|p| alive(*p)).collect();
+            if left.is_empty() || Instant::now() >= deadline {
+                return left;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1257,7 +1551,8 @@ mod tests {
         let ctx = glib::MainContext::new();
         ctx.with_thread_default(|| {
             let main_loop = glib::MainLoop::new(Some(&ctx), false);
-            {
+            // Held until the loop is done: a dropped Runner stops its process.
+            let _runner = {
                 let changes = changes.clone();
                 let saw_progress = saw_progress.clone();
                 let completion = completion.clone();
@@ -1271,8 +1566,8 @@ mod tests {
                     *completion.borrow_mut() = Some(c);
                     ml.quit();
                 };
-                spawn_rsync(job.build_argv(Mode::Sync), on_event, on_done).expect("spawn rsync");
-            }
+                spawn_rsync(job.build_argv(Mode::Sync), on_event, on_done).expect("spawn rsync")
+            };
 
             // Safety valve so a hung child can't wedge the test suite.
             let ml_timeout = main_loop.clone();
@@ -1338,7 +1633,7 @@ mod tests {
             let main_loop = glib::MainLoop::new(Some(&ctx), false);
             let ml = main_loop.clone();
             let comp = completion.clone();
-            spawn_rsync(
+            let _runner = spawn_rsync(
                 job.build_argv(Mode::Sync),
                 |_ev| {},
                 move |c: Completion| {
@@ -1392,7 +1687,7 @@ mod tests {
             let main_loop = glib::MainLoop::new(Some(&ctx), false);
             let ml = main_loop.clone();
             let comp = completion.clone();
-            spawn_rsync(
+            let _runner = spawn_rsync(
                 job.build_argv(Mode::Sync),
                 |_ev| {},
                 move |c: Completion| {
@@ -1458,7 +1753,7 @@ mod tests {
             let main_loop = glib::MainLoop::new(Some(&ctx), false);
             let ml = main_loop.clone();
             let comp = completion.clone();
-            spawn_rsync(
+            let _runner = spawn_rsync(
                 job.build_argv(Mode::Sync),
                 |_ev| {},
                 move |c: Completion| {
@@ -1522,7 +1817,7 @@ mod tests {
                 let main_loop = glib::MainLoop::new(Some(&ctx), false);
                 let ml = main_loop.clone();
                 let comp = completion.clone();
-                spawn_rsync(
+                let _runner = spawn_rsync(
                     job.build_argv(Mode::Sync),
                     |_ev| {},
                     move |c: Completion| {
@@ -1651,6 +1946,505 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    // -- stopping: the process is gone, not merely told to go ----------------
+
+    /// A transfer throttled to 100 KB/s over a 4 MiB file: about forty seconds
+    /// if nothing stops it, so whatever these tests do, they do it to a
+    /// process that is in the middle of writing.
+    fn slow_transfer(tag: &str) -> (PathBuf, Vec<OsString>) {
+        let tmp = std::env::temp_dir().join(format!("foresight-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let src = tmp.join("src");
+        let dst = tmp.join("dst");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::create_dir_all(&dst).unwrap();
+        std::fs::write(src.join("big.bin"), vec![0u8; 4 * 1024 * 1024]).unwrap();
+        let argv = vec![
+            OsString::from("-a"),
+            OsString::from("--bwlimit=100"),
+            OsString::from("--info=progress2"),
+            with_trailing_slash(&src),
+            dst.into_os_string(),
+        ];
+        (tmp, argv)
+    }
+
+    /// Stands in for an rsync that will not take SIGTERM for an answer. `exec`
+    /// keeps it one process, and an ignored signal stays ignored across it.
+    /// Passed to `sh -c`, so there is no script file to write or leave behind.
+    const DEAF: &str = "trap '' TERM; echo ready; exec sleep 600";
+    /// The same, with a second process that inherits the output pipe and
+    /// survives the kill: the stream never ends, as with a helper that lingers.
+    const DEAF_WITH_STRAGGLER: &str = "trap '' TERM; sleep 600 & echo ready; exec sleep 600";
+
+    struct Stopped {
+        completion: Option<Completion>,
+        /// The process and its descendants, as they were just before the stop.
+        tree: Vec<u32>,
+        /// From the stop to `on_done`.
+        took: Duration,
+    }
+
+    /// Start `program`, wait for its first sign of life, apply `stop` to the
+    /// runner from inside the event handler — mid-run by construction, with no
+    /// timer deciding when — and run the loop until `on_done`.
+    fn stop_mid_run(
+        program: &str,
+        argv: Vec<OsString>,
+        stop: impl Fn(Runner) -> Option<Runner> + 'static,
+    ) -> Stopped {
+        let completion: Rc<RefCell<Option<Completion>>> = Rc::new(RefCell::new(None));
+        let tree: Rc<RefCell<Vec<u32>>> = Rc::new(RefCell::new(Vec::new()));
+        let times: Rc<Cell<Option<(Instant, Instant)>>> = Rc::new(Cell::new(None));
+        let stopped_at: Rc<Cell<Option<Instant>>> = Rc::new(Cell::new(None));
+        let slot: Rc<RefCell<Option<Runner>>> = Rc::new(RefCell::new(None));
+
+        let ctx = glib::MainContext::new();
+        ctx.with_thread_default(|| {
+            let main_loop = glib::MainLoop::new(Some(&ctx), false);
+
+            let on_event = glib::clone!(
+                #[strong]
+                slot,
+                #[strong]
+                tree,
+                #[strong]
+                stopped_at,
+                move |_ev: Event| {
+                    if stopped_at.get().is_some() {
+                        return;
+                    }
+                    let runner = slot.borrow_mut().take().expect("runner is in its slot");
+                    *tree.borrow_mut() = procs::tree(runner.pid().expect("a pid"));
+                    stopped_at.set(Some(Instant::now()));
+                    *slot.borrow_mut() = stop(runner);
+                }
+            );
+            let on_done = glib::clone!(
+                #[strong]
+                completion,
+                #[strong]
+                times,
+                #[strong]
+                stopped_at,
+                #[strong]
+                main_loop,
+                move |c: Completion| {
+                    *completion.borrow_mut() = Some(c);
+                    if let Some(at) = stopped_at.get() {
+                        times.set(Some((at, Instant::now())));
+                    }
+                    main_loop.quit();
+                }
+            );
+            let runner =
+                spawn_program(OsStr::new(program), argv, on_event, on_done).expect("spawn");
+            let pid = runner.pid();
+            *slot.borrow_mut() = Some(runner);
+
+            // Safety valve, on this context: nothing here may wedge the suite.
+            glib::spawn_future_local(glib::clone!(
+                #[strong]
+                main_loop,
+                async move {
+                    glib::timeout_future(Duration::from_secs(30)).await;
+                    main_loop.quit();
+                }
+            ));
+            main_loop.run();
+
+            // Whatever went wrong above, do not leave the process behind.
+            if tree.borrow().is_empty() {
+                tree.borrow_mut().extend(pid);
+            }
+        })
+        .expect("run with thread-default context");
+
+        let tree = tree.borrow().clone();
+        let result = Stopped {
+            completion: completion.borrow().clone(),
+            took: times.get().map(|(a, b)| b - a).unwrap_or(Duration::MAX),
+            tree,
+        };
+        drop(slot);
+        result
+    }
+
+    /// Kill by pid — what is left is left by a failing test, or on purpose.
+    fn kill(pids: &[u32]) {
+        for pid in pids.iter().filter(|p| procs::alive(**p)) {
+            let _ = std::process::Command::new("kill")
+                .arg("-KILL")
+                .arg(pid.to_string())
+                .status();
+        }
+    }
+
+    const A_MOMENT: Duration = Duration::from_secs(3);
+
+    /// The close path: after `stop`, rsync — all of it, not just the process
+    /// that was signalled — is gone, and it went by SIGTERM, long before the
+    /// kill would have been due.
+    #[test]
+    fn stop_leaves_no_rsync_process_behind() {
+        if !rsync_available() {
+            eprintln!("skipping: rsync not on PATH");
+            return;
+        }
+        let (tmp, argv) = slow_transfer("stop");
+        let run = stop_mid_run("rsync", argv, |runner| {
+            runner.stop();
+            Some(runner)
+        });
+        let left = procs::survivors(&run.tree, A_MOMENT);
+        kill(&left);
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        let completion = run.completion.expect("on_done fired");
+        assert_eq!(completion.severity, Severity::Cancelled, "{completion:?}");
+        assert!(
+            run.tree.len() > 1,
+            "a local transfer is several processes, found {:?}",
+            run.tree
+        );
+        assert!(left.is_empty(), "still running: {left:?}");
+        assert!(
+            run.took < STOP_GRACE,
+            "rsync should leave on SIGTERM, took {:?}",
+            run.took
+        );
+    }
+
+    /// The bounded wait: a process that ignores SIGTERM is killed once the
+    /// grace is up — not before, and not never.
+    #[test]
+    fn a_process_that_ignores_sigterm_is_killed_after_the_grace() {
+        let grace = Duration::from_millis(400);
+        let run = stop_mid_run("sh", vec!["-c".into(), DEAF.into()], move |runner| {
+            runner.stop_within(grace, Duration::from_secs(10));
+            Some(runner)
+        });
+        let left = procs::survivors(&run.tree, A_MOMENT);
+        kill(&left);
+
+        let completion = run.completion.expect("on_done fired");
+        assert_eq!(completion.severity, Severity::Cancelled, "{completion:?}");
+        assert!(left.is_empty(), "still running: {left:?}");
+        assert!(
+            run.took >= grace,
+            "killed after {:?}, before the grace was up — SIGTERM was not ignored?",
+            run.took
+        );
+        assert!(
+            run.took < Duration::from_secs(5),
+            "took {:?}: ended by something other than the kill",
+            run.took
+        );
+    }
+
+    /// Plain `cancel` — the Cancel button — is SIGTERM and nothing more, as it
+    /// always was. The stand-in ignores it and is still there well after the
+    /// (shortened) waits a `stop` would have applied.
+    #[test]
+    fn cancel_alone_does_not_escalate() {
+        let done = Rc::new(Cell::new(false));
+        let ready = Rc::new(Cell::new(false));
+        let ctx = glib::MainContext::new();
+        let (alive_after_cancel, tree) = ctx
+            .with_thread_default(|| {
+                let runner = spawn_program(
+                    OsStr::new("sh"),
+                    vec!["-c".into(), DEAF.into()],
+                    glib::clone!(
+                        #[strong]
+                        ready,
+                        move |_| ready.set(true)
+                    ),
+                    glib::clone!(
+                        #[strong]
+                        done,
+                        move |_| done.set(true)
+                    ),
+                )
+                .expect("spawn");
+                let pid = runner.pid().expect("a pid");
+                let turn_for = |d: Duration, until: &dyn Fn() -> bool| {
+                    let end = Instant::now() + d;
+                    while !until() && Instant::now() < end {
+                        if !ctx.iteration(false) {
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                    }
+                };
+                turn_for(Duration::from_secs(10), &|| ready.get());
+                let tree = procs::tree(pid);
+                runner.cancel();
+                turn_for(Duration::from_millis(600), &|| done.get());
+                let alive = procs::alive(pid) && !done.get();
+
+                // And now really stop it, which is also the cleanup.
+                runner.stop_and_wait_within(Duration::from_millis(100), Duration::from_secs(5));
+                (alive, tree)
+            })
+            .expect("run with thread-default context");
+        let left = procs::survivors(&tree, A_MOMENT);
+        kill(&left);
+
+        assert!(ready.get(), "the stand-in never started");
+        assert!(alive_after_cancel, "cancel did more than send SIGTERM");
+        assert!(done.get(), "stop_and_wait returned before on_done");
+        assert!(left.is_empty(), "still running: {left:?}");
+    }
+
+    /// The last bound: killed, but the output never ends because something
+    /// else holds it open. The run is reported over anyway, so a window
+    /// waiting on it to close is not left waiting for good.
+    #[test]
+    fn a_run_whose_output_never_ends_is_given_up_on() {
+        let run = stop_mid_run(
+            "sh",
+            vec!["-c".into(), DEAF_WITH_STRAGGLER.into()],
+            |runner| {
+                runner.stop_within(Duration::from_millis(200), Duration::from_millis(300));
+                Some(runner)
+            },
+        );
+        let main_pid = run.tree[0];
+        let main_left = procs::survivors(&[main_pid], A_MOMENT);
+        // The straggler is the point of the test, and is ours to clear away.
+        let stragglers: Vec<u32> = run
+            .tree
+            .iter()
+            .copied()
+            .filter(|p| *p != main_pid)
+            .collect();
+        let straggler_was_alive = stragglers.iter().any(|p| procs::alive(*p));
+        kill(&run.tree);
+        let left = procs::survivors(&run.tree, A_MOMENT);
+
+        let completion = run.completion.expect("on_done fired");
+        assert_eq!(completion.severity, Severity::Cancelled, "{completion:?}");
+        assert!(main_left.is_empty(), "the killed process is still running");
+        assert!(
+            straggler_was_alive,
+            "nothing was holding the output open, so this tested nothing: {:?}",
+            run.tree
+        );
+        assert!(
+            run.took >= Duration::from_millis(500) && run.took < Duration::from_secs(5),
+            "took {:?}",
+            run.took
+        );
+        assert!(left.is_empty(), "test cleanup left {left:?}");
+    }
+
+    /// Defence in depth: a `Runner` dropped while its process is live takes
+    /// the process with it, and the run still reports — as cancelled.
+    #[test]
+    fn dropping_a_live_runner_stops_its_process() {
+        if !rsync_available() {
+            eprintln!("skipping: rsync not on PATH");
+            return;
+        }
+        let (tmp, argv) = slow_transfer("drop");
+        let run = stop_mid_run("rsync", argv, |runner| {
+            drop(runner);
+            None
+        });
+        let left = procs::survivors(&run.tree, A_MOMENT);
+        kill(&left);
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        let completion = run.completion.expect("on_done fired");
+        assert_eq!(completion.severity, Severity::Cancelled, "{completion:?}");
+        assert!(left.is_empty(), "still running: {left:?}");
+        assert!(run.took < STOP_GRACE, "took {:?}", run.took);
+    }
+
+    /// …and a deaf process dropped the same way is killed by the watchdog,
+    /// which has to outlive the `Runner` that woke it.
+    #[test]
+    fn dropping_a_live_runner_still_escalates() {
+        let run = stop_mid_run("sh", vec!["-c".into(), DEAF.into()], |runner| {
+            // `Drop` applies the waits the runner holds; shortened here so
+            // the test does not take five seconds.
+            runner
+                .graces
+                .set((Duration::from_millis(300), Duration::from_secs(10)));
+            drop(runner);
+            None
+        });
+        let left = procs::survivors(&run.tree, A_MOMENT);
+        kill(&left);
+
+        let completion = run.completion.expect("on_done fired");
+        assert_eq!(completion.severity, Severity::Cancelled, "{completion:?}");
+        assert!(left.is_empty(), "still running: {left:?}");
+    }
+
+    /// The risk a killing `Drop` carries: a run that ended by itself must be
+    /// classified by its exit code, and dropping its `Runner` — in `on_done`,
+    /// as the window does, or later — must not turn it into a cancelled one or
+    /// signal anything.
+    #[test]
+    fn dropping_a_finished_runner_changes_nothing() {
+        if !rsync_available() {
+            eprintln!("skipping: rsync not on PATH");
+            return;
+        }
+        let tmp = std::env::temp_dir().join(format!("foresight-done-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("src")).unwrap();
+        std::fs::create_dir_all(tmp.join("dst")).unwrap();
+        std::fs::write(tmp.join("src/a.txt"), b"hello world").unwrap();
+        let job = Job {
+            sources: vec![dir_source(tmp.join("src").to_str().unwrap())],
+            dest: tmp.join("dst"),
+            ..Default::default()
+        };
+
+        let completion: Rc<RefCell<Option<Completion>>> = Rc::new(RefCell::new(None));
+        let slot: Rc<RefCell<Option<Runner>>> = Rc::new(RefCell::new(None));
+        let live_in_on_done = Rc::new(Cell::new(true));
+        let ctx = glib::MainContext::new();
+        ctx.with_thread_default(|| {
+            let main_loop = glib::MainLoop::new(Some(&ctx), false);
+            let on_done = glib::clone!(
+                #[strong]
+                completion,
+                #[strong]
+                slot,
+                #[strong]
+                live_in_on_done,
+                #[strong]
+                main_loop,
+                move |c: Completion| {
+                    // What the window's completion handler does.
+                    let runner = slot.borrow_mut().take().expect("runner is in its slot");
+                    live_in_on_done.set(runner.is_live());
+                    drop(runner);
+                    *completion.borrow_mut() = Some(c);
+                    main_loop.quit();
+                }
+            );
+            let runner =
+                spawn_rsync(job.build_argv(Mode::Sync), |_| {}, on_done).expect("spawn rsync");
+            *slot.borrow_mut() = Some(runner);
+            main_loop.run();
+        })
+        .expect("run with thread-default context");
+
+        let copied = std::fs::read(tmp.join("dst/src/a.txt"));
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        let completion = completion.borrow().clone().expect("on_done fired");
+        assert!(!live_in_on_done.get(), "still armed when on_done ran");
+        assert_eq!(completion.severity, Severity::Success, "{completion:?}");
+        assert_eq!(completion.code, Some(0));
+        assert_eq!(copied.unwrap(), b"hello world");
+    }
+
+    /// The shutdown path has no loop to come back to, so it must not return
+    /// until the process has gone.
+    #[test]
+    fn stop_and_wait_returns_only_once_the_process_is_gone() {
+        if !rsync_available() {
+            eprintln!("skipping: rsync not on PATH");
+            return;
+        }
+        let (tmp, argv) = slow_transfer("wait");
+        let started = Rc::new(Cell::new(false));
+        let done = Rc::new(Cell::new(false));
+        let ctx = glib::MainContext::new();
+        let (tree, done_on_return, alive_on_return) = ctx
+            .with_thread_default(|| {
+                let runner = spawn_rsync(
+                    argv,
+                    glib::clone!(
+                        #[strong]
+                        started,
+                        move |ev| {
+                            if let Event::Progress(_) = ev {
+                                started.set(true);
+                            }
+                        }
+                    ),
+                    glib::clone!(
+                        #[strong]
+                        done,
+                        move |_| done.set(true)
+                    ),
+                )
+                .expect("spawn rsync");
+                let pid = runner.pid().expect("a pid");
+                let end = Instant::now() + Duration::from_secs(20);
+                while !started.get() && Instant::now() < end {
+                    ctx.iteration(true);
+                }
+                let tree = procs::tree(pid);
+                runner.stop_and_wait();
+                (tree, done.get(), procs::alive(pid))
+            })
+            .expect("run with thread-default context");
+        let left = procs::survivors(&tree, A_MOMENT);
+        kill(&left);
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        assert!(started.get(), "the transfer never reported progress");
+        assert!(done_on_return, "returned before on_done");
+        assert!(!alive_on_return, "returned with the process running");
+        assert!(left.is_empty(), "still running: {left:?}");
+    }
+
+    #[test]
+    fn a_run_is_known_by_what_its_argv_does() {
+        let job = Job::new("/s", "/d");
+        assert_eq!(
+            RunKind::of(Mode::Preview, &job.build_argv(Mode::Preview)),
+            RunKind::DryRun
+        );
+        assert_eq!(
+            RunKind::of(Mode::Sync, &job.build_argv(Mode::Sync)),
+            RunKind::Transfer {
+                moves: false,
+                deletes: false
+            }
+        );
+        let job = Job {
+            remove_source_files: true,
+            delete: true,
+            ..Job::new("/s", "/d")
+        };
+        assert_eq!(
+            RunKind::of(Mode::Sync, &job.build_argv(Mode::Sync)),
+            RunKind::Transfer {
+                moves: true,
+                deletes: true
+            }
+        );
+        // Typed by hand into the extra arguments, it is no less a deletion.
+        let job = Job {
+            extra_args: vec!["--delete-after".into()],
+            ..Job::new("/s", "/d")
+        };
+        assert_eq!(
+            RunKind::of(Mode::Sync, &job.build_argv(Mode::Sync)),
+            RunKind::Transfer {
+                moves: false,
+                deletes: true
+            }
+        );
+        // A dry run of a move is still a dry run.
+        let job = Job {
+            remove_source_files: true,
+            ..Job::new("/s", "/d")
+        };
+        assert_eq!(
+            RunKind::of(Mode::Preview, &job.build_argv(Mode::Preview)),
+            RunKind::DryRun
+        );
+    }
+
     /// What rsync really does when a dry run cannot read part of the source,
     /// measured rather than assumed (3.5.0): exit 23, an `rsync:` line naming
     /// the directory, and — the part that matters to the confirmation built
@@ -1752,7 +2546,10 @@ mod tests {
                         ml.quit();
                     }
                 };
-                spawn_rsync(job.build_argv(Mode::Preview), on_event, on_done).expect("spawn rsync");
+                // Held to the end of the run: a `Runner` that is dropped while
+                // its process is live stops the process.
+                let _runner = spawn_rsync(job.build_argv(Mode::Preview), on_event, on_done)
+                    .expect("spawn rsync");
                 let ml_timeout = main_loop.clone();
                 glib::timeout_add_seconds_local_once(30, move || ml_timeout.quit());
                 main_loop.run();

@@ -116,15 +116,69 @@ fn read_legacy_exclude_rules(key_file: &KeyFile, group: &str) -> Vec<FilterRule>
     rules
 }
 
-/// Load every saved preset (empty list if the file is missing or unreadable).
-pub fn load() -> Vec<Profile> {
+/// Why a presets file that is there did not load. Carries the path for the
+/// same reason [`SaveError`] does, and because the first thing anyone will want
+/// to do with a file that cannot be read is go and look at it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoadError {
+    /// The file could not be opened or read: permissions, an I/O error.
+    Read { path: PathBuf, reason: String },
+    /// The file was read, and is not a key file: corrupt, or cut short.
+    Parse { path: PathBuf, reason: String },
+}
+
+impl LoadError {
+    /// The file that did not load.
+    pub fn path(&self) -> &Path {
+        match self {
+            Self::Read { path, .. } | Self::Parse { path, .. } => path,
+        }
+    }
+}
+
+impl std::fmt::Display for LoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Read { path, reason } => {
+                write!(f, "could not read “{}”: {reason}", path.display())
+            }
+            Self::Parse { path, reason } => {
+                write!(
+                    f,
+                    "“{}” is not a valid presets file: {reason}",
+                    path.display()
+                )
+            }
+        }
+    }
+}
+
+/// Load every saved preset.
+///
+/// No file at all is the first-run state and loads as an empty list. A file
+/// that is there and does not load is an `Err`, never an empty list: the two
+/// used to be indistinguishable, and the next save — which replaces the whole
+/// file with the list in memory — then wrote an almost empty list over every
+/// preset the file held.
+pub fn load() -> Result<Vec<Profile>, LoadError> {
     load_from(&profiles_path())
 }
 
-fn load_from(path: &Path) -> Vec<Profile> {
+fn load_from(path: &Path) -> Result<Vec<Profile>, LoadError> {
     let key_file = KeyFile::new();
-    if key_file.load_from_file(path, KeyFileFlags::NONE).is_err() {
-        return Vec::new();
+    if let Err(e) = key_file.load_from_file(path, KeyFileFlags::NONE) {
+        // Only "there is no such file" means there are no presets. A GKeyFile
+        // parse error rejects the file as a whole, so there is no usable part
+        // of it to return alongside the error.
+        if e.matches(glib::FileError::Noent) {
+            return Ok(Vec::new());
+        }
+        let (path, reason) = (path.to_path_buf(), e.message().to_string());
+        return Err(if e.is::<glib::KeyFileError>() {
+            LoadError::Parse { path, reason }
+        } else {
+            LoadError::Read { path, reason }
+        });
     }
 
     let mut out = Vec::new();
@@ -172,7 +226,7 @@ fn load_from(path: &Path) -> Vec<Profile> {
             name,
         });
     }
-    out
+    Ok(out)
 }
 
 /// Why the presets did not reach disk. Carries the path because inside the
@@ -184,6 +238,21 @@ pub enum SaveError {
     CreateDir { dir: PathBuf, reason: String },
     /// The directory is there; writing the file into it failed.
     Write { path: PathBuf, reason: String },
+    /// The file on disk cannot be read, and could not be moved out of the way
+    /// either. Nothing was written: the save stops here rather than replace it.
+    MoveAside {
+        path: PathBuf,
+        to: PathBuf,
+        reason: String,
+    },
+    /// The unreadable file was moved aside, the write then failed, and the
+    /// file could not be put back. The one error after which the file is not
+    /// where it was, so it says where it is.
+    WriteAfterMove {
+        path: PathBuf,
+        moved_to: PathBuf,
+        reason: String,
+    },
 }
 
 impl std::fmt::Display for SaveError {
@@ -195,20 +264,159 @@ impl std::fmt::Display for SaveError {
             Self::Write { path, reason } => {
                 write!(f, "could not write “{}”: {reason}", path.display())
             }
+            Self::MoveAside { path, to, reason } => write!(
+                f,
+                "“{}” cannot be read, and could not be moved aside to “{}” \
+                 before replacing it: {reason}",
+                path.display(),
+                to.display()
+            ),
+            Self::WriteAfterMove {
+                path,
+                moved_to,
+                reason,
+            } => write!(
+                f,
+                "could not write “{}”: {reason}. The unreadable file that was \
+                 there is now at “{}”",
+                path.display(),
+                moved_to.display()
+            ),
         }
     }
 }
 
-/// Persist the full set of presets, replacing whatever was on disk.
+/// What a save did besides writing the presets.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Saved {
+    /// Where the file that was on disk went, if it could not be read and was
+    /// moved out of the way instead of being replaced.
+    pub moved_aside: Option<PathBuf>,
+}
+
+/// Marks a presets file that was moved aside unread; a timestamp follows it.
+const UNREADABLE_SUFFIX: &str = ".unreadable-";
+
+/// How many names to try for the moved file before giving up. Only a second
+/// unreadable file within the same second needs more than one.
+const ASIDE_ATTEMPTS: u32 = 100;
+
+/// `profiles.ini.unreadable-<stamp>` beside `path`, or the first of
+/// `…-<stamp>-2`, `-3`, … that is free. A rename replaces its target without
+/// asking, and the target here would be an earlier file put aside for keeping.
+fn aside_path(path: &Path, stamp: &str) -> Option<PathBuf> {
+    let mut base = path.as_os_str().to_os_string();
+    base.push(UNREADABLE_SUFFIX);
+    base.push(stamp);
+    (1..=ASIDE_ATTEMPTS)
+        .map(|n| {
+            let mut name = base.clone();
+            if n > 1 {
+                name.push(format!("-{n}"));
+            }
+            PathBuf::from(name)
+        })
+        // symlink_metadata, not exists(): a dangling link is still a name in use.
+        .find(|candidate| candidate.symlink_metadata().is_err())
+}
+
+/// If the file at `path` is there but does not load, move it to a sibling
+/// name and say which. `Ok(None)` when there was nothing to protect.
+///
+/// The choice was between this and refusing to save until the file is fixed.
+/// Refusing is simpler, but it leaves presets unusable until the user repairs
+/// a file by hand, in a directory they have likely never seen, for a reason
+/// that may be one bad byte. Moving it aside keeps every byte of it — a rename
+/// does not read or rewrite the file, so it works on one that cannot even be
+/// opened — and lets the save go ahead.
+///
+/// The test is made against the disk at the moment of the save, not
+/// remembered from startup, so a create, an update and a delete are all
+/// covered by being saves, and so is a file that went bad while the app was
+/// running.
+///
+/// Only a regular file is moved. Anything else on the name (a directory, say)
+/// holds no presets to lose, and is left for the write to fail on as before.
+fn move_unreadable_aside(path: &Path) -> Result<Option<PathBuf>, SaveError> {
+    if load_from(path).is_ok() || !path.metadata().is_ok_and(|m| m.is_file()) {
+        return Ok(None);
+    }
+    let stamp = glib::DateTime::now_local()
+        .and_then(|now| now.format("%Y%m%d-%H%M%S"))
+        .map(|s| s.to_string())
+        .unwrap_or_else(|_| "undated".to_string());
+    let failed = |to: PathBuf, reason: String| SaveError::MoveAside {
+        path: path.to_path_buf(),
+        to,
+        reason,
+    };
+    let Some(to) = aside_path(path, &stamp) else {
+        let mut taken = path.as_os_str().to_os_string();
+        taken.push(UNREADABLE_SUFFIX);
+        taken.push(&stamp);
+        return Err(failed(
+            PathBuf::from(taken),
+            "that name and every numbered variant of it is taken".to_string(),
+        ));
+    };
+    match std::fs::rename(path, &to) {
+        Ok(()) => Ok(Some(to)),
+        Err(e) => Err(failed(to, e.to_string())),
+    }
+}
+
+/// Persist the full set of presets, replacing whatever was on disk — unless
+/// what was on disk could not be read, in which case it is moved aside first
+/// (see [`move_unreadable_aside`]) and [`Saved`] says where to.
 ///
 /// An `Err` means the file is as it was before the call: `save_to_file` writes
 /// a temporary beside the target and renames it over, so a failed save never
-/// leaves half a file. Callers rely on that to keep their own list honest.
-pub fn save_all(profiles: &[Profile]) -> Result<(), SaveError> {
+/// leaves half a file, and a file moved aside for a save that then fails is
+/// moved back. Callers rely on that to keep their own list honest. The one
+/// exception names itself: [`SaveError::WriteAfterMove`].
+pub fn save_all(profiles: &[Profile]) -> Result<Saved, SaveError> {
     save_all_to(profiles, &profiles_path())
 }
 
-fn save_all_to(profiles: &[Profile], path: &Path) -> Result<(), SaveError> {
+fn save_all_to(profiles: &[Profile], path: &Path) -> Result<Saved, SaveError> {
+    protecting(path, || write_all_to(profiles, path))
+}
+
+/// Run `write` with the file at `path` protected: moved aside first if it
+/// cannot be read, and moved back if `write` then fails. Apart from
+/// [`save_all_to`] so the second half can be tested with a write that fails
+/// on demand.
+fn protecting(
+    path: &Path,
+    write: impl FnOnce() -> Result<(), SaveError>,
+) -> Result<Saved, SaveError> {
+    // Before anything else: if this fails, nothing may be written.
+    let moved_aside = move_unreadable_aside(path)?;
+    match write() {
+        Ok(()) => Ok(Saved { moved_aside }),
+        Err(e) => Err(match moved_aside {
+            None => e,
+            // Put it back, so that a failed save changes nothing at all. The
+            // name is free: the write that would have taken it just failed.
+            Some(moved_to) => match std::fs::rename(&moved_to, path) {
+                Ok(()) => e,
+                Err(_) => SaveError::WriteAfterMove {
+                    path: path.to_path_buf(),
+                    moved_to,
+                    reason: match e {
+                        SaveError::CreateDir { reason, .. } | SaveError::Write { reason, .. } => {
+                            reason
+                        }
+                        other => other.to_string(),
+                    },
+                },
+            },
+        }),
+    }
+}
+
+/// The write itself. What it puts on disk is the frozen 1.0 format.
+fn write_all_to(profiles: &[Profile], path: &Path) -> Result<(), SaveError> {
     let key_file = KeyFile::new();
     for (n, p) in profiles.iter().enumerate() {
         // Index, not name: see GROUP_PREFIX. Writing profiles in order also
@@ -279,7 +487,7 @@ mod tests {
         ];
 
         save_all_to(&originals, &path).unwrap();
-        let mut loaded = load_from(&path);
+        let mut loaded = load_from(&path).unwrap();
         // group order from a KeyFile is not guaranteed; compare as sets by name.
         loaded.sort_by(|a, b| a.name.cmp(&b.name));
         let mut expected = originals.clone();
@@ -303,7 +511,7 @@ mod tests {
 
         save_all_to(&originals, &path).unwrap();
         assert_eq!(
-            load_from(&path)[0].filters,
+            load_from(&path).unwrap()[0].filters,
             vec![FilterRule::exclude("weird;name"), FilterRule::include("b")]
         );
 
@@ -329,7 +537,7 @@ mod tests {
         };
 
         save_all_to(std::slice::from_ref(&p), &path).unwrap();
-        assert_eq!(load_from(&path)[0].filters, rules);
+        assert_eq!(load_from(&path).unwrap()[0].filters, rules);
 
         let _ = std::fs::remove_file(&path);
     }
@@ -348,7 +556,7 @@ mod tests {
         )
         .unwrap();
 
-        let loaded = load_from(&path);
+        let loaded = load_from(&path).unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].name, "HDD move");
         assert_eq!(
@@ -363,7 +571,7 @@ mod tests {
 
         // Re-saving migrates it to the kinded encoding without changing meaning.
         save_all_to(&loaded, &path).unwrap();
-        assert_eq!(load_from(&path)[0].filters, loaded[0].filters);
+        assert_eq!(load_from(&path).unwrap()[0].filters, loaded[0].filters);
 
         let _ = std::fs::remove_file(&path);
     }
@@ -382,7 +590,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            load_from(&path)[0].filters,
+            load_from(&path).unwrap()[0].filters,
             vec![FilterRule::exclude("*.tmp"), FilterRule::include("*.jpg")]
         );
 
@@ -402,7 +610,7 @@ mod tests {
         )
         .unwrap();
 
-        let loaded = load_from(&path);
+        let loaded = load_from(&path).unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(
             loaded[0].filters,
@@ -414,7 +622,7 @@ mod tests {
         // Re-saving migrates it to the list encoding, and it still round-trips.
         save_all_to(&loaded, &path).unwrap();
         assert_eq!(
-            load_from(&path)[0].filters,
+            load_from(&path).unwrap()[0].filters,
             vec![FilterRule::exclude("*.tmp"), FilterRule::exclude(".git")]
         );
 
@@ -456,7 +664,7 @@ mod tests {
         };
 
         save_all_to(std::slice::from_ref(&p), &path).unwrap();
-        assert_eq!(load_from(&path)[0].filters, rules);
+        assert_eq!(load_from(&path).unwrap()[0].filters, rules);
 
         let _ = std::fs::remove_file(&path);
     }
@@ -477,7 +685,7 @@ mod tests {
         };
 
         save_all_to(std::slice::from_ref(&p), &path).unwrap();
-        assert_eq!(load_from(&path)[0].filters, rules);
+        assert_eq!(load_from(&path).unwrap()[0].filters, rules);
 
         let _ = std::fs::remove_file(&path);
     }
@@ -512,7 +720,7 @@ mod tests {
             .collect();
 
         save_all_to(&originals, &path).unwrap();
-        let loaded = load_from(&path);
+        let loaded = load_from(&path).unwrap();
         assert_eq!(loaded.len(), names.len(), "every preset must survive");
         for (want, got) in originals.iter().zip(loaded.iter()) {
             assert_eq!(got.name, want.name);
@@ -534,7 +742,11 @@ mod tests {
         let originals = vec![mk("Good one"), mk("Photos [raw]"), mk("Good two")];
 
         save_all_to(&originals, &path).unwrap();
-        let got: Vec<String> = load_from(&path).iter().map(|p| p.name.clone()).collect();
+        let got: Vec<String> = load_from(&path)
+            .unwrap()
+            .iter()
+            .map(|p| p.name.clone())
+            .collect();
         assert_eq!(got, vec!["Good one", "Photos [raw]", "Good two"]);
 
         let _ = std::fs::remove_file(&path);
@@ -552,7 +764,7 @@ mod tests {
         )
         .unwrap();
 
-        let loaded = load_from(&path);
+        let loaded = load_from(&path).unwrap();
         assert_eq!(loaded.len(), 1);
         assert_eq!(
             loaded[0].name, "HDD move",
@@ -566,7 +778,7 @@ mod tests {
 
         // Re-saving migrates it; the name survives the move into a value.
         save_all_to(&loaded, &path).unwrap();
-        let again = load_from(&path);
+        let again = load_from(&path).unwrap();
         assert_eq!(again[0].name, "HDD move");
         assert_eq!(
             again[0].filters,
@@ -644,7 +856,7 @@ mod tests {
         // observe; say so rather than fail on a machine that is not broken.
         let enforced = std::fs::write(dir.join("probe"), "").is_err();
         let result = save_all_to(&[], &path);
-        let after = load_from(&path);
+        let after = load_from(&path).unwrap();
         std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
 
@@ -654,5 +866,333 @@ mod tests {
         }
         assert!(matches!(result, Err(SaveError::Write { .. })), "{result:?}");
         assert_eq!(after, before);
+    }
+
+    /// A directory of its own per test, so a test can assert on everything
+    /// that is in it — which is how a stray file would be noticed.
+    fn scratch_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("foresight-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn names_in(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// A preset a key file could hold, then a line it cannot. Not UTF-8
+    /// either, so the tests that compare it do so as bytes.
+    const GARBAGE: &[u8] = b"[preset_0]\nname=Years of work\ndelete=true\nnot a key file \xff\n";
+
+    /// First run: nothing to read is not something to report.
+    #[test]
+    fn a_missing_file_is_an_empty_list_and_not_an_error() {
+        let dir = scratch_dir("missing");
+        assert_eq!(load_from(&dir.join("profiles.ini")), Ok(Vec::new()));
+        // Nor is a missing directory, which is what a first run really has.
+        assert_eq!(
+            load_from(&dir.join("foresight").join("profiles.ini")),
+            Ok(Vec::new())
+        );
+        // A save onto nothing has nothing to move aside.
+        let saved = save_all_to(&[Profile::default()], &dir.join("profiles.ini")).unwrap();
+        assert_eq!(saved, Saved { moved_aside: None });
+        assert_eq!(names_in(&dir), ["profiles.ini"]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file with nothing in it parses, and holds no presets: there is
+    /// nothing in it to protect, so it is not an error and is not moved.
+    #[test]
+    fn an_empty_file_is_an_empty_list() {
+        let dir = scratch_dir("empty");
+        let path = dir.join("profiles.ini");
+        std::fs::write(&path, "").unwrap();
+
+        assert_eq!(load_from(&path), Ok(Vec::new()));
+        let saved = save_all_to(&[Profile::default()], &path).unwrap();
+        assert_eq!(saved.moved_aside, None);
+        assert_eq!(names_in(&dir), ["profiles.ini"]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The bug this guards: a file that did not parse loaded as "no presets",
+    /// and the next save replaced it. One bad line fails the whole file — the
+    /// preset above it is not returned — so the whole file is what is at stake.
+    #[test]
+    fn a_file_that_does_not_parse_is_an_error_and_is_not_touched() {
+        let dir = scratch_dir("garbage");
+        let path = dir.join("profiles.ini");
+        std::fs::write(&path, GARBAGE).unwrap();
+
+        let result = load_from(&path);
+        assert!(
+            matches!(&result, Err(LoadError::Parse { path: p, .. }) if *p == path),
+            "{result:?}"
+        );
+        let error = result.unwrap_err();
+        assert_eq!(error.path(), path);
+        assert!(error.to_string().contains(&path.display().to_string()));
+        assert_eq!(std::fs::read(&path).unwrap(), GARBAGE);
+        assert_eq!(names_in(&dir), ["profiles.ini"]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A file cut short in the middle of a line, as an interrupted copy or a
+    /// full disk leaves it.
+    #[test]
+    fn a_truncated_file_is_an_error() {
+        let dir = scratch_dir("truncated");
+        let path = dir.join("profiles.ini");
+        let cut = b"[preset_0]\nname=A\nfilter_0=*.tmp\nfilter_0_ki";
+        std::fs::write(&path, cut).unwrap();
+
+        let result = load_from(&path);
+        assert!(matches!(result, Err(LoadError::Parse { .. })), "{result:?}");
+        assert_eq!(std::fs::read(&path).unwrap(), cut);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_opened_is_an_error() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = scratch_dir("noread");
+        let path = dir.join("profiles.ini");
+        save_all_to(
+            &[Profile {
+                name: "Locked away".into(),
+                ..Profile::default()
+            }],
+            &path,
+        )
+        .unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // Root reads through the mode bits, so there is nothing to observe.
+        let enforced = std::fs::read(&path).is_err();
+        let loaded = load_from(&path);
+        // The protection does not need to read the file it protects.
+        let saved = save_all_to(&[Profile::default()], &path);
+        let moved = saved.as_ref().ok().and_then(|s| s.moved_aside.clone());
+        if let Some(moved) = &moved {
+            std::fs::set_permissions(moved, std::fs::Permissions::from_mode(0o644)).unwrap();
+        } else {
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+        let kept = moved.as_ref().map(|m| std::fs::read(m).unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
+
+        if !enforced {
+            eprintln!("skipped: file permissions are not enforced for this user");
+            return;
+        }
+        assert!(
+            matches!(&loaded, Err(LoadError::Read { path: p, .. }) if *p == path),
+            "{loaded:?}"
+        );
+        assert!(saved.is_ok(), "{saved:?}");
+        assert_eq!(kept, Some(bytes));
+    }
+
+    /// The protection itself: the save goes through, and every byte of the
+    /// file it would have destroyed is still on disk, under a name that says
+    /// what it is.
+    #[test]
+    fn an_unreadable_file_is_moved_aside_before_a_save_replaces_it() {
+        let dir = scratch_dir("aside");
+        let path = dir.join("profiles.ini");
+        std::fs::write(&path, GARBAGE).unwrap();
+        let fresh = vec![Profile {
+            name: "New".into(),
+            ..Profile::default()
+        }];
+
+        let saved = save_all_to(&fresh, &path).unwrap();
+        let moved = saved.moved_aside.expect("the file was not moved aside");
+        assert_eq!(moved.parent(), path.parent());
+        let name = moved.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.starts_with("profiles.ini.unreadable-"), "{name}");
+        assert_eq!(std::fs::read(&moved).unwrap(), GARBAGE);
+        assert_eq!(load_from(&path), Ok(fresh.clone()));
+        assert_eq!(names_in(&dir), [String::from("profiles.ini"), name]);
+
+        // What is there now is ours, so the next save moves nothing.
+        assert_eq!(save_all_to(&[], &path).unwrap().moved_aside, None);
+        assert_eq!(names_in(&dir).len(), 2);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A save that empties the list — deleting the only preset — is still a
+    /// save, and gets the same protection as one that adds.
+    #[test]
+    fn saving_an_empty_list_protects_the_file_too() {
+        let dir = scratch_dir("aside-empty");
+        let path = dir.join("profiles.ini");
+        std::fs::write(&path, GARBAGE).unwrap();
+
+        let moved = save_all_to(&[], &path).unwrap().moved_aside.unwrap();
+        assert_eq!(std::fs::read(&moved).unwrap(), GARBAGE);
+        assert_eq!(load_from(&path), Ok(Vec::new()));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Two files put aside within the same second must both survive: a rename
+    /// onto a name in use would replace the first with the second.
+    #[test]
+    fn a_file_moved_aside_never_replaces_an_earlier_one() {
+        let dir = scratch_dir("aside-twice");
+        let path = dir.join("profiles.ini");
+
+        let mut kept = Vec::new();
+        for contents in ["first ruin\n", "second ruin\n", "third ruin\n"] {
+            std::fs::write(&path, contents).unwrap();
+            let moved = save_all_to(&[], &path).unwrap().moved_aside.unwrap();
+            kept.push((moved, contents));
+        }
+        for (moved, contents) in &kept {
+            assert_eq!(std::fs::read_to_string(moved).unwrap(), *contents);
+        }
+        assert_eq!(names_in(&dir).len(), 4, "{:?}", names_in(&dir));
+
+        // The naming on its own, where the clock cannot blur it.
+        std::fs::write(dir.join("p.unreadable-S"), "").unwrap();
+        std::os::unix::fs::symlink("nowhere", dir.join("p.unreadable-S-2")).unwrap();
+        assert_eq!(
+            aside_path(&dir.join("p"), "S"),
+            Some(dir.join("p.unreadable-S-3"))
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// If the file cannot be moved out of the way, the save does not happen.
+    #[test]
+    fn a_file_that_cannot_be_moved_aside_stops_the_save() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = scratch_dir("aside-blocked");
+        let path = dir.join("profiles.ini");
+        std::fs::write(&path, GARBAGE).unwrap();
+
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let enforced = std::fs::write(dir.join("probe"), "").is_err();
+        let result = save_all_to(&[Profile::default()], &path);
+        let (bytes, names) = (std::fs::read(&path), names_in(&dir));
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        if !enforced {
+            eprintln!("skipped: directory permissions are not enforced for this user");
+            return;
+        }
+        assert!(
+            matches!(&result, Err(SaveError::MoveAside { path: p, to, .. })
+                if *p == path && to.parent() == path.parent()),
+            "{result:?}"
+        );
+        let shown = result.unwrap_err().to_string();
+        assert!(shown.contains(&path.display().to_string()), "{shown}");
+        assert_eq!(bytes.unwrap(), GARBAGE);
+        assert_eq!(names, ["profiles.ini"]);
+    }
+
+    /// Moved aside, and then the write fails: the file goes back where it
+    /// was, so a failed save has still changed nothing.
+    #[test]
+    fn a_failed_write_puts_the_file_back() {
+        let dir = scratch_dir("aside-back");
+        let path = dir.join("profiles.ini");
+        std::fs::write(&path, GARBAGE).unwrap();
+
+        let failure = SaveError::Write {
+            path: path.clone(),
+            reason: "staged".into(),
+        };
+        let mut seen_during_write = Vec::new();
+        let result = protecting(&path, || {
+            seen_during_write = names_in(&dir);
+            Err(failure.clone())
+        });
+
+        // It really had been moved when the write was attempted…
+        assert_eq!(seen_during_write.len(), 1, "{seen_during_write:?}");
+        assert!(seen_during_write[0].starts_with("profiles.ini.unreadable-"));
+        // …and is back, whole, with the write's own error reported.
+        assert_eq!(result, Err(failure));
+        assert_eq!(std::fs::read(&path).unwrap(), GARBAGE);
+        assert_eq!(names_in(&dir), ["profiles.ini"]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Something on the file's name that is not a file holds no presets. It is
+    /// reported when loading and left alone when saving, where the write fails
+    /// on it as it always did.
+    #[test]
+    fn a_directory_on_the_files_name_is_not_moved_aside() {
+        let dir = scratch_dir("aside-dir");
+        let path = dir.join("profiles.ini");
+        std::fs::create_dir(&path).unwrap();
+
+        assert!(load_from(&path).is_err());
+        assert_eq!(move_unreadable_aside(&path), Ok(None));
+        assert!(path.is_dir());
+        assert_eq!(names_in(&dir), ["profiles.ini"]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// What loading tolerates today, pinned so that reporting errors did not
+    /// quietly make it stricter: groups and keys no reader knows, comments,
+    /// and values that are not what their key expects all still load.
+    #[test]
+    fn a_file_that_parses_loads_as_leniently_as_it_always_did() {
+        let dir = scratch_dir("lenient");
+        let path = dir.join("profiles.ini");
+        std::fs::write(
+            &path,
+            "# written by hand\n\
+             [preset_0]\nname=A\ndelete=yes\nverbose=true\nfuture_key=42\n\
+             filter_0=a\nfilter_0_kind=protect\nfilter_2=unreached\n\n\
+             [settings]\ntheme=dark\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            load_from(&path),
+            Ok(vec![
+                Profile {
+                    name: "A".into(),
+                    verbose: true,
+                    filters: vec![FilterRule::exclude("a")],
+                    ..Profile::default()
+                },
+                Profile {
+                    name: "settings".into(),
+                    ..Profile::default()
+                },
+            ])
+        );
+        // It loaded, so a save replaces it in place.
+        let saved = save_all_to(&load_from(&path).unwrap(), &path).unwrap();
+        assert_eq!(saved.moved_aside, None);
+        assert_eq!(names_in(&dir), ["profiles.ini"]);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

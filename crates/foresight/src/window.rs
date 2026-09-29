@@ -172,6 +172,9 @@ mod imp {
 
         /// Saved Advanced-option presets, in combo order.
         pub profiles: RefCell<Vec<Profile>>,
+        /// Set while `profiles` is *not* what is on disk, because what is on
+        /// disk could not be read. Cleared by the first save that goes through.
+        pub presets_unread: RefCell<Option<profiles::LoadError>>,
         /// Guards the preset combo's notify handler during programmatic rebuilds.
         pub suppress_combo: Cell<bool>,
     }
@@ -1329,8 +1332,9 @@ impl ForesightWindow {
 
     fn setup_presets(&self) {
         let imp = self.imp();
-        *imp.profiles.borrow_mut() = profiles::load();
-        self.rebuild_preset_combo(0);
+        if let Some(error) = self.load_presets() {
+            self.announce_unreadable_presets(&error);
+        }
 
         imp.preset_combo.connect_selected_notify(glib::clone!(
             #[weak(rename_to = win)]
@@ -1349,10 +1353,67 @@ impl ForesightWindow {
         ));
     }
 
+    /// Read the presets file into the list and the combo. Returns the error if
+    /// the file is there and did not load — apart from how that is announced,
+    /// so the headless checks can stage one without a toast to account for.
+    ///
+    /// On an error the list is empty because there is nothing to put in it,
+    /// not because the user has no presets; `presets_unread` is what records
+    /// the difference, and the row says so for as long as it holds.
+    fn load_presets(&self) -> Option<profiles::LoadError> {
+        let imp = self.imp();
+        let (list, error) = match profiles::load() {
+            Ok(list) => (list, None),
+            Err(e) => (Vec::new(), Some(e)),
+        };
+        *imp.profiles.borrow_mut() = list;
+        *imp.presets_unread.borrow_mut() = error.clone();
+        self.rebuild_preset_combo(0);
+        error
+    }
+
+    /// Say at startup that the presets are missing because they could not be
+    /// read, not because there are none. This runs while the window is being
+    /// built, so it cannot be a dialog; a toast cannot hold a path legibly and
+    /// is normally gone in seconds. So: a toast that stays until dismissed,
+    /// whose button opens the dialog with the path and the reason in it.
+    fn announce_unreadable_presets(&self, error: &profiles::LoadError) {
+        let toast = adw::Toast::builder()
+            .title("Saved presets could not be read")
+            .button_label("Details")
+            .priority(adw::ToastPriority::High)
+            .timeout(0)
+            .build();
+        let body = unreadable_presets_notice(error);
+        toast.connect_button_clicked(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_| win.show_preset_error("Presets could not be read", &body)
+        ));
+        self.imp().toast_overlay.add_toast(toast);
+    }
+
+    /// A save is about to replace the presets file with the list in memory.
+    /// If that list is empty only because the file could not be read, look
+    /// again first: someone who was told at startup that the file is broken
+    /// may well have repaired it since, and the repaired presets must be what
+    /// this save builds on rather than what it writes over. If the file still
+    /// does not load, `save_all` moves it aside.
+    fn recheck_unread_presets(&self) {
+        if self.imp().presets_unread.borrow().is_some() {
+            self.load_presets();
+        }
+    }
+
     /// Rebuild the combo model as `["Choose a preset…", <names…>]` and select
     /// `select` (0 = the placeholder), without firing the apply handler.
     fn rebuild_preset_combo(&self, select: u32) {
         let imp = self.imp();
+        imp.preset_combo
+            .set_subtitle(match *imp.presets_unread.borrow() {
+                Some(_) => "The presets file could not be read",
+                None => "",
+            });
         imp.suppress_combo.set(true);
         let list = gtk::StringList::new(&["Choose a preset…"]);
         for p in imp.profiles.borrow().iter() {
@@ -1418,7 +1479,9 @@ impl ForesightWindow {
 
     fn upsert_preset(&self, name: String) {
         match self.try_upsert_preset(&name) {
-            Ok(()) => self.toast(&format!("Saved preset “{name}”")),
+            Ok(saved) => {
+                self.announce_saved("Preset saved", &format!("Saved preset “{name}”"), &saved)
+            }
             Err(e) => self.show_preset_error(
                 "Preset not saved",
                 &format!("“{name}” was not saved: {e}.\n\nYour presets are as they were."),
@@ -1428,10 +1491,11 @@ impl ForesightWindow {
 
     /// The save itself, apart from how its outcome is announced, so the
     /// headless checks can drive a failure without a dialog to dismiss.
-    fn try_upsert_preset(&self, name: &str) -> Result<(), profiles::SaveError> {
+    fn try_upsert_preset(&self, name: &str) -> Result<profiles::Saved, profiles::SaveError> {
         let imp = self.imp();
         let mut profile = self.read_advanced();
         profile.name = name.to_string();
+        self.recheck_unread_presets();
 
         // Disk first, memory second. The change is made to a copy, and the
         // copy becomes the list only once it has been written — so on a failed
@@ -1443,17 +1507,35 @@ impl ForesightWindow {
             Some(existing) => *existing = profile,
             None => candidate.push(profile),
         }
-        profiles::save_all(&candidate)?;
+        let saved = profiles::save_all(&candidate)?;
 
         let idx = candidate.iter().position(|p| p.name == name).unwrap() as u32 + 1;
         *imp.profiles.borrow_mut() = candidate;
+        // Whatever was there before, the file is now the list.
+        imp.presets_unread.replace(None);
         self.rebuild_preset_combo(idx);
-        Ok(())
+        Ok(saved)
+    }
+
+    /// Announce a save or a delete that went through. Normally a toast; when
+    /// the file it replaced had to be moved aside, a dialog, because where the
+    /// file went is a path the user needs time to read.
+    fn announce_saved(&self, heading: &str, done: &str, saved: &profiles::Saved) {
+        match &saved.moved_aside {
+            None => self.toast(done),
+            Some(to) => {
+                self.show_preset_error(heading, &format!("{done}.\n\n{}", moved_aside_notice(to)))
+            }
+        }
     }
 
     fn delete_selected_preset(&self) {
         match self.try_delete_selected_preset() {
-            Ok(Some(name)) => self.toast(&format!("Deleted preset “{name}”")),
+            Ok(Some((name, saved))) => self.announce_saved(
+                "Preset deleted",
+                &format!("Deleted preset “{name}”"),
+                &saved,
+            ),
             Ok(None) => {}
             Err((name, e)) => self.show_preset_error(
                 "Preset not deleted",
@@ -1464,7 +1546,9 @@ impl ForesightWindow {
 
     /// `Ok(None)` when there was nothing selected to delete. An error names
     /// the preset that is still there.
-    fn try_delete_selected_preset(&self) -> Result<Option<String>, (String, profiles::SaveError)> {
+    fn try_delete_selected_preset(
+        &self,
+    ) -> Result<Option<(String, profiles::Saved)>, (String, profiles::SaveError)> {
         let imp = self.imp();
         let idx = imp.preset_combo.selected();
         if idx == 0 {
@@ -1479,12 +1563,17 @@ impl ForesightWindow {
             return Ok(None);
         }
         let removed = candidate.remove(i).name;
-        if let Err(e) = profiles::save_all(&candidate) {
-            return Err((removed, e));
-        }
+        // No recheck here as there is before a save: while the file is unread
+        // the list is empty, so there is nothing selected to delete. The file
+        // can still have gone bad since it was loaded, and `save_all` looks.
+        let saved = match profiles::save_all(&candidate) {
+            Ok(saved) => saved,
+            Err(e) => return Err((removed, e)),
+        };
         *imp.profiles.borrow_mut() = candidate;
+        imp.presets_unread.replace(None);
         self.rebuild_preset_combo(0);
-        Ok(Some(removed))
+        Ok(Some((removed, saved)))
     }
 
     // -- run lifecycle (M3) -------------------------------------------------
@@ -2105,6 +2194,25 @@ fn refused_start_body(deletes: bool, moves: bool, code: Option<i32>, errors: &[S
     body
 }
 
+/// What the Details dialog says when the presets file did not load.
+fn unreadable_presets_notice(error: &profiles::LoadError) -> String {
+    format!(
+        "Your saved presets were not loaded: {error}.\n\n\
+         The file has not been changed. If you save a preset, the file will \
+         first be moved aside, unchanged, and a new one started in its place."
+    )
+}
+
+/// What is said after a save that had to move the unreadable file aside.
+fn moved_aside_notice(to: &std::path::Path) -> String {
+    format!(
+        "The presets file that was there could not be read, so it was not \
+         overwritten. It was moved, unchanged, to “{}”, and a new presets file \
+         was started in its place.",
+        to.display()
+    )
+}
+
 /// Map a real path to `(subtitle, tooltip)`. Portal document paths
 /// (`/run/user/$UID/doc/…`) are opaque, so show just the folder name and put
 /// the full path in the tooltip; ordinary paths are shown in full.
@@ -2477,6 +2585,7 @@ impl ForesightWindow {
         // order are part of what must come back.
         self.upsert_preset("Filter round trip".into());
         let stored = crate::profiles::load()
+            .unwrap_or_default()
             .into_iter()
             .find(|p| p.name == "Filter round trip")
             .map(|p| p.filters)
@@ -2994,6 +3103,7 @@ impl ForesightWindow {
         self.upsert_preset("Photos [raw]".into());
         let on_disk_names = || -> Vec<String> {
             crate::profiles::load()
+                .unwrap_or_default()
                 .iter()
                 .map(|p| p.name.clone())
                 .collect()
@@ -3054,6 +3164,127 @@ impl ForesightWindow {
             "saving works again once the file can be written",
             restored && saved.is_ok() && on_disk_names().contains(&"Written after all".to_string()),
             format!("restored: {restored}, result: {saved:?}"),
+        );
+
+        // The read side of the same file. A presets file that is there but
+        // cannot be read used to load as "no presets", and the next save then
+        // replaced it. The real file is kept in memory meanwhile and put back
+        // at the end, along with a listing of the directory to prove that
+        // nothing staged here outlives these checks.
+        let listing = || -> Vec<String> {
+            let mut names: Vec<String> = ini
+                .parent()
+                .and_then(|dir| std::fs::read_dir(dir).ok())
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            names
+        };
+        let (real_bytes, real_names) = (std::fs::read(&ini).unwrap_or_default(), names(self));
+        let dir_before = listing();
+        let garbage: &[u8] = b"[preset_0]\nname=Years of work\nnot a key file \xff\n";
+        let subtitle = |w: &ForesightWindow| {
+            w.imp()
+                .preset_combo
+                .subtitle()
+                .unwrap_or_default()
+                .to_string()
+        };
+        let mut moved: Vec<PathBuf> = Vec::new();
+
+        let staged = std::fs::write(&ini, garbage).is_ok();
+        let error = self.load_presets();
+        check(
+            "a presets file that cannot be read is an error, not an empty list",
+            staged
+                && error.as_ref().is_some_and(|e| e.path() == ini)
+                && self.imp().presets_unread.borrow().is_some()
+                && !subtitle(self).is_empty(),
+            format!("staged: {staged}, error: {error:?}"),
+        );
+        let notice = error.as_ref().map(unreadable_presets_notice);
+        check(
+            "the notice gives the path and says the file is unchanged",
+            notice.as_ref().is_some_and(|n| {
+                n.contains(&ini.display().to_string()) && n.contains("has not been changed")
+            }) && std::fs::read(&ini).is_ok_and(|b| b == garbage),
+            format!("{notice:?}"),
+        );
+
+        let saved = self.try_upsert_preset("After the ruin");
+        let aside = saved.as_ref().ok().and_then(|s| s.moved_aside.clone());
+        moved.extend(aside.clone());
+        check(
+            "a save moves the unreadable file aside instead of replacing it",
+            aside
+                .as_ref()
+                .is_some_and(|to| std::fs::read(to).is_ok_and(|b| b == garbage))
+                && on_disk_names() == ["After the ruin"],
+            format!("result: {saved:?}, on disk: {:?}", on_disk_names()),
+        );
+        check(
+            "after that save the list is the file again, and says so",
+            self.imp().presets_unread.borrow().is_none()
+                && subtitle(self).is_empty()
+                && names(self) == ["After the ruin"],
+            format!("{:?}, subtitle: {:?}", names(self), subtitle(self)),
+        );
+
+        // A file that goes bad while the app is running, met by a delete.
+        let staged = std::fs::write(&ini, garbage).is_ok();
+        self.imp().preset_combo.set_selected(1);
+        let deleted = self.try_delete_selected_preset();
+        let aside = match &deleted {
+            Ok(Some((_, saved))) => saved.moved_aside.clone(),
+            _ => None,
+        };
+        moved.extend(aside.clone());
+        check(
+            "a delete protects an unreadable file the same way",
+            staged
+                && aside
+                    .as_ref()
+                    .is_some_and(|to| std::fs::read(to).is_ok_and(|b| b == garbage))
+                && moved.len() == 2
+                && moved[0] != moved[1]
+                && std::fs::read(&moved[0]).is_ok_and(|b| b == garbage)
+                && on_disk_names().is_empty(),
+            format!("result: {deleted:?}, moved: {moved:?}"),
+        );
+
+        // Unreadable at startup, repaired by hand before the first save: the
+        // save must build on the repaired file, not write over it.
+        let staged = std::fs::write(&ini, garbage).is_ok()
+            && self.load_presets().is_some()
+            && std::fs::write(&ini, &real_bytes).is_ok();
+        let saved = self.try_upsert_preset("After the repair");
+        let mut expected = real_names.clone();
+        expected.push("After the repair".to_string());
+        check(
+            "a file repaired since startup is built on, not written over",
+            staged
+                && saved.as_ref().is_ok_and(|s| s.moved_aside.is_none())
+                && on_disk_names() == expected
+                && names(self) == expected,
+            format!("result: {saved:?}, on disk: {:?}", on_disk_names()),
+        );
+
+        let removed = moved.iter().all(|to| std::fs::remove_file(to).is_ok());
+        let restored = std::fs::write(&ini, &real_bytes).is_ok() && self.load_presets().is_none();
+        check(
+            "the config dir is left as it was found",
+            removed
+                && restored
+                && listing() == dir_before
+                && names(self) == real_names
+                && std::fs::read(&ini).is_ok_and(|b| b == real_bytes),
+            format!(
+                "removed: {removed}, restored: {restored}, dir: {:?}",
+                listing()
+            ),
         );
 
         (pass, fail)

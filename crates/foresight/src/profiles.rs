@@ -175,12 +175,40 @@ fn load_from(path: &Path) -> Vec<Profile> {
     out
 }
 
-/// Persist the full set of presets, replacing whatever was on disk.
-pub fn save_all(profiles: &[Profile]) {
-    save_all_to(profiles, &profiles_path());
+/// Why the presets did not reach disk. Carries the path because inside the
+/// Flatpak it is not where a user would think to look, and "permission denied"
+/// with no path is not something anyone can act on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SaveError {
+    /// The config directory is missing and could not be created.
+    CreateDir { dir: PathBuf, reason: String },
+    /// The directory is there; writing the file into it failed.
+    Write { path: PathBuf, reason: String },
 }
 
-fn save_all_to(profiles: &[Profile], path: &Path) {
+impl std::fmt::Display for SaveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CreateDir { dir, reason } => {
+                write!(f, "could not create “{}”: {reason}", dir.display())
+            }
+            Self::Write { path, reason } => {
+                write!(f, "could not write “{}”: {reason}", path.display())
+            }
+        }
+    }
+}
+
+/// Persist the full set of presets, replacing whatever was on disk.
+///
+/// An `Err` means the file is as it was before the call: `save_to_file` writes
+/// a temporary beside the target and renames it over, so a failed save never
+/// leaves half a file. Callers rely on that to keep their own list honest.
+pub fn save_all(profiles: &[Profile]) -> Result<(), SaveError> {
+    save_all_to(profiles, &profiles_path())
+}
+
+fn save_all_to(profiles: &[Profile], path: &Path) -> Result<(), SaveError> {
     let key_file = KeyFile::new();
     for (n, p) in profiles.iter().enumerate() {
         // Index, not name: see GROUP_PREFIX. Writing profiles in order also
@@ -203,9 +231,15 @@ fn save_all_to(profiles: &[Profile], path: &Path) {
         key_file.set_string(&group, "extra_args", &p.extra_args.join(" "));
     }
     if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
+        std::fs::create_dir_all(dir).map_err(|e| SaveError::CreateDir {
+            dir: dir.to_path_buf(),
+            reason: e.to_string(),
+        })?;
     }
-    let _ = key_file.save_to_file(path);
+    key_file.save_to_file(path).map_err(|e| SaveError::Write {
+        path: path.to_path_buf(),
+        reason: e.message().to_string(),
+    })
 }
 
 #[cfg(test)]
@@ -244,7 +278,7 @@ mod tests {
             },
         ];
 
-        save_all_to(&originals, &path);
+        save_all_to(&originals, &path).unwrap();
         let mut loaded = load_from(&path);
         // group order from a KeyFile is not guaranteed; compare as sets by name.
         loaded.sort_by(|a, b| a.name.cmp(&b.name));
@@ -267,7 +301,7 @@ mod tests {
             ..Profile::default()
         }];
 
-        save_all_to(&originals, &path);
+        save_all_to(&originals, &path).unwrap();
         assert_eq!(
             load_from(&path)[0].filters,
             vec![FilterRule::exclude("weird;name"), FilterRule::include("b")]
@@ -294,7 +328,7 @@ mod tests {
             ..Default::default()
         };
 
-        save_all_to(std::slice::from_ref(&p), &path);
+        save_all_to(std::slice::from_ref(&p), &path).unwrap();
         assert_eq!(load_from(&path)[0].filters, rules);
 
         let _ = std::fs::remove_file(&path);
@@ -328,7 +362,7 @@ mod tests {
         );
 
         // Re-saving migrates it to the kinded encoding without changing meaning.
-        save_all_to(&loaded, &path);
+        save_all_to(&loaded, &path).unwrap();
         assert_eq!(load_from(&path)[0].filters, loaded[0].filters);
 
         let _ = std::fs::remove_file(&path);
@@ -378,7 +412,7 @@ mod tests {
         assert!(loaded[0].verbose);
 
         // Re-saving migrates it to the list encoding, and it still round-trips.
-        save_all_to(&loaded, &path);
+        save_all_to(&loaded, &path).unwrap();
         assert_eq!(
             load_from(&path)[0].filters,
             vec![FilterRule::exclude("*.tmp"), FilterRule::exclude(".git")]
@@ -421,7 +455,7 @@ mod tests {
             ..Default::default()
         };
 
-        save_all_to(std::slice::from_ref(&p), &path);
+        save_all_to(std::slice::from_ref(&p), &path).unwrap();
         assert_eq!(load_from(&path)[0].filters, rules);
 
         let _ = std::fs::remove_file(&path);
@@ -442,7 +476,7 @@ mod tests {
             ..Default::default()
         };
 
-        save_all_to(std::slice::from_ref(&p), &path);
+        save_all_to(std::slice::from_ref(&p), &path).unwrap();
         assert_eq!(load_from(&path)[0].filters, rules);
 
         let _ = std::fs::remove_file(&path);
@@ -477,7 +511,7 @@ mod tests {
             })
             .collect();
 
-        save_all_to(&originals, &path);
+        save_all_to(&originals, &path).unwrap();
         let loaded = load_from(&path);
         assert_eq!(loaded.len(), names.len(), "every preset must survive");
         for (want, got) in originals.iter().zip(loaded.iter()) {
@@ -499,7 +533,7 @@ mod tests {
         };
         let originals = vec![mk("Good one"), mk("Photos [raw]"), mk("Good two")];
 
-        save_all_to(&originals, &path);
+        save_all_to(&originals, &path).unwrap();
         let got: Vec<String> = load_from(&path).iter().map(|p| p.name.clone()).collect();
         assert_eq!(got, vec!["Good one", "Photos [raw]", "Good two"]);
 
@@ -531,7 +565,7 @@ mod tests {
         assert!(loaded[0].delete);
 
         // Re-saving migrates it; the name survives the move into a value.
-        save_all_to(&loaded, &path);
+        save_all_to(&loaded, &path).unwrap();
         let again = load_from(&path);
         assert_eq!(again[0].name, "HDD move");
         assert_eq!(
@@ -540,5 +574,85 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// The bug this guards: both errors used to be discarded, so the window
+    /// announced a save that never happened. A regular file where the config
+    /// directory should be fails for root as well, which a read-only directory
+    /// would not.
+    #[test]
+    fn a_config_dir_that_cannot_be_created_is_an_error() {
+        let blocker = std::env::temp_dir().join(format!("foresight-nodir-{}", std::process::id()));
+        std::fs::write(&blocker, "not a directory").unwrap();
+        let path = blocker.join("foresight").join("profiles.ini");
+
+        let result = save_all_to(&[Profile::default()], &path);
+        assert!(
+            matches!(&result, Err(SaveError::CreateDir { dir, .. }) if dir == path.parent().unwrap()),
+            "{result:?}"
+        );
+        // What the user is shown has to say where, not only what.
+        let shown = result.unwrap_err().to_string();
+        assert!(shown.contains(&blocker.display().to_string()), "{shown}");
+
+        let _ = std::fs::remove_file(&blocker);
+    }
+
+    /// The directory exists but the file cannot be replaced — here because a
+    /// directory is sitting on its name. What was on disk must be untouched,
+    /// and no temporary may be left beside it.
+    #[test]
+    fn a_file_that_cannot_be_written_is_an_error() {
+        let dir = std::env::temp_dir().join(format!("foresight-nowrite-{}", std::process::id()));
+        let path = dir.join("profiles.ini");
+        std::fs::create_dir_all(&path).unwrap();
+
+        let result = save_all_to(&[Profile::default()], &path);
+        assert!(
+            matches!(&result, Err(SaveError::Write { path: p, .. }) if *p == path),
+            "{result:?}"
+        );
+        assert!(path.is_dir());
+        let left_behind: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name())
+            .filter(|n| n != "profiles.ini")
+            .collect();
+        assert!(left_behind.is_empty(), "{left_behind:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A failed save leaves the previous file readable and unchanged, which is
+    /// what lets the window keep its list as it was.
+    #[test]
+    fn a_failed_save_leaves_the_previous_presets_on_disk() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = std::env::temp_dir().join(format!("foresight-keep-{}", std::process::id()));
+        let path = dir.join("profiles.ini");
+        let _ = std::fs::remove_dir_all(&dir);
+        let before = vec![Profile {
+            name: "Kept".into(),
+            ..Profile::default()
+        }];
+        save_all_to(&before, &path).unwrap();
+
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        // Root writes through a read-only directory, so there is nothing to
+        // observe; say so rather than fail on a machine that is not broken.
+        let enforced = std::fs::write(dir.join("probe"), "").is_err();
+        let result = save_all_to(&[], &path);
+        let after = load_from(&path);
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+
+        if !enforced {
+            eprintln!("skipped: directory permissions are not enforced for this user");
+            return;
+        }
+        assert!(matches!(result, Err(SaveError::Write { .. })), "{result:?}");
+        assert_eq!(after, before);
     }
 }

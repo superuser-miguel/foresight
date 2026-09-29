@@ -1417,43 +1417,74 @@ impl ForesightWindow {
     }
 
     fn upsert_preset(&self, name: String) {
+        match self.try_upsert_preset(&name) {
+            Ok(()) => self.toast(&format!("Saved preset “{name}”")),
+            Err(e) => self.show_preset_error(
+                "Preset not saved",
+                &format!("“{name}” was not saved: {e}.\n\nYour presets are as they were."),
+            ),
+        }
+    }
+
+    /// The save itself, apart from how its outcome is announced, so the
+    /// headless checks can drive a failure without a dialog to dismiss.
+    fn try_upsert_preset(&self, name: &str) -> Result<(), profiles::SaveError> {
         let imp = self.imp();
         let mut profile = self.read_advanced();
-        profile.name = name.clone();
+        profile.name = name.to_string();
 
-        let snapshot = {
-            let mut profiles = imp.profiles.borrow_mut();
-            match profiles.iter_mut().find(|p| p.name == name) {
-                Some(existing) => *existing = profile,
-                None => profiles.push(profile),
-            }
-            profiles.clone()
-        };
-        profiles::save_all(&snapshot);
+        // Disk first, memory second. The change is made to a copy, and the
+        // copy becomes the list only once it has been written — so on a failed
+        // write the list and the combo still describe the file, which a failed
+        // save leaves untouched. The other order would show a preset that is
+        // gone after a restart, which is the bug this replaced.
+        let mut candidate = imp.profiles.borrow().clone();
+        match candidate.iter_mut().find(|p| p.name == name) {
+            Some(existing) => *existing = profile,
+            None => candidate.push(profile),
+        }
+        profiles::save_all(&candidate)?;
 
-        let idx = snapshot.iter().position(|p| p.name == name).unwrap() as u32 + 1;
+        let idx = candidate.iter().position(|p| p.name == name).unwrap() as u32 + 1;
+        *imp.profiles.borrow_mut() = candidate;
         self.rebuild_preset_combo(idx);
-        self.toast(&format!("Saved preset “{name}”"));
+        Ok(())
     }
 
     fn delete_selected_preset(&self) {
+        match self.try_delete_selected_preset() {
+            Ok(Some(name)) => self.toast(&format!("Deleted preset “{name}”")),
+            Ok(None) => {}
+            Err((name, e)) => self.show_preset_error(
+                "Preset not deleted",
+                &format!("“{name}” is still saved: {e}.\n\nYour presets are as they were."),
+            ),
+        }
+    }
+
+    /// `Ok(None)` when there was nothing selected to delete. An error names
+    /// the preset that is still there.
+    fn try_delete_selected_preset(&self) -> Result<Option<String>, (String, profiles::SaveError)> {
         let imp = self.imp();
         let idx = imp.preset_combo.selected();
         if idx == 0 {
-            return;
+            return Ok(None);
         }
         let i = (idx - 1) as usize;
-        let snapshot = {
-            let mut profiles = imp.profiles.borrow_mut();
-            if i >= profiles.len() {
-                return;
-            }
-            let removed = profiles.remove(i);
-            self.toast(&format!("Deleted preset “{}”", removed.name));
-            profiles.clone()
-        };
-        profiles::save_all(&snapshot);
+        // Same order as saving, for the mirrored reason: a preset dropped from
+        // the list but not from the file comes back on the next launch. On
+        // failure nothing is rebuilt, so it also stays selected.
+        let mut candidate = imp.profiles.borrow().clone();
+        if i >= candidate.len() {
+            return Ok(None);
+        }
+        let removed = candidate.remove(i).name;
+        if let Err(e) = profiles::save_all(&candidate) {
+            return Err((removed, e));
+        }
+        *imp.profiles.borrow_mut() = candidate;
         self.rebuild_preset_combo(0);
+        Ok(Some(removed))
     }
 
     // -- run lifecycle (M3) -------------------------------------------------
@@ -1874,6 +1905,21 @@ impl ForesightWindow {
         }
         let dialog = adw::AlertDialog::builder()
             .heading("Sync failed")
+            .body(body)
+            .build();
+        dialog.add_response("ok", "Close");
+        dialog.set_default_response(Some("ok"));
+        dialog.present(Some(self));
+    }
+
+    /// A preset that could not be written. A dialog rather than a toast: the
+    /// user has to do something about it (free space, fix permissions), and a
+    /// toast is gone before the path in it can be read. Not
+    /// `show_error_dialog`, which is headed "Sync failed" and appends the last
+    /// run's rsync errors.
+    fn show_preset_error(&self, heading: &str, body: &str) {
+        let dialog = adw::AlertDialog::builder()
+            .heading(heading)
             .body(body)
             .build();
         dialog.add_response("ok", "Close");
@@ -2601,14 +2647,68 @@ impl ForesightWindow {
         // dropped on save while the UI reported success.
         self.set_filters(&[FilterRule::exclude("*.tmp")]);
         self.upsert_preset("Photos [raw]".into());
-        let on_disk: Vec<String> = crate::profiles::load()
-            .iter()
-            .map(|p| p.name.clone())
-            .collect();
+        let on_disk_names = || -> Vec<String> {
+            crate::profiles::load()
+                .iter()
+                .map(|p| p.name.clone())
+                .collect()
+        };
+        let on_disk = on_disk_names();
         check(
             "a preset named \"Photos [raw]\" reaches disk",
             on_disk.contains(&"Photos [raw]".to_string()),
             format!("in memory only; on disk: {on_disk:?}"),
+        );
+
+        // The other half of the same promise: a save that fails must not be
+        // shown as one that worked. A directory sitting on the file's name
+        // stops the write for any user, root included, and is undone below so
+        // the config dir is left as it was found.
+        let names = |w: &ForesightWindow| -> Vec<String> {
+            w.imp()
+                .profiles
+                .borrow()
+                .iter()
+                .map(|p| p.name.clone())
+                .collect()
+        };
+        let combo_len = |w: &ForesightWindow| w.imp().preset_combo.model().map(|m| m.n_items());
+        let ini = glib::user_config_dir()
+            .join("foresight")
+            .join("profiles.ini");
+        let aside = ini.with_extension("ini.selftest");
+        let blocked = std::fs::rename(&ini, &aside).is_ok() && std::fs::create_dir(&ini).is_ok();
+        let (names_before, combo_before) = (names(self), combo_len(self));
+
+        let saved = self.try_upsert_preset("Never written");
+        check(
+            "a save that fails is reported as a failure",
+            blocked && saved.is_err(),
+            format!("blocked: {blocked}, result: {saved:?}"),
+        );
+        check(
+            "a save that fails adds nothing to the preset list",
+            names(self) == names_before && combo_len(self) == combo_before,
+            format!("{:?}", names(self)),
+        );
+
+        self.imp().preset_combo.set_selected(1);
+        let deleted = self.try_delete_selected_preset();
+        check(
+            "a delete that fails keeps the preset, still selected",
+            blocked
+                && deleted.is_err()
+                && names(self) == names_before
+                && self.imp().preset_combo.selected() == 1,
+            format!("result: {deleted:?}, list: {:?}", names(self)),
+        );
+
+        let restored = std::fs::remove_dir(&ini).is_ok() && std::fs::rename(&aside, &ini).is_ok();
+        let saved = self.try_upsert_preset("Written after all");
+        check(
+            "saving works again once the file can be written",
+            restored && saved.is_ok() && on_disk_names().contains(&"Written after all".to_string()),
+            format!("restored: {restored}, result: {saved:?}"),
         );
 
         (pass, fail)

@@ -8,22 +8,24 @@
 
 ## 0. Where things stand — read this first
 
-*Updated 2026-09-29. Keep this section current; it is the one place that says
+*Updated 2026-11-06. Keep this section current; it is the one place that says
 "now" — everything below it is either a decision, a record, or a fact.*
 
 **Released: v1.0.1** (signed tag `v1.0.1` = `56697fc`). Bundle on GitHub
 Releases; signed OSTree repo live at `superuser-miguel.github.io/foresight-repo`.
 Engine: rsync **3.5.0**.
 
-**In flight: 1.0.2 — code complete on `main`, not yet tagged.** **170 tests**
-(`cargo test --all`), **158 headless widget checks**
+**In flight: 1.0.2 — code complete on `main`, not yet tagged.** **177 tests**
+(`cargo test --all`), **165 headless widget checks**
 (`build-aux/selftest-headless.sh`), 20 checks in the Python spec's self-check.
 What it is, is in the "1.0.2" milestone in §4. What stands between it and a tag:
 
 1. **Nobody has looked at any of it.** Every dialog, banner and toast that
    1.0.1 and 1.0.2 added — the rule warnings and Fix button, the Move
    confirmation, the close question, the refusal after an incomplete dry run,
-   the three preset dialogs, the problems report, the shortcuts window — is
+   the three preset dialogs, the problems report, the shortcuts window, and
+   (added 2026-11-06) the "has no effect" Include warning with its Fix and
+   the explainer line in the Filter rules expander — is
    verified headlessly and against real rsync, and by eye not at all. The keys
    themselves have never been pressed. This is the gate.
 2. The release commit: version in `meson.build`, both crates and `Cargo.lock`;
@@ -48,7 +50,22 @@ Known-open after 1.0.2, in the order they'd be picked up:
 5. **PR #2** (gettext + Spanish, from the project's first outside contributor).
    Wanted; conflicts with `main`; to be brought in as its own release. It adds
    `gettext-rs` to `rsync-events`, which guardrail 1 exists to question.
-6. **Help body copy**, then the 2.0 thesis ("Beyond 1.0").
+6. **The other open issues.** **#13** — `SECURITY.md` and the bug form are in
+   (`0d703ed`); the code of conduct is declined and the reply is posted.
+   **#11** — `classify_exit` and the deletion confirmation are tested
+   (`f1de71a`); the StreamParser chunk-split test is still owed, with #9.
+   **#10** — move `run_selftest` (~490 lines) out of `window.rs`.
+   **`--prune-empty-dirs`** — the Fix for an Include with no Exclude below it
+   (`8b5dda2`) appends `Include */` + `Exclude *`, which leaves every folder at
+   the destination, empty or not. A switch for `-m` would finish that recipe.
+7. **Help body copy.**
+8. **Forget a saved host.** Foresight keeps its own `known_hosts` and has no
+   way to remove an entry; a phone that changed keys (the ZenPad, 2026-10)
+   needed a hand edit. Entries are keyed `[host]:port` off port 22, so one
+   device reached on several ports leaves several entries — "Forget" removes
+   them all. Small; the first step of 2.0 item 5.
+9. **The 2.0 thesis** ("Beyond 1.0"), starting with durable jobs — see the
+   2026-10-24 notes under item 1 there.
 
 **How to work here** (details in §7): dev builds run with
 `build-aux/run-dev.sh` and are **never installed** — the installed copy is the
@@ -449,6 +466,21 @@ In dependency order — each item is unbuildable before the one above it:
    once, honestly — §5 gets *amended*, not abandoned. If the only workable
    answer turns out to be a blanket `--filesystem`, the answer is no and 2.0
    stops at this line.
+
+   *2026-10-24 — a lead and a proposal, neither decided.* The portal's
+   `Documents.List` for Foresight held 3,783 grants, some from before the last
+   reboot (`~/Pictures`, folders on an external drive). Grants survive;
+   what Foresight loses is its own record of the handle. That contradicts the
+   Milestone 2 note. **Untested:** reopening a saved handle from inside the
+   sandbox after a restart, with the drive present and absent. That test comes
+   before code. Proposed shape: a **Job** is its own object in its own file
+   (`jobs.ini`) with a stable id, not a preset with paths added. A 1.0.x save
+   drops unknown keys from `profiles.ini` (§0, item 3), so folders kept there
+   would be erased by the older version, which shares the config folder.
+   Schedules and history need an id that survives a rename. A preset's options
+   are *copied* into a job, not linked, so editing a preset can't quietly add
+   deletions to every job made from it. An unplugged drive reads as "not
+   connected", never as a missing or empty destination.
 2. **Scheduling.** "Every night at 02:00", or "when this drive appears" —
    generated systemd **user** timers and `.path`/mount units, not a daemon of
    our own. The drive-appears trigger is the more useful of the two for the

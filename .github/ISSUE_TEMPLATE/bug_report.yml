@@ -1,0 +1,58 @@
+name: Bug report
+description: Something went wrong in Foresight
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: Foresight version
+      description: Menu → About Foresight
+      placeholder: "1.0.2"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: How you installed it
+      options:
+        - Foresight's Flatpak repo
+        - Bundle from GitHub Releases
+        - Built from source
+    validations:
+      required: true
+
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where the transfer went
+      options:
+        - Local folders or drives
+        - To a remote machine (SSH)
+        - From a remote machine (SSH)
+        - Didn't get as far as a transfer
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected
+      description: The steps that got you there, if you can.
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: The rsync command
+      description: >
+        The first line of the transfer log, starting with `rsync`. It shows
+        exactly what Foresight asked rsync to do, including your filter rules
+        and options. Change any folder or host names you'd rather not share.
+      render: shell
+
+  - type: textarea
+    id: log
+    attributes:
+      label: Errors or the end of the log
+      description: Any error lines, the banner text, or the last lines of the transfer log.
+      render: text

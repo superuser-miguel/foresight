@@ -2443,20 +2443,9 @@ impl ForesightWindow {
             return;
         }
 
-        let body = {
-            const MAX: usize = 20;
-            let mut lines: Vec<String> = deletions.iter().take(MAX).cloned().collect();
-            if deletions.len() > MAX {
-                lines.push(format!("…and {} more", deletions.len() - MAX));
-            }
-            lines.join("\n")
-        };
-
+        let (heading, body) = deletion_confirmation(&deletions);
         let dialog = adw::AlertDialog::builder()
-            .heading(format!(
-                "Delete {} file(s) in the destination?",
-                deletions.len()
-            ))
+            .heading(heading)
             .body(body)
             .build();
         dialog.add_response("cancel", "Cancel");
@@ -2719,6 +2708,23 @@ fn partial_banner_text(message: &str, code: Option<i32>, problems: usize) -> Str
 /// means, what it did to deletions and to a move where that is true of this
 /// run, the exit code, and what rsync reported. Says nothing about which
 /// files were deleted: that is not known here.
+/// How many deletions the confirmation lists by name before summing up the rest.
+const DELETIONS_LISTED: usize = 20;
+
+/// Heading and body of the `--delete` confirmation.
+///
+/// The one rule: it must never under-state. The heading counts every deletion,
+/// the body names the first [`DELETIONS_LISTED`] verbatim, and anything past
+/// that is counted, never dropped without a word.
+fn deletion_confirmation(deletions: &[String]) -> (String, String) {
+    let heading = format!("Delete {} file(s) in the destination?", deletions.len());
+    let mut lines: Vec<String> = deletions.iter().take(DELETIONS_LISTED).cloned().collect();
+    if deletions.len() > DELETIONS_LISTED {
+        lines.push(format!("…and {} more", deletions.len() - DELETIONS_LISTED));
+    }
+    (heading, lines.join("\n"))
+}
+
 fn partial_report_body(kind: Option<RunKind>, code: Option<i32>, problems: &[String]) -> String {
     let mut body = String::from("The sync ran to its end, but not everything went through. ");
     body.push_str(&match problems.len() {
@@ -5078,9 +5084,9 @@ impl ForesightWindow {
 #[cfg(test)]
 mod tests {
     use super::{
-        incomplete_preview_notice, parse_bwlimit, partial_banner_text, partial_report_body,
-        refused_start_body, reported_problems, tokenize, BannerButton, PartialReport,
-        PreviewOutcome, DELETION_SKIPPED,
+        deletion_confirmation, incomplete_preview_notice, parse_bwlimit, partial_banner_text,
+        partial_report_body, refused_start_body, reported_problems, tokenize, BannerButton,
+        PartialReport, PreviewOutcome, DELETIONS_LISTED, DELETION_SKIPPED,
     };
     use crate::job::{Completion, RunKind};
     use rsync_events::{classify_exit, Severity};
@@ -5323,5 +5329,40 @@ mod tests {
     fn tokenize_splits_on_whitespace() {
         assert_eq!(tokenize("  *.tmp   .git "), vec!["*.tmp", ".git"]);
         assert!(tokenize("").is_empty());
+    }
+
+    /// The `--delete` confirmation must never misrepresent what goes: the
+    /// heading counts everything, and what the body leaves out it counts.
+    #[test]
+    fn the_deletion_confirmation_counts_all_and_lists_the_first_twenty() {
+        let paths = |n: usize| (1..=n).map(|i| format!("dst/f{i}")).collect::<Vec<_>>();
+
+        let (heading, body) = deletion_confirmation(&paths(1));
+        assert_eq!(heading, "Delete 1 file(s) in the destination?");
+        assert_eq!(body, "dst/f1");
+
+        // Exactly at the limit: every path, no summary line.
+        let (heading, body) = deletion_confirmation(&paths(DELETIONS_LISTED));
+        assert!(heading.contains(&DELETIONS_LISTED.to_string()));
+        assert_eq!(body.lines().count(), DELETIONS_LISTED);
+        assert!(!body.contains("more"));
+
+        // One past: the first twenty, then the rest counted.
+        let (_, body) = deletion_confirmation(&paths(DELETIONS_LISTED + 1));
+        let lines: Vec<&str> = body.lines().collect();
+        assert_eq!(lines.len(), DELETIONS_LISTED + 1);
+        assert_eq!(lines[0], "dst/f1");
+        assert_eq!(lines[DELETIONS_LISTED - 1], "dst/f20");
+        assert_eq!(lines[DELETIONS_LISTED], "…and 1 more");
+
+        // Far past: listed + counted always adds up to the heading.
+        let (heading, body) = deletion_confirmation(&paths(5000));
+        assert_eq!(heading, "Delete 5000 file(s) in the destination?");
+        assert!(body.ends_with("…and 4980 more"));
+        assert!(!body.contains("dst/f21\n"));
+
+        // Paths arrive verbatim — the dialog body is plain text, not markup.
+        let odd = vec!["dst/<b>&amp; name.txt".to_string()];
+        assert_eq!(deletion_confirmation(&odd).1, "dst/<b>&amp; name.txt");
     }
 }

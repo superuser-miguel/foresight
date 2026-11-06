@@ -870,6 +870,68 @@ pub fn classify_exit(code: i32) -> (Severity, String) {
 }
 
 #[cfg(test)]
+mod classify_exit_tests {
+    use super::*;
+
+    /// The table that decides how a run's end is presented: a toast, a
+    /// warning banner, or the failure dialog. A code moving between those is
+    /// a change in what the user is told, so every row is pinned.
+    #[test]
+    fn every_documented_exit_code_lands_in_its_severity() {
+        use Severity::*;
+        let expected = [
+            (0, Success),
+            (1, Error),
+            (2, Error),
+            (3, Error),
+            (5, Error),
+            (10, Error),
+            (11, Error),
+            (12, Error),
+            (13, Error),
+            (14, Error),
+            (20, Cancelled),
+            (23, Partial),
+            (24, Partial),
+            (25, Partial),
+            (30, Error),
+            (35, Error),
+            (255, Error),
+        ];
+        for (code, severity) in expected {
+            let (got, message) = classify_exit(code);
+            assert_eq!(got, severity, "exit {code}");
+            assert!(!message.is_empty(), "exit {code} has no message");
+            assert!(
+                !message.contains("exited with code"),
+                "exit {code} fell through to the fallback: {message}"
+            );
+        }
+    }
+
+    /// Only 23, 24 and 25 are Partial: anything else that is not success or
+    /// an interrupt must reach the failure dialog, never a quiet banner.
+    #[test]
+    fn only_the_three_partial_codes_are_partial() {
+        for code in -1..=300 {
+            let partial = classify_exit(code).0 == Severity::Partial;
+            assert_eq!(partial, matches!(code, 23..=25), "exit {code}");
+        }
+    }
+
+    /// A code the table does not know is an error that names the code, so the
+    /// user has something to search for.
+    #[test]
+    fn an_unknown_code_is_an_error_that_names_it() {
+        for code in [4, 6, 21, 22, 26, 99, 124, 254, -1] {
+            let (severity, message) = classify_exit(code);
+            assert_eq!(severity, Severity::Error, "exit {code}");
+            assert_eq!(message, format!("rsync exited with code {code}."));
+        }
+    }
+}
+
+#[cfg(test)]
 mod ssh_error_tests {
     use super::*;
 

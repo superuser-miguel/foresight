@@ -17,16 +17,16 @@ No shell strings are ever constructed, and the engine version is pinned — the
 version pin *is* the behaviour contract.
 
 Rust · GTK4 · gtk4-rs · libadwaita · Blueprint · Meson · Flatpak, with rsync
-**3.5.0** bundled and version-pinned. See [`PLAN.md`](PLAN.md) for the phased
+**3.5.2** bundled and version-pinned. See [`PLAN.md`](PLAN.md) for the phased
 build plan and the guardrails it holds to.
 
-> **Status: 1.0.1 — released and self-hosted.** Multi-source transfers, the grouped
+> **Status: 1.0.2 — released and self-hosted.** Multi-source transfers, the grouped
 > dry-run preview, live progress with a structured streaming log, cancel,
 > `--delete` with confirmation, the advanced flag set with saved presets, an
 > ordered include/exclude filter list, remote sync over SSH, and an in-app
 > capability inventory all
-> work today in a sandboxed Flatpak, covered by **90 tests** across the
-> workspace and **53 headless widget checks** — with
+> work today in a sandboxed Flatpak on the GNOME 51 platform, covered by
+> **177 tests** across the workspace and **165 headless widget checks** — with
 > `rsync-events` staying UI-free. Installed from the project's own **GPG-signed
 > repository** so `flatpak update` works, with a standalone bundle on
 > [GitHub Releases](https://github.com/superuser-miguel/foresight/releases) for
@@ -106,7 +106,8 @@ Where Foresight aims to *win*, not just match:
   two controls lock each other out and say why. IPv6 link-local endpoints work,
   scope id and all.
 - **New Job** — clear the whole form for the next transfer in one click.
-- Ships as a **Flatpak** with rsync **3.5.0** bundled — **portals only, no host
+- **Keyboard shortcuts** for the main actions, listed in a shortcuts window.
+- Ships as a **Flatpak** with rsync **3.5.2** bundled — **portals only, no host
   filesystem access** by design.
 
 ## Power-user switches
@@ -175,7 +176,7 @@ flatpak install flathub org.gnome.Platform//51
 ```
 
 Release tags are GPG-signed with the same key. Verify with
-`git verify-tag v1.0.1`.
+`git verify-tag v1.0.2`.
 
 ## Layout
 
@@ -341,6 +342,45 @@ Two findings from a month of daily use, and a newer engine.
 - [x] **rsync 3.5.0** bundled (was 3.4.4): 33 security fixes. Its output formats
       are unchanged, and because it reworked path resolution it was run inside
       the sandbox against real document-portal folders before shipping.
+
+### Shipped in 1.0.2
+
+The first person other than the author used Foresight for a day, read the
+code, and filed twelve issues. 1.0.2 is those reports, what fixing them turned
+up, a newer engine and a newer platform.
+
+- [x] **rsync no longer outlives Foresight.** Closing the window during a
+      transfer asks, and stops rsync if you go ahead. Every rsync is also tied
+      to the app by the kernel (`PR_SET_PDEATHSIG`), so a signal, `kill -9` or
+      a crash stops it too.
+- [x] **A dry run that did not finish confirms nothing.** Start refuses rather
+      than confirm deletions or a move from half a list.
+- [x] **Presets fail loudly.** A save that failed said it had worked; an
+      unreadable presets file loaded as "no presets" and was then overwritten.
+      Now the file is written before memory, and an unreadable one is set
+      aside. The format is untouched — the 1.0 promise holds.
+- [x] **A partial transfer says what failed** — the banner leads to rsync's own
+      report.
+- [x] **Keyboard shortcuts**, from one table that also fills the shortcuts
+      window.
+- [x] **The parser:** bytes are split into lines before decoding, so a
+      character cut across two reads is no longer garbled; errors rsync prints
+      without its `rsync:` prefix are collected; so is the summary it glues to
+      its last progress update; and rsync runs in a **pinned locale**, which is
+      part of its output format — on a German desktop progress was not read at
+      all.
+- [x] **Includes that narrow nothing are flagged.** rsync copies whatever no
+      rule matches, so `Include *.jpg` on its own copies every file. Such a rule
+      is pointed out with a **Fix** (`Include */` + `Exclude *` at the end), and
+      a Move with one asks first. The Filter rules list now says how it is read.
+- [x] **rsync 3.5.2** bundled (was 3.5.0) for CVE-2026-119741, on the sending
+      side. It labels byte counts with `B` and prints rates to three digits, so
+      the progress patterns were changed to read both forms; the fixtures were
+      recaptured and the bundled binary run against real document-portal
+      folders before shipping.
+- [x] **GNOME 51** runtime (was 49).
+- [x] `unsafe` is denied crate-wide with one named exception, and `LICENSE`,
+      `SECURITY.md` and a bug report form are in the repo.
 
 ### After 1.0 — from a front-end to a backup app
 

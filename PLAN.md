@@ -8,31 +8,29 @@
 
 ## 0. Where things stand — read this first
 
-*Updated 2026-11-06. Keep this section current; it is the one place that says
+*Updated 2026-11-06 (1.0.2 released). Keep this section current; it is the one place that says
 "now" — everything below it is either a decision, a record, or a fact.*
 
-**Released: v1.0.1** (signed tag `v1.0.1` = `56697fc`). Bundle on GitHub
+**Released: v1.0.2** (signed tag `v1.0.2`, 2026-11-06). Bundle on GitHub
 Releases; signed OSTree repo live at `superuser-miguel.github.io/foresight-repo`.
-Engine: rsync **3.5.0**.
-
-**In flight: 1.0.2 — code complete on `main`, not yet tagged.** **177 tests**
+Engine: rsync **3.5.2**. Runtime: **GNOME 51**. **177 tests**
 (`cargo test --all`), **165 headless widget checks**
 (`build-aux/selftest-headless.sh`), 20 checks in the Python spec's self-check.
-What it is, is in the "1.0.2" milestone in §4. What stands between it and a tag:
+What it is, is in the "1.0.2" milestone in §4.
 
-1. **Nobody has looked at any of it.** Every dialog, banner and toast that
-   1.0.1 and 1.0.2 added — the rule warnings and Fix button, the Move
-   confirmation, the close question, the refusal after an incomplete dry run,
-   the three preset dialogs, the problems report, the shortcuts window, and
-   (added 2026-11-06) the "has no effect" Include warning with its Fix and
-   the explainer line in the Filter rules expander — is
-   verified headlessly and against real rsync, and by eye not at all. The keys
-   themselves have never been pressed. This is the gate.
-2. The release commit: version in `meson.build`, both crates and `Cargo.lock`;
-   the metainfo release note; README status, feature list and roadmap;
-   `docs/index.html`.
+**It shipped without the by-hand check.** That check was the gate this section
+set for 1.0.2, and on 2026-11-06 the decision was to release without it. So
+every dialog, banner and toast that 1.0.1 and 1.0.2 added — the rule warnings
+and both Fix buttons, the Filter rules explainer, the Move confirmation, the
+close question, the refusal after an incomplete dry run, the three preset
+dialogs, the problems report, the shortcuts window — is verified headlessly
+and against real rsync, and by eye not at all. The keys have never been
+pressed, and 3.5.2's progress lines have never moved a progress bar on a real
+screen. **That check is owed first, on the installed 1.0.2**, and whatever it
+finds is 1.0.3.
 
-Known-open after 1.0.2, in the order they'd be picked up:
+Known-open after 1.0.2, in the order they'd be picked up (after the by-hand
+check above):
 
 1. **Screenshots** (the last open box in Milestone 5). Still the pre-1.0 set;
    nothing shows remote sync's fingerprint dialog, the rule warnings or the
@@ -52,8 +50,9 @@ Known-open after 1.0.2, in the order they'd be picked up:
    `gettext-rs` to `rsync-events`, which guardrail 1 exists to question.
 6. **The other open issues.** **#13** — `SECURITY.md` and the bug form are in
    (`0d703ed`); the code of conduct is declined and the reply is posted.
-   **#11** — `classify_exit` and the deletion confirmation are tested
-   (`f1de71a`); the StreamParser chunk-split test is still owed, with #9.
+   **#11** is done: `classify_exit` and the deletion confirmation are tested
+   (`f1de71a`), and the chunk-split test shipped with the #9 fix
+   (`chunk_boundary_test.rs`, every byte offset).
    **#10** — move `run_selftest` (~490 lines) out of `window.rs`.
    **`--prune-empty-dirs`** — the Fix for an Include with no Exclude below it
    (`8b5dda2`) appends `Include */` + `Exclude *`, which leaves every folder at
@@ -95,7 +94,7 @@ algorithm, Qt/other-desktop theming.
 | UI | GTK4 + libadwaita, **Blueprint** (`.blp`) files | Declarative, diff-friendly, the modern GNOME way; gtk-rs consumes them via composite templates |
 | Build | Meson driving cargo (GNOME Builder Rust-template pattern) + blueprint-compiler | Standard GNOME app pipeline |
 | Distribution | Flatpak only; dev happens inside the Flatpak | Environment = ship environment |
-| Engine | rsync pinned in the manifest (currently `v3.5.0`, commit `471e17dc…`) | The version pin **is** the output-format contract |
+| Engine | rsync pinned in the manifest (currently `v3.5.2`, commit `41bbd895…`) | The version pin **is** the output-format contract |
 | File access | Portals first (see §5); no blanket `--filesystem` holes | Sandbox integrity + user trust |
 | License | GPL-3.0-or-later | Matches rsync; project convention |
 | Parser | `crates/rsync-events` — lib crate, deps: `regex` + `once_cell` only, **no GTK** | Testable anywhere; the app crate depends on it, never the reverse |
@@ -150,7 +149,7 @@ App id is `io.github.superuser_miguel.Foresight` (named 2026-07-12; the
 ├── docs/                               # GitHub Pages site (index.html, screenshots/)
 ├── .github/workflows/ci.yml            # fmt + clippy + test; Meson build; headless widget checks
 ├── LICENSE                             # GPL-3.0-or-later
-└── tests/fixtures/                     # captured from real rsync (3.4.4; the later ones from 3.5.0)
+└── tests/fixtures/                     # captured from real rsync (all recaptured from 3.5.2)
 ```
 
 Git-ignored and regenerable: `target/` and `builddir/cargo-target/` (compiler
@@ -396,7 +395,7 @@ preset freeze held.
 Still open from that soak: nobody has yet *looked* at the new rows, banner and
 dialog — they are verified headlessly and against real rsync only.
 
-### 1.0.2 — what the first outside user found  ✅ code, ☐ released
+### 1.0.2 — what the first outside user found  ✅ released 2026-11-06
 
 On 2026-08-25 someone who was not the author used Foresight for a day, read the
 code, and filed twelve issues and a translation. Nobody looked at the inbox for
@@ -439,6 +438,18 @@ five weeks. 1.0.2 is those reports, plus what fixing them turned up.
       outright. 1.0.2 had grown fourteen `unsafe` sites on its way here; twelve
       guarded against things that do not happen (guardrail 13).
 - [x] `LICENSE`. It had been declared in four places and present in none.
+      `SECURITY.md` and a bug report form followed (#13).
+- [x] **An Include with no Exclude below it is flagged** (`8b5dda2`). rsync
+      copies whatever no rule matches, so such a rule narrows nothing; with
+      Move on, everything leaves. Row warning, a Fix that appends `Include */`
+      and `Exclude *`, the Move gate, and an explainer line in the expander.
+      The Fix leaves empty folders at the destination until there is a switch
+      for `--prune-empty-dirs`.
+- [x] **rsync 3.5.2** (`0b8af48`) for CVE-2026-119741, by the three steps of
+      the 1.0.1 milestone; §6 item 20 is what it changed.
+- [x] **GNOME 51** (`6fd2654`), brought forward from "after 1.0.2" on
+      2026-11-06: 49 is out of GNOME's support window, and a Flatpak's runtime
+      does not wait on distributions.
 
 How it was done is worth keeping: each fix in its own worktree and branch,
 every diff read, every branch rebased onto the others, and the full gate run on
@@ -671,6 +682,18 @@ These were discovered by building the pinned rsync and capturing transcripts
     parent as well as its death by any other cause, which is why the app
     handles no signals of its own. It does not cover a child that ignores
     SIGTERM.
+20. **rsync 3.5.2 labels the progress byte count and shortens the rate.**
+    `1,300,042  27%  247.96MB/s` became `1,300,042B  27%    650MB/s`: a `B`
+    after the count, and a rate to three significant digits (`0B/s`,
+    `2.00KB/s`, `400MB/s`). Measured on a native build of the tag and on the
+    bundled binary inside the sandbox on portal handles; the locale table in
+    `rsync-events` is re-measured on it, and `LC_NUMERIC` still decides the
+    separators. Both progress patterns take the `B` as optional. Its
+    `configure` also **aborts** without `idn2.h` where 3.5.0 went on without
+    IDN; GNOME 49 and 51 both carry it (and `libidn2` in the Platform), so the
+    bundled build has IDN with no flag. 3.5.1 added a bare FERROR line,
+    `refusing to follow a symlink owned by an untrusted user`, now on the
+    unprefixed list — read in the source, not produced.
 
 ## 7. Claude Code operating notes
 

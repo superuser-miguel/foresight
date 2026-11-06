@@ -94,6 +94,41 @@
   <content_rating type="oars-1.1" />
 
   <releases>
+    <release version="1.0.2" date="2026-11-06">
+      <description>
+        <p>Fixes from the first person other than the author to use Foresight,
+        a newer rsync, and a newer GNOME platform.</p>
+        <ul>
+          <li>Closing the window during a transfer now asks first, and stops
+          rsync if you go ahead. rsync also stops when Foresight is ended any
+          other way — by a signal, by being killed, or by a crash — instead of
+          carrying on in the background.</li>
+          <li>A dry run that did not finish no longer leads to a transfer:
+          Start refuses, rather than confirm deletions or a move on the
+          strength of half a list.</li>
+          <li>A preset that could not be saved now says so. A presets file
+          that cannot be read is set aside, never overwritten.</li>
+          <li>When a transfer finishes with some files not copied, the banner
+          now leads to what rsync reported about them.</li>
+          <li>Keyboard shortcuts for the main actions, and a window that lists
+          them.</li>
+          <li>File names with accented letters, other scripts or emoji are no
+          longer garbled when a character arrives split across two reads.</li>
+          <li>Errors rsync prints in its own words, and the summary it prints
+          at the end of a failed run, are now collected and shown.</li>
+          <li>Transfer progress now shows on desktops set to a language that
+          writes numbers as 1.234,5.</li>
+          <li>An Include rule with no Exclude after it is pointed out: rsync
+          copies whatever no rule matches, so such a rule narrows nothing. A
+          Fix button adds the two rules that make it count, and with Move on,
+          Foresight asks first. The Filter rules list now explains how rules
+          are read.</li>
+          <li>The bundled rsync is now 3.5.2, which fixes a security issue on
+          the sending side of a transfer to another machine.</li>
+          <li>Foresight now runs on the GNOME 51 platform.</li>
+        </ul>
+      </description>
+    </release>
     <release version="1.0.1" date="2026-09-18">
       <description>
         <p>Two fixes from a month of daily use, and a newer rsync.</p>

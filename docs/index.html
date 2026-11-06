@@ -116,7 +116,7 @@
       <path d="M54 68 L40 80 L54 92"/>
     </g>
   </svg>
-  <span class="badge">v1.0.1 — out now</span>
+  <span class="badge">v1.0.2 — out now</span>
   <h1>Foresight</h1>
   <p class="tagline">See exactly what rsync will change — before a byte moves.</p>
   <p class="lede">
@@ -204,7 +204,7 @@
     </div>
     <div class="card">
       <h3>Sandboxed by design</h3>
-      <p>A Flatpak that ships rsync 3.5.0 and touches your files only through XDG portals — never <code>--filesystem=home</code>.</p>
+      <p>A Flatpak that ships rsync 3.5.2 and touches your files only through XDG portals — never <code>--filesystem=home</code>.</p>
     </div>
   </div>
 </section>
@@ -223,7 +223,7 @@
     </div>
     <div class="card">
       <h3>Filter rules &amp; an escape hatch</h3>
-      <p>An ordered list of Include and Exclude patterns — rsync obeys the first rule that matches, so moving one up changes which wins. A rule that can never match is flagged before you run, and a Dry Run shows what each one matched. The Extra arguments field forwards any other rsync switch, tokenised — never through a shell.</p>
+      <p>An ordered list of Include and Exclude patterns — rsync obeys the first rule that matches, so moving one up changes which wins, and a file no rule matches is copied. A rule that can never match, or an Include with nothing below it to override, is flagged before you run, and a Dry Run shows what each one matched. The Extra arguments field forwards any other rsync switch, tokenised — never through a shell.</p>
     </div>
   </div>
 </section>
@@ -245,6 +245,7 @@
     <li class="done"><b>Remote sync over SSH</b> — push to or pull from a <code>user@host:/path</code> endpoint. Your keys come from the desktop's SSH agent, so none ever enters the sandbox and <code>~/.ssh</code> is never read; Foresight keeps its own <code>known_hosts</code> and shows you the fingerprint before trusting a machine for the first time. Either side may be remote, but not both — rsync refuses that. IPv6 link-local endpoints work, scope id and all.</li>
     <li class="done"><b>A frozen preset format</b> — it churned three times on the way; 1.0 is the promise that it stops. Every reader keeps reading all three encodings, so no saved rule set is lost to an upgrade.</li>
     <li class="done"><b>1.0.1 — rules that match nothing are no longer silent</b> — a leading <code>/</code> in a filter rule means the top of the <em>transfer</em>, not of the disk, so a full path pasted as an exclude matches nothing and rsync says nothing. With Move on, the folder it was meant to keep back moved too. Foresight now flags such a rule before anything runs and offers the fix; a Dry Run shows what every rule matched; and a move whose exclude held nothing back stops and asks. Also: New Job after a remote transfer no longer leaves a dead window, and the bundled rsync is now 3.5.0 (33 security fixes).</li>
+    <li class="done"><b>1.0.2 — fixes from the first outside user</b> — rsync no longer keeps running after the window closes or Foresight is killed; a dry run that did not finish confirms nothing; a failed preset save says so, and an unreadable presets file is set aside rather than overwritten; a partial transfer shows what failed; keyboard shortcuts. Names with accents or emoji are no longer garbled, errors rsync prints without its prefix are shown, and progress now works on desktops that write numbers as 1.234,5. An Include rule that narrows nothing is flagged, with a fix. The bundled rsync is now 3.5.2 (a security fix on the sending side), on the GNOME 51 platform.</li>
     <li><b>After 1.0 — durable jobs</b> — a named job that remembers its source <em>and</em> destination across restarts. The gate on everything below it: portal paths are handles rather than locations, so this gets solved through the documents portal, never by asking for your whole home directory.</li>
     <li><b>After 1.0 — scheduling &amp; run history</b> — &ldquo;every night&rdquo;, or &ldquo;when this drive appears&rdquo;, as generated systemd <em>user</em> timers and mount units, with a record of what ran, when, what changed and what failed. No daemon of Foresight&rsquo;s own, and scheduled runs keep the same dry-run-first discipline as interactive ones.</li>
     <li><b>After 1.0 — snapshot backups</b> (<code>--link-dest</code>) — hardlinked incremental trees, the thing that turns copies into backups. Still pure rsync.</li>

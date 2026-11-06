@@ -259,7 +259,7 @@ fn finish_on_nothing_but_whitespace_yields_nothing() {
 // else; see "One line, two events" in the crate docs. The cases below are in
 // `reference/rsync_events_selfcheck.py` too, with the same text.
 
-const SUMMARY: &str = "rsync error: some files/attrs were not transferred (see previous errors) (code 23) at main.c(1394) [sender=3.5.0-g483b5efc]";
+const SUMMARY: &str = "rsync error: some files/attrs were not transferred (see previous errors) (code 23) at main.c(1416) [sender=3.5.2-g41bbd895]";
 const LAST_UPDATE: &str = "         70,002 100%   47.69MB/s    0:00:00 (xfr#4, to-chk=0/6)";
 
 fn progress(bytes_done: u64, percent: u8, rate: &str, elapsed: &str) -> Progress {

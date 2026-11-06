@@ -187,7 +187,7 @@ def check_finish_on_nothing_but_whitespace_yields_nothing() -> None:
 # The cases of the same names in chunk_boundary_test.rs, with the same text.
 
 SUMMARY = ("rsync error: some files/attrs were not transferred (see previous "
-           "errors) (code 23) at main.c(1394) [sender=3.5.0-g483b5efc]")
+           "errors) (code 23) at main.c(1416) [sender=3.5.2-g41bbd895]")
 LAST_UPDATE = "         70,002 100%   47.69MB/s    0:00:00 (xfr#4, to-chk=0/6)"
 LAST = Progress(bytes_done=70_002, percent=100, rate_human="47.69MB/s",
                 elapsed="0:00:00", xfr_index=4, check_phase="to-chk",

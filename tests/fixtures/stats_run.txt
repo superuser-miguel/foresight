@@ -6,12 +6,13 @@ Number of regular files transferred: 1
 Total file size: 5,400,057 bytes
 Total transferred file size: 600,000 bytes
 Literal data: 600,000 bytes
+Number of 4 KiB logical blocks touched: 147
 Matched data: 0 bytes
 File list size: 0
 File list generation time: 0.001 seconds
 File list transfer time: 0.000 seconds
-Total bytes sent: 600,471
-Total bytes received: 37
+Total bytes sent: 600,514
+Total bytes received: 40
 
-sent 600,471 bytes  received 37 bytes  1,201,016.00 bytes/sec
+sent 600,514 bytes  received 40 bytes  1,201,108.00 bytes/sec
 total size is 5,400,057  speedup is 8.99

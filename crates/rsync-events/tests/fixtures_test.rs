@@ -140,6 +140,23 @@ fn progress_line_variants() {
 
     let bare = parse_progress_line("             42   0%    0.00kB/s    0:00:00  ").unwrap();
     assert_eq!(bare.xfr_index, None);
+
+    // rsync 3.5.2 labels the byte count with `B` and prints rates to three
+    // significant digits — captured, not guessed. Without the optional `B` in
+    // the pattern no progress line parses at all.
+    let new =
+        parse_progress_line("        400,042B   8%    400MB/s    0:00:00 (xfr#2, to-chk=2/8)")
+            .unwrap();
+    assert_eq!(new.bytes_done, 400_042);
+    assert_eq!(new.percent, 8);
+    assert_eq!(new.rate_human, "400MB/s");
+    assert_eq!(new.check_remaining, Some(2));
+    let idle = parse_progress_line("             42B   0%       0B/s    0:00:00  ").unwrap();
+    assert_eq!((idle.bytes_done, idle.rate_human.as_str()), (42, "0B/s"));
+    let small =
+        parse_progress_line("              4B  17%   2.00KB/s    0:00:00 (xfr#2, to-chk=5/8)")
+            .unwrap();
+    assert_eq!(small.rate_human, "2.00KB/s");
 }
 
 // ---------------------------------------------------------------- stats
@@ -152,7 +169,7 @@ fn stats_block() {
     assert_eq!(st.files_transferred, Some(1));
     assert_eq!(st.total_size, Some(5_400_057));
     assert_eq!(st.transferred_size, Some(600_000));
-    assert_eq!(st.bytes_sent, Some(600_471));
+    assert_eq!(st.bytes_sent, Some(600_514));
     assert_eq!(st.speedup, Some(8.99));
 }
 

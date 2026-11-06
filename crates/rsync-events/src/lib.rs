@@ -68,15 +68,19 @@
 //!
 //! # The locale is pinned
 //!
-//! rsync 3.5.0 reads two locale categories, and both change what it prints.
-//! Measured on the host build and on the bundled one inside the sandbox, with
-//! the two invocations above:
+//! rsync reads two locale categories, and both change what it prints.
+//! Measured on 3.5.0, on the host build and on the bundled one inside the
+//! sandbox, with the two invocations above, and again on a 3.5.2 build:
 //!
-//! | rsync's locale | a name | a progress line |
-//! |---|---|---|
-//! | `C.UTF-8`, `en_US.UTF-8` | `año ñ.txt` | `3,500,001  74%    1.09GB/s` |
-//! | `de_DE.UTF-8`, `fr_FR.UTF-8` | `año ñ.txt` | `3.500.001  74%    1,09GB/s` |
-//! | `C`, `POSIX`, or one that is not installed | `a\#303\#261o \#303\#261.txt` | `3,500,001  74%    1.09GB/s` |
+//! | rsync's locale | a name | a progress line (3.5.0) | (3.5.2) |
+//! |---|---|---|---|
+//! | `C.UTF-8`, `en_US.UTF-8` | `año ñ.txt` | `3,500,001  74%    1.09GB/s` | `3,500,001B 100%   2.07MB/s` |
+//! | `de_DE.UTF-8`, `fr_FR.UTF-8` | `año ñ.txt` | `3.500.001  74%    1,09GB/s` | `3.500.001B 100%   2,07MB/s` |
+//! | `C`, `POSIX`, or one that is not installed | `a\#303\#261o \#303\#261.txt` | `3,500,001  74%    1.09GB/s` | `3,500,001B 100%   2.07MB/s` |
+//!
+//! 3.5.2 labels the byte count with `B` and prints a rate to three
+//! significant digits (`400MB/s`, `2.00KB/s`, `0B/s`). The patterns take the
+//! `B` as optional, so either version's lines parse.
 //!
 //! - `LC_CTYPE` decides which bytes of a name are text and which are escaped.
 //!   A locale that is named in the environment but not installed is the C
@@ -411,7 +415,7 @@ static DELETING_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^\*deleting\s+(?P<pa
 
 static PROGRESS_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r"^\s*(?P<bytes>[\d,]+)\s+(?P<pct>\d+)%\s+(?P<rate>[\d.,]+\S+/s)\s+(?P<elapsed>[\d:]+)(?:\s+\(xfr#(?P<xfr>\d+),\s+(?P<phase>to-chk|ir-chk)=(?P<rem>\d+)/(?P<tot>\d+)\))?\s*$",
+        r"^\s*(?P<bytes>[\d,]+)B?\s+(?P<pct>\d+)%\s+(?P<rate>[\d.,]+\S+/s)\s+(?P<elapsed>[\d:]+)(?:\s+\(xfr#(?P<xfr>\d+),\s+(?P<phase>to-chk|ir-chk)=(?P<rem>\d+)/(?P<tot>\d+)\))?\s*$",
     )
     .unwrap()
 });
@@ -435,7 +439,7 @@ static PROGRESS_RE: Lazy<Regex> = Lazy::new(|| {
 /// `\s` would admit more, and not the same more in Rust as in Python.
 static GLUED_PROGRESS_RE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(
-        r"^ *[0-9,]+ +[0-9]+% +[0-9.,]+[^ ]+/s +[0-9]+:[0-9]{2}:[0-9]{2}(?: +\(xfr#[0-9]+, +(?:to-chk|ir-chk)=[0-9]+/[0-9]+\) *|  +)",
+        r"^ *[0-9,]+B? +[0-9]+% +[0-9.,]+[^ ]+/s +[0-9]+:[0-9]{2}:[0-9]{2}(?: +\(xfr#[0-9]+, +(?:to-chk|ir-chk)=[0-9]+/[0-9]+\) *|  +)",
     )
     .unwrap()
 });
@@ -528,6 +532,11 @@ static SSH_ERROR_RE: Lazy<Regex> = Lazy::new(|| {
 ///   `could not make way for …` (`delete_item`, delete.c, FERROR_XFER): the
 ///   *cause* of an exit 23 that has no other. The first also sets the I/O
 ///   error flag, so it is what stands behind a skipped deletion.
+/// - `refusing to follow a symlink owned by an untrusted user; …` (new in
+///   3.5.1, `secure_relative_open`, syscall.c, FERROR): a path component is a
+///   symlink owned by someone other than root or the user, and the open fails
+///   with ELOOP. Read in the 3.5.2 source, not produced: it needs a symlink
+///   owned by another account.
 ///
 /// Held to the bar [`SSH_ERROR_RE`] sets: lines known to mean something went
 /// wrong, not lines that look as if they might. What is left off on purpose,
@@ -553,6 +562,7 @@ static UNPREFIXED_ERROR_RE: Lazy<Regex> = Lazy::new(|| {
           | ERROR:\x20
           | symlink\ has\ no\ referent:
           | could\ not\ make\ way\ for\x20
+          | refusing\ to\ follow\ a\ symlink\ owned\ by\ an\ untrusted\ user
         )
         ",
     )
@@ -1044,6 +1054,8 @@ mod unprefixed_error_tests {
             "symlink has no referent: \"/x/src/dangling\"",
             // A file where the destination has a non-empty directory.
             "could not make way for new regular file: x",
+            // 3.5.1+: a path through a symlink another account owns.
+            "refusing to follow a symlink owned by an untrusted user; use --insecure-links locally or \"insecure links = yes\" in a daemon module ONLY if every path component is trusted",
         ] {
             assert!(is_error(line), "should be collected as an error: {line:?}");
         }

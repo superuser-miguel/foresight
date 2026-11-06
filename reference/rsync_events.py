@@ -209,7 +209,7 @@ _ITEMIZE_RE = re.compile(
 _DELETING_RE = re.compile(r"^\*deleting\s+(?P<path>.*)$")
 
 _PROGRESS_RE = re.compile(
-    r"^\s*(?P<bytes>[\d,]+)\s+(?P<pct>\d+)%\s+"
+    r"^\s*(?P<bytes>[\d,]+)B?\s+(?P<pct>\d+)%\s+"
     r"(?P<rate>[\d.,]+\S+/s)\s+(?P<elapsed>[\d:]+)"
     r"(?:\s+\(xfr#(?P<xfr>\d+),\s+(?P<phase>to-chk|ir-chk)="
     r"(?P<rem>\d+)/(?P<tot>\d+)\))?\s*$"
@@ -221,7 +221,7 @@ _PROGRESS_RE = re.compile(
 # (and the spaces rsync pads it with) or with the two spaces that end a
 # mid-file update. ASCII digits and spaces only, as rsync writes them.
 _GLUED_PROGRESS_RE = re.compile(
-    r"^ *[0-9,]+ +[0-9]+% +[0-9.,]+[^ ]+/s +[0-9]+:[0-9]{2}:[0-9]{2}"
+    r"^ *[0-9,]+B? +[0-9]+% +[0-9.,]+[^ ]+/s +[0-9]+:[0-9]{2}:[0-9]{2}"
     r"(?: +\(xfr#[0-9]+, +(?:to-chk|ir-chk)=[0-9]+/[0-9]+\) *|  +)")
 
 # `[sender] hiding directory Photos/private because of pattern private`.
@@ -255,7 +255,7 @@ _SSH_ERROR_RE = re.compile(
 # rsync's own failure lines that do NOT start with `rsync:` — only rsyserr()
 # adds the prefix; plain rprintf() output arrives bare whatever its log level.
 # A short closed list, each line produced with rsync 3.5.0 and read back in its
-# source. NOT on it, on purpose: `skipping non-regular file`, `skipping
+# source (the untrusted-symlink line, new in 3.5.1, read in the source only). NOT on it, on purpose: `skipping non-regular file`, `skipping
 # directory`, `cannot delete non-empty directory` (all seen on exit-0 runs),
 # `file has vanished` / `rsync warning:` (exit 24 says it), and `WARNING:`
 # (rsync retries). See UNPREFIXED_ERROR_RE in the Rust crate for the reasoning.
@@ -264,7 +264,8 @@ _UNPREFIXED_ERROR_RE = re.compile(
     r"|Deletions stopped due to --max-delete limit"
     r"|ERROR: "
     r"|symlink has no referent:"
-    r"|could not make way for )")
+    r"|could not make way for "
+    r"|refusing to follow a symlink owned by an untrusted user)")
 
 
 def _int(s: str) -> int:

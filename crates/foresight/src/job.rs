@@ -2464,9 +2464,18 @@ mod tests {
                 assert_eq!(last.bytes_done, total, "{at}: {last:?}");
                 assert_eq!(last.check_phase.as_deref(), Some("to-chk"), "{at}");
                 assert_eq!(last.check_remaining, Some(0), "{at}");
+                // Since 3.5.2 a rate has three significant digits, so it may
+                // have no point at all ("500MB/s") or a thousands separator
+                // ("113,295B/s"). What a leaked locale would add is a decimal
+                // comma: one followed by fewer than three digits.
+                let decimal_comma = last
+                    .rate_human
+                    .split(',')
+                    .skip(1)
+                    .any(|after| after.chars().take_while(char::is_ascii_digit).count() < 3);
                 assert!(
-                    last.rate_human.contains('.') && !last.rate_human.contains(','),
-                    "{at}: the rate has a decimal point: {last:?}"
+                    !decimal_comma,
+                    "{at}: the rate has a decimal comma: {last:?}"
                 );
                 // A progress line the parser did not know is a message. The
                 // very last one is: rsync ends it with nothing, and the

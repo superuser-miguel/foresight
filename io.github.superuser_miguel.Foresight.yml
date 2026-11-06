@@ -12,7 +12,7 @@
 
 id: io.github.superuser_miguel.Foresight
 runtime: org.gnome.Platform
-runtime-version: '49'        # bump to current stable GNOME runtime
+runtime-version: '51'        # bump to current stable GNOME runtime
 sdk: org.gnome.Sdk
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
@@ -88,8 +88,9 @@ modules:
         commit: 41bbd895668767e155b2eb6da64f37afa9cb8724
 
   # ---------------------------------------------------------------- openssh
-  # NOT bundled — and it turns out we don't need to. Verified 2026-07-13: the
-  # org.gnome.Platform//49 runtime already ships an ssh client at /usr/bin/ssh,
+  # NOT bundled — and it turns out we don't need to. Verified 2026-07-13 on
+  # org.gnome.Platform//49, and still so on //51 (2026-11-06: ssh and
+  # ssh-keyscan at /usr/bin, OpenSSH 10.6p1): the runtime ships an ssh client,
   # and a real rsync-over-ssh transfer from inside this sandbox succeeds
   # end-to-end (auth + data + the %i %n%L / --info=progress2 reporting contract),
   # given --share=network above.

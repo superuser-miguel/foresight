@@ -171,7 +171,7 @@ flatpak install --user Foresight.flatpak
 Either way you need the GNOME runtime it builds against; if you don't have it:
 
 ```sh
-flatpak install flathub org.gnome.Platform//49
+flatpak install flathub org.gnome.Platform//51
 ```
 
 Release tags are GPG-signed with the same key. Verify with
@@ -196,8 +196,8 @@ the output-parsing contract is testable on its own — and
 ### Flatpak (how it ships)
 
 ```sh
-flatpak install flathub org.gnome.Platform//49 org.gnome.Sdk//49 \
-    org.freedesktop.Sdk.Extension.rust-stable//25.08
+flatpak install flathub org.gnome.Platform//51 org.gnome.Sdk//51 \
+    org.freedesktop.Sdk.Extension.rust-stable//26.08
 build-aux/run-dev.sh                 # build the dev manifest and run it
 build-aux/run-dev.sh --no-build      # run the last build again
 build-aux/run-dev.sh rsync --version # the bundled engine

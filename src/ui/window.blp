@@ -246,6 +246,25 @@ template $ForesightWindow: Adw.ApplicationWindow {
                           };
                         }
                       }
+
+                      // Said where the rules are made, not only in Help: the
+                      // two facts below are what an include-only list gets
+                      // wrong, and nothing else on screen states them.
+                      Gtk.ListBoxRow {
+                        activatable: false;
+                        selectable: false;
+
+                        Gtk.Label {
+                          label: _("Rules are checked from the top, and the first one that matches decides. Files no rule matches are copied. To copy only what your Include rules match, end the list with Include */ and Exclude *.");
+                          wrap: true;
+                          xalign: 0;
+                          margin-top: 8;
+                          margin-bottom: 8;
+                          margin-start: 12;
+                          margin-end: 12;
+                          styles ["dim-label", "caption"]
+                        }
+                      }
                     }
 
                     Adw.EntryRow extra_args_row {

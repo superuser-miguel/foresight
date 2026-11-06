@@ -133,8 +133,12 @@ pub const CAPABILITIES: &[Capability] = &[
         description: "Skip or keep paths by pattern (e.g. *.tmp, .git). The list is \
                       ordered and rsync obeys the first rule that matches, so an \
                       Include above a broader Exclude carves an exception out of it \
-                      — use the arrows on a rule to change which one wins. Each rule \
-                      is passed whole, so it may contain spaces.",
+                      — use the arrows on a rule to change which one wins. Files no \
+                      rule matches are copied, so an Include on its own narrows \
+                      nothing: to copy only JPEGs, use Include */, Include *.jpg, \
+                      Exclude *. An Include with no Exclude below it is flagged, with \
+                      a Fix that adds those two rules. Each rule is passed whole, so \
+                      it may contain spaces.",
         man_option: "--exclude, --include",
         group: Group::Options,
     },

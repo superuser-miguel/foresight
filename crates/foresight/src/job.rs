@@ -238,6 +238,71 @@ impl FilterRule {
     }
 }
 
+/// Indices of the Include rules that cannot change what transfers.
+///
+/// rsync copies anything no rule matches, so an Include only does something
+/// when a later Exclude would otherwise have caught the same path. With no
+/// Exclude after it, the rule keeps what would have been kept anyway. The
+/// classic way in is a list holding only `Include *.jpg`, made by someone who
+/// expects "only JPEGs" and gets every file — with Move on, every file leaves
+/// the source.
+///
+/// Extra arguments are emitted after the list, so they can supply the Exclude
+/// that makes an Include count. When they hold anything that adds filter rules,
+/// nothing is reported: a false warning would teach people to ignore the real
+/// ones.
+pub fn inert_includes(filters: &[FilterRule], extra_args: &[String]) -> Vec<usize> {
+    let adds_rules = |arg: &String| {
+        [
+            "--exclude",
+            "--include",
+            "--filter",
+            "--cvs-exclude",
+        ]
+        .iter()
+        .any(|flag| arg.starts_with(flag))
+            // A short-option cluster such as -f, -F, -C or -avC.
+            || (arg.starts_with('-')
+                && !arg.starts_with("--")
+                && arg.contains(['f', 'F', 'C']))
+    };
+    if extra_args.iter().any(adds_rules) {
+        return Vec::new();
+    }
+    // Everything from here on has no Exclude below it.
+    let tail = filters
+        .iter()
+        .rposition(|r| r.kind == FilterKind::Exclude)
+        .map_or(0, |i| i + 1);
+    (tail..filters.len())
+        .filter(|&i| filters[i].kind == FilterKind::Include)
+        .collect()
+}
+
+/// The rules to append so the Include rules decide what transfers: `*/` keeps
+/// every folder open so rsync can look inside, then `*` skips everything else.
+///
+/// `None` when the list already holds `Exclude *` — then it sits above the
+/// Includes and hides everything before they are reached, and appending a
+/// second one would not help; the arrows are the fix.
+pub fn only_included_fix(filters: &[FilterRule]) -> Option<Vec<FilterRule>> {
+    if filters
+        .iter()
+        .any(|r| r.kind == FilterKind::Exclude && r.pattern == "*")
+    {
+        return None;
+    }
+    let mut add = Vec::new();
+    if !filters
+        .iter()
+        .any(|r| r.kind == FilterKind::Include && r.pattern == "*/")
+    {
+        add.push(FilterRule::include("*/"));
+    }
+    add.push(FilterRule::exclude("*"));
+    Some(add)
+}
+
 /// The remote half of a transfer, if there is one.
 ///
 /// rsync refuses a remote source *and* a remote destination in one command
@@ -2529,7 +2594,84 @@ mod tests {
             "the include now wins, so the same tree yields a different result"
         );
 
+        // What `inert_includes` claims, against the engine: an Include with no
+        // Exclude below it copies everything, exactly as no rules at all would.
+        let lone = vec![FilterRule::include("*.jpg")];
+        assert_eq!(inert_includes(&lone, &[]), [0]);
+        let inert = tmp.join("inert");
+        run(&inert, lone.clone());
+        assert!(
+            inert.join("notes.txt").exists() && inert.join("build/gen.jpg").exists(),
+            "an Include alone narrows nothing"
+        );
+
+        // And the offered fix does what the warning promises: only JPEGs.
+        let mut fixed_rules = lone;
+        fixed_rules.extend(only_included_fix(&fixed_rules).unwrap());
+        assert!(inert_includes(&fixed_rules, &[]).is_empty());
+        let fixed = tmp.join("fixed");
+        run(&fixed, fixed_rules);
+        assert!(fixed.join("keep.jpg").exists() && fixed.join("photos/a.jpg").exists());
+        assert!(!fixed.join("notes.txt").exists() && !fixed.join("photos/b.txt").exists());
+
         let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn an_include_counts_only_with_an_exclude_below_it() {
+        let inc = FilterRule::include;
+        let exc = FilterRule::exclude;
+        assert!(inert_includes(&[], &[]).is_empty());
+        assert!(inert_includes(&[exc("*.tmp")], &[]).is_empty());
+        assert_eq!(inert_includes(&[inc("*.jpg"), inc("*.png")], &[]), [0, 1]);
+        // An Exclude above does not help: rsync reads downward.
+        assert_eq!(inert_includes(&[exc("build/"), inc("*.jpg")], &[]), [1]);
+        // One below covers every Include above it, but not one after it.
+        assert_eq!(
+            inert_includes(&[inc("*.jpg"), exc("*"), inc("*.png")], &[]),
+            [2]
+        );
+        assert!(inert_includes(&[inc("*/"), inc("*.jpg"), exc("*")], &[]).is_empty());
+    }
+
+    #[test]
+    fn extra_arguments_that_add_rules_silence_the_inert_include_check() {
+        let lone = [FilterRule::include("*.jpg")];
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        for silencing in [
+            &["--exclude=*"][..],
+            &["--exclude", "*"],
+            &["--exclude-from=list"],
+            &["--filter=- *"],
+            &["-f", "- *"],
+            &["-F"],
+            &["-avC"],
+            &["--cvs-exclude"],
+        ] {
+            assert!(
+                inert_includes(&lone, &args(silencing)).is_empty(),
+                "{silencing:?}"
+            );
+        }
+        for harmless in [&["--checksum"][..], &["-z", "--partial"], &["--stats"]] {
+            assert_eq!(inert_includes(&lone, &args(harmless)), [0], "{harmless:?}");
+        }
+    }
+
+    #[test]
+    fn the_fix_appends_what_is_missing_and_stands_aside_for_a_buried_catch_all() {
+        let inc = FilterRule::include;
+        let exc = FilterRule::exclude;
+        assert_eq!(
+            only_included_fix(&[inc("*.jpg")]),
+            Some(vec![inc("*/"), exc("*")])
+        );
+        assert_eq!(
+            only_included_fix(&[inc("*/"), inc("*.jpg")]),
+            Some(vec![exc("*")])
+        );
+        // `Exclude *` above the Include: appending another changes nothing.
+        assert_eq!(only_included_fix(&[exc("*"), inc("*.jpg")]), None);
     }
 
     /// Cancellation maps to `Severity::Cancelled`, not an error wall.

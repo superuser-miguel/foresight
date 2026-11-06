@@ -373,7 +373,23 @@ impl ForesightWindow {
             }
         ));
 
+        // Extra arguments come after the list, so an `--exclude` typed there can
+        // be what makes an Include count.
+        imp.extra_args_row.connect_changed(glib::clone!(
+            #[weak(rename_to = win)]
+            self,
+            move |_| win.refresh_filter_rows_if_any()
+        ));
+
         self.refresh_sources_state();
+    }
+
+    /// Rebuild the rule rows only when there are some: the extra-arguments
+    /// entry fires on every keystroke, and an empty list has nothing to judge.
+    fn refresh_filter_rows_if_any(&self) {
+        if !self.imp().filters.borrow().is_empty() {
+            self.rebuild_filter_rows();
+        }
     }
 
     /// Build the sectioned preview `ListView`: rows show the change path;
@@ -1125,6 +1141,8 @@ impl ForesightWindow {
         let last = rules.len().saturating_sub(1);
         let top = self.transfer_top();
         let hits = self.current_filter_hits();
+        let inert = self.inert_includes();
+        let fix = crate::job::only_included_fix(&rules);
         // The rules changed under a matched-nothing notice: it no longer
         // describes them.
         if hits.is_none() && imp.filter_banner.replace(false) {
@@ -1134,11 +1152,21 @@ impl ForesightWindow {
             // Two ways to know a rule does nothing: by construction (its anchor
             // cannot exist in this transfer), or by evidence (a dry run ran
             // with it and it matched no path). The first needs no run at all.
+            //
+            // A third needs no run either: an Include with nothing below it to
+            // override. It matches plenty, so a hit count would only reassure.
             let dead_anchor = rule.dead_anchor(&top);
+            let is_inert = inert.contains(&index);
             let verdict = match (&dead_anchor, hits.as_ref().and_then(|h| h.get(index))) {
                 (Some(_), _) => Some((
                     true,
                     "can never match: a leading / is the top of the transfer, not of the disk"
+                        .to_string(),
+                )),
+                (None, _) if is_inert => Some((
+                    true,
+                    "has no effect: no Exclude below it, and files no rule matches are \
+                     copied anyway"
                         .to_string(),
                 )),
                 (None, Some(h)) if h.total() == 0 => {
@@ -1186,6 +1214,30 @@ impl ForesightWindow {
                     move |_| win.apply_filter_fix(index, &suggestion)
                 ));
                 row.add_suffix(&fix);
+            } else if let Some(add) = fix.as_ref().filter(|_| is_inert) {
+                // Not for a folder pattern: under `Exclude *` its contents are
+                // still skipped, so the recipe would copy an empty folder.
+                if !rule.pattern.ends_with('/') {
+                    let names: Vec<String> = add
+                        .iter()
+                        .map(|r| format!("{} {}", r.kind.label(), r.pattern))
+                        .collect();
+                    let button = gtk::Button::builder()
+                        .label("Fix")
+                        .tooltip_text(format!(
+                            "Copy only what the Include rules match: add {} at the end",
+                            names.join(" and ")
+                        ))
+                        .valign(gtk::Align::Center)
+                        .build();
+                    let add = add.clone();
+                    button.connect_clicked(glib::clone!(
+                        #[weak(rename_to = win)]
+                        self,
+                        move |_| win.append_filters(&add)
+                    ));
+                    row.add_suffix(&button);
+                }
             }
 
             let up = gtk::Button::builder()
@@ -1255,7 +1307,27 @@ impl ForesightWindow {
                 k => format!(" · {k} match nothing"),
             });
         }
+        let inert = self.inert_includes().len();
+        if inert > 0 {
+            subtitle.push_str(&match inert {
+                1 => " · 1 has no effect".to_string(),
+                k => format!(" · {k} have no effect"),
+            });
+        }
         imp.filters_row.set_subtitle(&subtitle);
+    }
+
+    /// Include rules that cannot change what transfers, given the extra
+    /// arguments as typed — see [`crate::job::inert_includes`].
+    fn inert_includes(&self) -> Vec<usize> {
+        let imp = self.imp();
+        crate::job::inert_includes(&imp.filters.borrow(), &tokenize(&imp.extra_args_row.text()))
+    }
+
+    /// Add rules at the end of the list in one step (the inert-Include fix).
+    fn append_filters(&self, rules: &[FilterRule]) {
+        self.imp().filters.borrow_mut().extend_from_slice(rules);
+        self.rebuild_filter_rows();
     }
 
     /// Indices of the rules known to do nothing — dead by construction, or
@@ -1948,7 +2020,10 @@ impl ForesightWindow {
         let move_with_excludes = job.remove_source_files
             && job.reports_filter_hits()
             && job.filters.iter().any(|r| r.kind == FilterKind::Exclude);
-        if job.delete || move_with_excludes {
+        // An Include that does nothing is the same failure from the other
+        // side: meant to narrow the move, it lets everything go.
+        let move_with_inert_include = job.remove_source_files && !self.inert_includes().is_empty();
+        if job.delete || move_with_excludes || move_with_inert_include {
             // Always run a fresh dry run so the confirmation lists exactly the
             // deletions this sync will perform.
             self.run_preview(true);
@@ -2154,39 +2229,70 @@ impl ForesightWindow {
             .collect()
     }
 
-    /// The gate in front of a move: if an exclude matched nothing, say so and
-    /// make going on a decision. Then the deletion confirmation, as before.
+    /// Include rules, by pattern, that cannot narrow a move — empty unless
+    /// Move is on.
+    fn move_inert_includes(&self) -> Vec<String> {
+        let imp = self.imp();
+        if !imp.remove_source_row.is_active() {
+            return Vec::new();
+        }
+        let filters = imp.filters.borrow();
+        self.inert_includes()
+            .into_iter()
+            .map(|i| filters[i].pattern.clone())
+            .collect()
+    }
+
+    /// The gate in front of a move: if an exclude matched nothing, or an
+    /// include can narrow nothing, say so and make going on a decision. Then
+    /// the deletion confirmation, as before.
     fn confirm_idle_excludes_then_sync(&self) {
         let idle = if self.imp().remove_source_row.is_active() {
             self.idle_source_excludes()
         } else {
             Vec::new()
         };
-        if idle.is_empty() {
+        let inert = self.move_inert_includes();
+        if idle.is_empty() && inert.is_empty() {
             self.confirm_deletions_then_sync();
             return;
         }
 
-        let heading = match idle.len() {
-            1 => "An exclude rule matched nothing".to_string(),
-            n => format!("{n} exclude rules matched nothing"),
+        let pick =
+            |n: usize, one: &'static str, many: &'static str| if n == 1 { one } else { many };
+        let heading = match (idle.len(), inert.len()) {
+            (0, 1) => "An include rule has no effect".to_string(),
+            (0, n) => format!("{n} include rules have no effect"),
+            (1, 0) => "An exclude rule matched nothing".to_string(),
+            (n, 0) => format!("{n} exclude rules matched nothing"),
+            _ => "Filter rules are not holding anything back".to_string(),
         };
+        let mut parts = Vec::new();
+        if !idle.is_empty() {
+            parts.push(format!(
+                "{}\n\nNothing is being held back by {}, so whatever {} meant to keep \
+                 in the source will be moved with everything else.",
+                idle.join("\n"),
+                pick(idle.len(), "this rule", "these rules"),
+                pick(idle.len(), "it was", "they were"),
+            ));
+        }
+        if !inert.is_empty() {
+            parts.push(format!(
+                "{}\n\nNo Exclude rule comes after {}, and files no rule matches are \
+                 moved too — so every file will be moved, not only what {} {}. End the \
+                 list with Include */ and Exclude * to move only what the Include \
+                 rules match.",
+                inert.join("\n"),
+                pick(inert.len(), "this rule", "these rules"),
+                pick(inert.len(), "it", "they"),
+                pick(inert.len(), "matches", "match"),
+            ));
+        }
         let body = format!(
-            "{}\n\nNothing is being held back by {}, so whatever {} meant to keep \
-             in the source will be moved with everything else — and a move deletes \
-             each file from the source once it has transferred.\n\nThe Preview \
-             lists exactly what will move.",
-            idle.join("\n"),
-            if idle.len() == 1 {
-                "this rule"
-            } else {
-                "these rules"
-            },
-            if idle.len() == 1 {
-                "it was"
-            } else {
-                "they were"
-            },
+            "{}\n\nA move deletes each file from the source once it has transferred. \
+             The Preview lists exactly what will move.",
+            parts.join("\n\n")
         );
         let dialog = adw::AlertDialog::builder()
             .heading(heading)
@@ -3437,6 +3543,94 @@ impl ForesightWindow {
         check(
             "editing the rules drops the last run's verdicts",
             self.current_filter_hits().is_none() && !subtitle_of(self, 0).contains("matched"),
+            subtitle_of(self, 0),
+        );
+        self.clear_job();
+
+        // -- an include with nothing to override -------------------------------
+        //
+        // A list holding only `Include *.jpg` copies every file: rsync copies
+        // whatever no rule matches. Flagged with no run, and with Move on it
+        // gates the start like an exclude that matched nothing.
+        self.add_source(&gio::File::for_path(dir.join("src")));
+        self.set_dest(&gio::File::for_path(dir.join("dst")));
+        self.add_filter(FilterKind::Include, "*.jpg");
+        check(
+            "an include with no exclude below it is flagged",
+            self.inert_includes() == [0]
+                && subtitle_of(self, 0).contains("has no effect")
+                && self
+                    .imp()
+                    .filters_row
+                    .subtitle()
+                    .contains("1 has no effect"),
+            format!(
+                "{:?} | {}",
+                subtitle_of(self, 0),
+                self.imp().filters_row.subtitle()
+            ),
+        );
+        check(
+            "it is not reported as matching nothing",
+            self.idle_rules().is_empty(),
+            format!("{:?}", self.idle_rules()),
+        );
+        self.imp().remove_source_row.set_active(true);
+        check(
+            "a move names the include that cannot narrow it",
+            self.move_inert_includes() == ["*.jpg"],
+            format!("{:?}", self.move_inert_includes()),
+        );
+        self.imp().remove_source_row.set_active(false);
+        self.imp().extra_args_row.set_text("--exclude=*");
+        check(
+            "an --exclude typed in extra arguments clears the warning",
+            self.inert_includes().is_empty() && !subtitle_of(self, 0).contains("has no effect"),
+            subtitle_of(self, 0),
+        );
+        self.imp().extra_args_row.set_text("");
+
+        // The row's own Fix button, clicked — not the function behind it, so a
+        // button wired to nothing would fail here.
+        fn find_button(w: &gtk::Widget, label: &str) -> Option<gtk::Button> {
+            if let Some(b) = w.downcast_ref::<gtk::Button>() {
+                if b.label().as_deref() == Some(label) {
+                    return Some(b.clone());
+                }
+            }
+            let mut child = w.first_child();
+            while let Some(c) = child {
+                if let Some(b) = find_button(&c, label) {
+                    return Some(b);
+                }
+                child = c.next_sibling();
+            }
+            None
+        }
+        let fix = find_button(self.imp().filter_rows.borrow()[0].upcast_ref(), "Fix");
+        check(
+            "the flagged include offers a Fix",
+            fix.is_some(),
+            "no Fix button on the row".into(),
+        );
+        if let Some(fix) = fix {
+            fix.emit_clicked();
+        }
+        check(
+            "the Fix ends the list with Include */ and Exclude *",
+            kinded(self) == ["include:*.jpg", "include:*/", "exclude:*"]
+                && self.inert_includes().is_empty(),
+            format!("{:?}", kinded(self)),
+        );
+
+        // A folder pattern is flagged but gets no Fix: under `Exclude *` its
+        // contents would still be skipped.
+        self.clear_job();
+        self.add_filter(FilterKind::Include, "Photos/");
+        check(
+            "a flagged folder include offers no Fix",
+            self.inert_includes() == [0]
+                && find_button(self.imp().filter_rows.borrow()[0].upcast_ref(), "Fix").is_none(),
             subtitle_of(self, 0),
         );
         self.clear_job();

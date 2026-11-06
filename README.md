@@ -84,8 +84,11 @@ Where Foresight aims to *win*, not just match:
     `--include=`/`--exclude=` each. rsync obeys the first rule that matches, so
     the arrows on a rule decide which one wins: put `*.jpg` **above** `*` and
     only JPEGs come across; put `build/` above `*.jpg` and nothing in `build/`
-    does. Rules are passed whole, so `My Documents/` is one rule rather than
-    two broken ones.
+    does. Files no rule matches are copied, so an Include **on its own narrows
+    nothing**: "only JPEGs" is `Include */`, `Include *.jpg`, `Exclude *`. An
+    Include with no Exclude below it is flagged, with a **Fix** that adds those
+    two rules, and a Move with one asks before it starts. Rules are passed
+    whole, so `My Documents/` is one rule rather than two broken ones.
     A rule that **cannot match** is pointed out before anything runs. A leading
     `/` means the top of the *transfer*, not of the disk, so a full path pasted
     as an exclude matches nothing — and rsync says nothing. The row says why and
